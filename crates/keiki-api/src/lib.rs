@@ -2,15 +2,13 @@ use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use keiki_model::{
-    AgentConfig, AgentConfigWithLines, AgentInput, AgentLine, AgentMutationResponse, AgentSummary,
-    AgentTemplateSummary, AgentUpdate, BlockConversationResponse, ClearConversationResponse,
-    ConversationDetail, ConversationLocator, ConversationSearchHit, ConversationSummary,
-    ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse,
+    AgentInput, AgentSummary, AgentTemplateSummary, BlockConversationResponse,
+    ClearConversationResponse, ConversationDetail, ConversationLocator, ConversationSearchHit,
+    ConversationSummary, ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse,
     SendConversationMessageResponse, SteerConversationResponse, TakeoverResponse,
 };
 use keiki_model::{
-    AgentEditResponse, AgentTemplatesResponse, AgentsResponse, ConversationTextInput,
-    ConversationsResponse,
+    AgentTemplatesResponse, AgentsResponse, ConversationTextInput, ConversationsResponse,
 };
 use rand::Rng as _;
 use reqwest::{StatusCode, header};
@@ -221,6 +219,10 @@ impl Client {
             http: reqwest::Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_owned(),
         }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     pub async fn discover_oauth(&self, requested_scope: &str) -> Result<(), Error> {
@@ -537,97 +539,6 @@ impl Client {
         input: &AgentInput,
     ) -> Result<CreateAgentResponse, Error> {
         self.send_json(self.create_agent_request(access_token, input))
-            .await
-    }
-
-    pub fn agent_config_authenticated_request(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-    ) -> Result<reqwest::RequestBuilder, Error> {
-        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/agents"))?;
-        let mut segments = endpoint
-            .path_segments_mut()
-            .map_err(|_| Error::InvalidContract)?;
-        segments.push(agent_id).push("edit");
-        drop(segments);
-        Ok(self.http.get(endpoint).bearer_auth(access_token))
-    }
-
-    pub async fn agent_config(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-    ) -> Result<AgentConfig, Error> {
-        Ok(self
-            .agent_config_with_lines(access_token, agent_id)
-            .await?
-            .agent)
-    }
-
-    pub async fn agent_config_with_lines(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-    ) -> Result<AgentConfigWithLines, Error> {
-        let response: AgentEditResponse = self
-            .send_json(self.agent_config_authenticated_request(access_token, agent_id)?)
-            .await?;
-        Ok(AgentConfigWithLines {
-            agent: response.agent,
-            lines: response.lines,
-        })
-    }
-
-    pub fn update_agent_authenticated_request(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-        update: &AgentUpdate,
-    ) -> Result<reqwest::RequestBuilder, Error> {
-        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/agents"))?;
-        let mut segments = endpoint
-            .path_segments_mut()
-            .map_err(|_| Error::InvalidContract)?;
-        segments.push(agent_id);
-        drop(segments);
-        Ok(self
-            .http
-            .post(endpoint)
-            .bearer_auth(access_token)
-            .json(update))
-    }
-
-    pub async fn update_agent(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-        update: &AgentUpdate,
-    ) -> Result<AgentMutationResponse, Error> {
-        self.send_json(self.update_agent_authenticated_request(access_token, agent_id, update)?)
-            .await
-    }
-
-    pub fn delete_agent_authenticated_request(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-    ) -> Result<reqwest::RequestBuilder, Error> {
-        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/agents"))?;
-        let mut segments = endpoint
-            .path_segments_mut()
-            .map_err(|_| Error::InvalidContract)?;
-        segments.push(agent_id);
-        drop(segments);
-        Ok(self.http.delete(endpoint).bearer_auth(access_token))
-    }
-
-    pub async fn delete_agent(
-        &self,
-        access_token: &str,
-        agent_id: &str,
-    ) -> Result<AgentMutationResponse, Error> {
-        self.send_json(self.delete_agent_authenticated_request(access_token, agent_id)?)
             .await
     }
 
@@ -1660,49 +1571,6 @@ mod tests {
             builder_body["sandboxEnvSecrets"],
             serde_json::json!(["DATABASE_URL"])
         );
-
-        let edit = client
-            .agent_config_authenticated_request("access-token", "agent/with space")
-            .unwrap()
-            .build()
-            .unwrap();
-        assert_eq!(
-            edit.url().as_str(),
-            "https://keiki.example/api/webapp/agents/agent%2Fwith%20space/edit"
-        );
-
-        let update = client
-            .update_agent_authenticated_request(
-                "access-token",
-                "agent/with space",
-                &AgentUpdate {
-                    name: Some("Renamed".into()),
-                    ..AgentUpdate::default()
-                },
-            )
-            .unwrap()
-            .build()
-            .unwrap();
-        assert_eq!(
-            update.url().as_str(),
-            "https://keiki.example/api/webapp/agents/agent%2Fwith%20space"
-        );
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(update.body().unwrap().as_bytes().unwrap())
-                .unwrap(),
-            serde_json::json!({ "name": "Renamed" })
-        );
-
-        let delete = client
-            .delete_agent_authenticated_request("access-token", "agent/with space")
-            .unwrap()
-            .build()
-            .unwrap();
-        assert_eq!(
-            delete.url().as_str(),
-            "https://keiki.example/api/webapp/agents/agent%2Fwith%20space"
-        );
-        assert_eq!(delete.method(), reqwest::Method::DELETE);
     }
 
     #[test]

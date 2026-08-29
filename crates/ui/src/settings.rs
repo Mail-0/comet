@@ -199,6 +199,10 @@ pub struct UiSettings {
     pub sidebar_organization: SidebarOrganization,
     /// Timestamp used to order active sessions (newest first).
     pub sidebar_sort: SidebarSort,
+    /// Device-local Keiki conversation ids pinned to the top of their agent
+    /// group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_keiki_conversations: Vec<String>,
     /// Optional harness branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_harness: bool,
@@ -274,6 +278,7 @@ impl Default for UiSettings {
             sidebar_grouped: false,
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
+            pinned_keiki_conversations: Vec::new(),
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
@@ -770,6 +775,7 @@ mod tests {
             sidebar_grouped: true,
             sidebar_organization: SidebarOrganization::ByDevice,
             sidebar_sort: SidebarSort::Created,
+            pinned_keiki_conversations: vec![],
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,

@@ -9403,6 +9403,7 @@ dependencies = [
  "tracing",
  "ttf-parser",
  "unicode-segmentation",
+ "url",
  "uuid",
  "zeron-doc",
  "zeron-engine",

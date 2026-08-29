@@ -9,6 +9,7 @@ use keiki_model::{
     AgentTemplateSummary, ConversationDetail, ConversationLocator, ConversationMessage,
     ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse, MessageDirection,
 };
+use url::Url;
 use zeron_doc::parts::MessagePart;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
 use zeron_proto::{Chat, Device, Space};
@@ -100,6 +101,34 @@ pub fn conversation_locator(id: &str) -> Option<ConversationLocator> {
         agent_id: Some(agent_id.to_string()),
         api_key: None,
     })
+}
+
+pub fn conversation_dashboard_url(base_url: &str, locator: &ConversationLocator) -> Option<String> {
+    let encoded_phone = percent_encode_path_segment(&locator.identity);
+    let mut url = Url::parse(&format!(
+        "{}/conversations/{}",
+        base_url.trim_end_matches('/'),
+        encoded_phone
+    ))
+    .ok()?;
+    if let Some(agent_id) = locator.agent_id.as_deref() {
+        url.query_pairs_mut().append_pair("agentId", agent_id);
+    }
+    Some(url.into())
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
+            encoded.push(char::from(b"0123456789ABCDEF"[(byte & 0x0f) as usize]));
+        }
+    }
+    encoded
 }
 
 pub fn map_device() -> Device {
@@ -993,114 +1022,6 @@ pub(crate) async fn create_agent_from_template(
     .await
 }
 
-pub(crate) async fn load_agent_config(
-    state: &WeakEntity<AppState>,
-    agent_id: String,
-    cx: &mut AsyncApp,
-) -> Result<keiki_api::AgentConfigWithLines, keiki_api::Error> {
-    let context = state
-        .update(cx, |state, _| {
-            Some((
-                state.keiki_client.clone()?,
-                state.keiki_token.clone()?,
-                state.keiki_credentials.clone()?,
-            ))
-        })
-        .map_err(|error| keiki_api::Error::TaskFailed(error.to_string()))?;
-    let Some((client, token, credentials)) = context else {
-        return Err(keiki_api::Error::Local(
-            "Keiki credentials are unavailable".into(),
-        ));
-    };
-    authorized(
-        state,
-        client,
-        token,
-        credentials,
-        "Keiki agent configuration load",
-        move |client, access_token| {
-            let agent_id = agent_id.clone();
-            async move {
-                client
-                    .agent_config_with_lines(&access_token, &agent_id)
-                    .await
-            }
-        },
-        cx,
-    )
-    .await
-}
-
-pub(crate) async fn update_agent(
-    state: &WeakEntity<AppState>,
-    agent_id: String,
-    update: keiki_api::AgentUpdate,
-    cx: &mut AsyncApp,
-) -> Result<keiki_api::AgentMutationResponse, keiki_api::Error> {
-    let context = state
-        .update(cx, |state, _| {
-            Some((
-                state.keiki_client.clone()?,
-                state.keiki_token.clone()?,
-                state.keiki_credentials.clone()?,
-            ))
-        })
-        .map_err(|error| keiki_api::Error::TaskFailed(error.to_string()))?;
-    let Some((client, token, credentials)) = context else {
-        return Err(keiki_api::Error::Local(
-            "Keiki credentials are unavailable".into(),
-        ));
-    };
-    authorized(
-        state,
-        client,
-        token,
-        credentials,
-        "Keiki agent update",
-        move |client, access_token| {
-            let agent_id = agent_id.clone();
-            let update = update.clone();
-            async move { client.update_agent(&access_token, &agent_id, &update).await }
-        },
-        cx,
-    )
-    .await
-}
-
-pub(crate) async fn delete_agent(
-    state: &WeakEntity<AppState>,
-    agent_id: String,
-    cx: &mut AsyncApp,
-) -> Result<keiki_api::AgentMutationResponse, keiki_api::Error> {
-    let context = state
-        .update(cx, |state, _| {
-            Some((
-                state.keiki_client.clone()?,
-                state.keiki_token.clone()?,
-                state.keiki_credentials.clone()?,
-            ))
-        })
-        .map_err(|error| keiki_api::Error::TaskFailed(error.to_string()))?;
-    let Some((client, token, credentials)) = context else {
-        return Err(keiki_api::Error::Local(
-            "Keiki credentials are unavailable".into(),
-        ));
-    };
-    authorized(
-        state,
-        client,
-        token,
-        credentials,
-        "Keiki agent deletion",
-        move |client, access_token| {
-            let agent_id = agent_id.clone();
-            async move { client.delete_agent(&access_token, &agent_id).await }
-        },
-        cx,
-    )
-    .await
-}
-
 async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
     loop {
         let context = match entity.update(cx, |state, _| {
@@ -1437,6 +1358,31 @@ mod tests {
             conversation_locator(&id).unwrap().agent_id.as_deref(),
             Some("agent-1")
         );
+    }
+
+    #[test]
+    fn conversation_dashboard_url_includes_agent_id_without_credentials() {
+        let locator = ConversationLocator {
+            identity: "+15551234".into(),
+            agent_id: Some("agent/1".into()),
+            api_key: None,
+        };
+        assert_eq!(
+            conversation_dashboard_url("https://keiki.example/", &locator).as_deref(),
+            Some("https://keiki.example/conversations/%2B15551234?agentId=agent%2F1")
+        );
+    }
+
+    #[test]
+    fn conversation_dashboard_url_omits_agent_id_for_agentless_conversation() {
+        let locator = ConversationLocator {
+            identity: "tg:123".into(),
+            agent_id: None,
+            api_key: Some("secret-key".into()),
+        };
+        let url = conversation_dashboard_url("https://keiki.example", &locator).unwrap();
+        assert_eq!(url, "https://keiki.example/conversations/tg%3A123");
+        assert!(!url.contains("secret-key"));
     }
 
     #[test]

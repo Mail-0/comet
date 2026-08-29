@@ -8,6 +8,8 @@
 //! management (add via the palette; rename/delete via row context menus).
 //! Child module of `shell` so it renders straight off `Shell`'s private state.
 
+use std::collections::HashSet;
+
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::FocusHandle;
@@ -35,6 +37,25 @@ fn compare_sidebar_chats(
             .cmp(&left.last_message_at.unwrap_or(left.created_at)),
     };
     primary.then_with(|| left.id.cmp(&right.id))
+}
+
+fn promote_pinned_groups<T>(
+    groups: &mut [(Option<(String, String)>, Vec<T>)],
+    is_pinned: impl Fn(&T) -> bool + Copy,
+) {
+    for (_, rows) in groups {
+        let mut pinned = Vec::new();
+        let mut unpinned = Vec::new();
+        for row in rows.drain(..) {
+            if is_pinned(&row) {
+                pinned.push(row);
+            } else {
+                unpinned.push(row);
+            }
+        }
+        pinned.extend(unpinned);
+        *rows = pinned;
+    }
 }
 
 /// The space-filter dropdown, `Some` while open. The same searchable-menu
@@ -1124,6 +1145,15 @@ impl Shell {
                 groups.push((key, vec![chat]));
             }
         }
+        if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            let pinned: HashSet<&str> = self
+                .settings
+                .pinned_keiki_conversations
+                .iter()
+                .map(String::as_str)
+                .collect();
+            promote_pinned_groups(&mut groups, |chat| pinned.contains(chat.id.as_str()));
+        }
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
             promote_local_device_group(&mut groups, state.local_device_id.as_deref());
         }
@@ -1221,6 +1251,15 @@ impl Shell {
             } else {
                 groups.push((row.group.clone(), vec![row]));
             }
+        }
+        if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            let pinned: HashSet<&str> = self
+                .settings
+                .pinned_keiki_conversations
+                .iter()
+                .map(String::as_str)
+                .collect();
+            promote_pinned_groups(&mut groups, |row| pinned.contains(row.chat.id.as_str()));
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
             let local_device_id = self.state.read(cx).local_device_id.clone();
@@ -2954,44 +2993,7 @@ impl Shell {
                 }))
                 .flex()
                 .flex_col();
-            if is_keiki {
-                let settings_id = space_id.clone();
-                let delete_id = space_id.clone();
-                menu = menu
-                    .child(
-                        popover::menu_row(&theme, false, format!("space-menu-settings-{space_id}"))
-                            .id("space-menu-settings")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.close_space_menu(cx);
-                                this.open_keiki_agent_settings(settings_id.clone(), cx);
-                            }))
-                            .child(
-                                icon(icons::SETTINGS_MINIMALISTIC)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Agent settings…")),
-                    )
-                    .child(
-                        popover::menu_row(
-                            &theme,
-                            false,
-                            format!("space-menu-delete-agent-{space_id}"),
-                        )
-                        .id("space-menu-delete-agent")
-                        .text_color(theme.danger)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.close_space_menu(cx);
-                            this.open_keiki_agent_delete(delete_id.clone(), cx);
-                        }))
-                        .child(
-                            icon(icons::TRASH_BIN_MINIMALISTIC)
-                                .size(px(16.0))
-                                .text_color(theme.danger),
-                        )
-                        .child(SharedString::from("Delete agent…")),
-                    );
-            } else {
+            if !is_keiki {
                 let rename_id = space_id.clone();
                 let delete_id = space_id.clone();
                 menu = menu
@@ -3138,7 +3140,7 @@ impl Shell {
 mod tests {
     use chrono::{TimeZone as _, Utc};
 
-    use super::{compare_sidebar_chats, promote_local_device_group};
+    use super::{compare_sidebar_chats, promote_local_device_group, promote_pinned_groups};
     use crate::settings::SidebarSort;
 
     fn group(device: &str, value: u8) -> (Option<(String, String)>, Vec<u8>) {
@@ -3200,6 +3202,28 @@ mod tests {
         promote_local_device_group(&mut groups, Some("not-present"));
 
         assert_eq!(groups, before);
+    }
+
+    #[test]
+    fn pinned_rows_promote_within_each_agent_group() {
+        let mut groups = vec![
+            (Some(("agent-a".into(), "A".into())), vec!["a2", "a1", "a3"]),
+            (Some(("agent-b".into(), "B".into())), vec!["b1", "b2"]),
+        ];
+
+        promote_pinned_groups(&mut groups, |id| matches!(*id, "a1" | "b2"));
+
+        assert_eq!(groups[0].1, ["a1", "a2", "a3"]);
+        assert_eq!(groups[1].1, ["b2", "b1"]);
+    }
+
+    #[test]
+    fn pinned_partition_preserves_order_after_poll_row_replacement() {
+        let mut groups = vec![(Some(("agent-a".into(), "A".into())), vec!["a3", "a1", "a2"])];
+
+        promote_pinned_groups(&mut groups, |id| *id == "a1");
+
+        assert_eq!(groups[0].1, ["a1", "a3", "a2"]);
     }
 
     #[test]

@@ -189,79 +189,6 @@ pub struct AgentInput {
     pub storage_mode: Option<StorageMode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentLine {
-    pub number: String,
-    pub channel: String,
-    pub line_type: String,
-    pub routing_status: RoutingStatus,
-    pub routing_message: Option<String>,
-    pub activated_at: String,
-    pub agent_id: Option<String>,
-    pub agent_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct AgentEditResponse {
-    pub agent: AgentConfig,
-    #[serde(default)]
-    pub lines: Vec<AgentLine>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentConfigWithLines {
-    pub agent: AgentConfig,
-    pub lines: Vec<AgentLine>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentUpdate {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub history_limit: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffort>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_number: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub features: Option<AgentFeatures>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct AgentMutationResponse {
-    pub ok: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentConfig {
-    pub id: String,
-    pub name: String,
-    pub model: String,
-    pub runtime: AgentRuntime,
-    pub system_prompt: String,
-    pub max_steps: u32,
-    pub history_limit: u32,
-    pub reasoning_effort: ReasoningEffort,
-    pub line_number: Option<String>,
-    pub storage_mode: String,
-    pub harness: AgentHarness,
-    pub features: AgentFeatures,
-    pub escalation_routes: EscalationRoutes,
-    pub skill_ids: Vec<String>,
-    pub sandbox_script_ids: Vec<String>,
-    pub sandbox_env_secrets: Vec<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageDirection {
@@ -613,47 +540,6 @@ mod tests {
         .unwrap();
         assert_eq!(created.id, "agent-2");
         assert_eq!(created.missing_secrets[0].name, "GOOGLE_OAUTH_CLIENT_ID");
-
-        let config: AgentEditResponse = serde_json::from_value(serde_json::json!({
-            "agent": {
-                "id": "agent-1",
-                "apiKey": "not-retained-by-the-client-model",
-                "name": "Orchid",
-                "model": "google/gemini-3.5-flash",
-                "runtime": "cloud",
-                "systemPrompt": "Be helpful",
-                "maxSteps": 25,
-                "historyLimit": 50,
-                "reasoningEffort": "medium",
-                "lineNumber": null,
-                "storageMode": "managed",
-                "harness": "flue",
-                "harnessConfig": null,
-                "features": {
-                    "memory": true,
-                    "steering": true,
-                    "media": true,
-                    "browser": true,
-                    "scrape": true,
-                    "sandbox": true,
-                    "mcp": true,
-                    "escalation": true,
-                    "loops": true,
-                    "guards": true,
-                    "wallet": false
-                },
-                "escalationRoutes": {},
-                "skillIds": ["skill-1"],
-                "sandboxScriptIds": ["script-1"],
-                "sandboxEnvSecrets": ["DATABASE_URL"],
-                "mcpPresets": []
-            },
-            "lines": []
-        }))
-        .unwrap();
-        assert_eq!(config.agent.max_steps, 25);
-        assert_eq!(config.agent.skill_ids, ["skill-1"]);
-        assert!(config.agent.features.browser);
     }
 
     #[test]
