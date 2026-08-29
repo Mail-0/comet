@@ -495,7 +495,7 @@ fn future_harness_chat_rows_stay_visible_without_their_config() {
     let newcomer = chats.iter().find(|c| c.id == "chat-2").expect("visible");
     assert_eq!(
         newcomer.config.as_ref().map(|config| config.harness),
-        Some(HarnessId::Unknown("harness-from-the-future")),
+        Some(HarnessId::Unknown("unknown")),
         "unknown harness config remains readable"
     );
     // Both rows keep their configs untouched.

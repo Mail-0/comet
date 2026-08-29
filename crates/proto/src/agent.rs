@@ -1,5 +1,7 @@
 //! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,11 +31,18 @@ impl<'de> Deserialize<'de> for HarnessId {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        Ok(match value.as_str() {
+        let value = Cow::<str>::deserialize(deserializer)?;
+        Ok(match value.as_ref() {
             "copilot" => Self::Copilot,
             "mock" => Self::Mock,
-            _ => Self::Unknown(Box::leak(value.into_boxed_str())),
+            "claude-code" => Self::Unknown("claude-code"),
+            "codex" => Self::Unknown("codex"),
+            "cursor" => Self::Unknown("cursor"),
+            "grok" => Self::Unknown("grok"),
+            "hermes" => Self::Unknown("hermes"),
+            "pi" => Self::Unknown("pi"),
+            "opencode" => Self::Unknown("opencode"),
+            _ => Self::Unknown("unknown"),
         })
     }
 }
@@ -560,17 +569,25 @@ mod tests {
     }
 
     #[test]
-    fn harness_id_uses_kebab_case() {
-        assert_eq!(
-            serde_json::to_string(&HarnessId::Unknown("claude")).unwrap(),
-            "\"claude\""
-        );
+    fn legacy_harness_ids_round_trip_without_allocating_unknown_values() {
+        for legacy in [
+            "claude-code",
+            "codex",
+            "cursor",
+            "grok",
+            "hermes",
+            "pi",
+            "opencode",
+        ] {
+            let id: HarnessId = serde_json::from_str(&format!("\"{legacy}\"")).unwrap();
+            assert_eq!(serde_json::to_string(&id).unwrap(), format!("\"{legacy}\""));
+        }
     }
 
     #[test]
-    fn legacy_harness_id_round_trips_without_failing_deserialization() {
-        let id: HarnessId = serde_json::from_str("\"codex\"").unwrap();
-        assert_eq!(id, HarnessId::Unknown("codex"));
-        assert_eq!(serde_json::to_string(&id).unwrap(), "\"codex\"");
+    fn unknown_harness_id_uses_bounded_fallback() {
+        let id: HarnessId = serde_json::from_str("\"harness-from-the-future\"").unwrap();
+        assert_eq!(id, HarnessId::Unknown("unknown"));
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"unknown\"");
     }
 }

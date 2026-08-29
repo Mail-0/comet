@@ -846,7 +846,7 @@ mod tests {
             serde_json::Value::String("1m".into()),
         );
         let config = ChatConfig {
-            harness: HarnessId::Unknown("claude"),
+            harness: HarnessId::Unknown("claude-code"),
             model: Some("legacy-model".into()),
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: options,
