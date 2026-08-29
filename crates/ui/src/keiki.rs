@@ -9,7 +9,7 @@ use keiki_model::{
     AgentTemplateSummary, ConversationDetail, ConversationLocator, ConversationMessage,
     ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse, MessageDirection,
 };
-use url::Url;
+use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use zeron_doc::parts::MessagePart;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
 use zeron_proto::{Chat, Device, Space};
@@ -104,31 +104,21 @@ pub fn conversation_locator(id: &str) -> Option<ConversationLocator> {
 }
 
 pub fn conversation_dashboard_url(base_url: &str, locator: &ConversationLocator) -> Option<String> {
-    let encoded_phone = percent_encode_path_segment(&locator.identity);
-    let mut url = Url::parse(&format!(
+    let encoded_phone = percent_encode_component(&locator.identity);
+    let mut url = format!(
         "{}/conversations/{}",
         base_url.trim_end_matches('/'),
         encoded_phone
-    ))
-    .ok()?;
+    );
     if let Some(agent_id) = locator.agent_id.as_deref() {
-        url.query_pairs_mut().append_pair("agentId", agent_id);
+        url.push_str("?agentId=");
+        url.push_str(&percent_encode_component(agent_id));
     }
-    Some(url.into())
+    Some(url)
 }
 
-fn percent_encode_path_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(b"0123456789ABCDEF"[(byte >> 4) as usize]));
-            encoded.push(char::from(b"0123456789ABCDEF"[(byte & 0x0f) as usize]));
-        }
-    }
-    encoded
+fn percent_encode_component(value: &str) -> String {
+    percent_encode(value.as_bytes(), NON_ALPHANUMERIC).to_string()
 }
 
 pub fn map_device() -> Device {

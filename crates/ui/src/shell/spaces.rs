@@ -8,8 +8,6 @@
 //! management (add via the palette; rename/delete via row context menus).
 //! Child module of `shell` so it renders straight off `Shell`'s private state.
 
-use std::collections::HashSet;
-
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::FocusHandle;
@@ -1146,12 +1144,7 @@ impl Shell {
             }
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
-            let pinned: HashSet<&str> = self
-                .settings
-                .pinned_keiki_conversations
-                .iter()
-                .map(String::as_str)
-                .collect();
+            let pinned = self.pinned_keiki_conversation_ids();
             promote_pinned_groups(&mut groups, |chat| pinned.contains(chat.id.as_str()));
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
@@ -1253,12 +1246,7 @@ impl Shell {
             }
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
-            let pinned: HashSet<&str> = self
-                .settings
-                .pinned_keiki_conversations
-                .iter()
-                .map(String::as_str)
-                .collect();
+            let pinned = self.pinned_keiki_conversation_ids();
             promote_pinned_groups(&mut groups, |row| pinned.contains(row.chat.id.as_str()));
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {

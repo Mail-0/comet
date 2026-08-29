@@ -105,6 +105,17 @@ fn keiki_menu_is_selected(chat_id: &str, selected_chat: Option<&str>) -> bool {
     crate::keiki::is_keiki_chat(chat_id) && selected_chat == Some(chat_id)
 }
 
+fn prune_pinned_keiki_conversations(pinned: &mut Vec<String>, chats: &[zeron_proto::Chat]) {
+    let current_keiki_chat_ids: std::collections::HashSet<&str> = chats
+        .iter()
+        .filter(|chat| crate::keiki::is_keiki_chat(&chat.id))
+        .map(|chat| chat.id.as_str())
+        .collect();
+    if !current_keiki_chat_ids.is_empty() {
+        pinned.retain(|id| current_keiki_chat_ids.contains(id.as_str()));
+    }
+}
+
 /// Interruptible height tween for the sidebar's device/archive disclosures.
 /// The rendered element owns the frame clock; this state preserves the current
 /// interpolated height when a second click reverses an in-flight transition.
@@ -1211,6 +1222,14 @@ impl Shell {
         self.sidebar_notice = Some(notice.into());
     }
 
+    fn pinned_keiki_conversation_ids(&self) -> std::collections::HashSet<&str> {
+        self.settings
+            .pinned_keiki_conversations
+            .iter()
+            .map(String::as_str)
+            .collect()
+    }
+
     pub fn new(state: Entity<AppState>, boot: EngineBootConfig, cx: &mut Context<Self>) -> Self {
         let observation = cx.observe(&state, |this: &mut Shell, state, cx| {
             this.on_state_changed(&state, cx);
@@ -2306,6 +2325,10 @@ impl Shell {
             return;
         }
         let mut pinned = self.settings.pinned_keiki_conversations.clone();
+        {
+            let state = self.state.read(cx);
+            prune_pinned_keiki_conversations(&mut pinned, &state.chats);
+        }
         if let Some(index) = pinned.iter().position(|id| id == &chat_id) {
             pinned.remove(index);
         } else {
@@ -2331,7 +2354,7 @@ impl Shell {
         if let Some(url) = url {
             cx.open_url(&url);
         } else {
-            self.sidebar_notice = Some("Keiki conversation is not ready yet".into());
+            self.set_sidebar_notice("Keiki conversation is not ready yet");
         }
         self.close_chat_menu(cx);
         cx.notify();
@@ -5773,6 +5796,15 @@ impl Shell {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.toggle_keiki_conversation_pin(pin_id.clone(), cx);
                                 }))
+                                .child(
+                                    icon(if pinned {
+                                        icons::STAR_BOLD
+                                    } else {
+                                        icons::STAR
+                                    })
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                                )
                                 .child(SharedString::from(if pinned { "Unpin" } else { "Pin" })),
                         )
                         .child(
@@ -5785,6 +5817,11 @@ impl Shell {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.view_keiki_conversation(view_id.clone(), cx);
                             }))
+                            .child(
+                                icon(icons::GLOBAL)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
                             .child(SharedString::from("View conversation")),
                         )
                     })
