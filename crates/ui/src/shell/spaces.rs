@@ -79,7 +79,7 @@ impl Render for SidebarViewOptionsTooltip {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidebarViewRow {
     ByDevice,
     ByAgent,
@@ -112,6 +112,8 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 8] = [
     SidebarViewRow::ShowPullRequest,
     SidebarViewRow::ShowHarness,
 ];
+const SIDEBAR_ORGANIZATION_ROWS: usize = 3;
+const SIDEBAR_SORT_ROWS: usize = 2;
 
 // With the search field and card insets, this lets the project picker grow to
 // roughly the same maximum footprint as the sidebar view-options menu while
@@ -681,8 +683,8 @@ impl Shell {
                 .into_any_element()
             })
             .collect();
-        let show_rows = rows.split_off(4);
-        let sort_rows = rows.split_off(2);
+        let show_rows = rows.split_off(SIDEBAR_ORGANIZATION_ROWS + SIDEBAR_SORT_ROWS);
+        let sort_rows = rows.split_off(SIDEBAR_ORGANIZATION_ROWS);
         let organization_rows = rows;
 
         popover::popover_card(theme)
@@ -1089,7 +1091,7 @@ impl Shell {
                     (chat.space_id.clone().unwrap_or_default(), String::new())
                 }
                 SidebarOrganization::ByProject | SidebarOrganization::InOneList => {
-                    unreachable!("flat sidebar organization returned above")
+                    (String::new(), String::new())
                 }
             });
             if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &key) {
@@ -1196,10 +1198,7 @@ impl Shell {
                 groups.push((row.group.clone(), vec![row]));
             }
         }
-        if matches!(
-            self.settings.sidebar_organization,
-            SidebarOrganization::ByDevice | SidebarOrganization::ByAgent
-        ) {
+        if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
             let local_device_id = self.state.read(cx).local_device_id.clone();
             promote_local_device_group(&mut groups, local_device_id.as_deref());
         }
@@ -3136,5 +3135,34 @@ mod tests {
         promote_local_device_group(&mut groups, Some("not-present"));
 
         assert_eq!(groups, before);
+    }
+
+    #[test]
+    fn sidebar_view_sections_keep_organization_sort_and_show_rows_separate() {
+        let organization_end = super::SIDEBAR_ORGANIZATION_ROWS;
+        let sort_end = organization_end + super::SIDEBAR_SORT_ROWS;
+        assert_eq!(
+            &super::SIDEBAR_VIEW_ROWS[..organization_end],
+            &[
+                super::SidebarViewRow::ByDevice,
+                super::SidebarViewRow::ByAgent,
+                super::SidebarViewRow::InOneList,
+            ]
+        );
+        assert_eq!(
+            &super::SIDEBAR_VIEW_ROWS[organization_end..sort_end],
+            &[
+                super::SidebarViewRow::LastUpdated,
+                super::SidebarViewRow::Created,
+            ]
+        );
+        assert_eq!(
+            &super::SIDEBAR_VIEW_ROWS[sort_end..],
+            &[
+                super::SidebarViewRow::ShowBranch,
+                super::SidebarViewRow::ShowPullRequest,
+                super::SidebarViewRow::ShowHarness,
+            ]
+        );
     }
 }

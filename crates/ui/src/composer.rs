@@ -4698,11 +4698,8 @@ impl Composer {
     /// Existing chats carry their own project, so they always send.
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
-        if state.selected_chat.is_some() {
-            return state
-                .selected_chat
-                .as_deref()
-                .is_some_and(crate::keiki::is_keiki_chat);
+        if let Some(selected_chat) = state.selected_chat.as_deref() {
+            return crate::keiki::is_keiki_chat(selected_chat);
         }
         // New-chat canvas: needs a project AND a runnable agent. The
         // no-agents check only fires once the catalog is loaded — offline

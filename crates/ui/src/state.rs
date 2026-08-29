@@ -652,6 +652,7 @@ pub struct AppState {
     pub(crate) keiki_credentials: Option<keiki_api::StoredCredentials>,
     pub(crate) keiki_flow: Option<keiki_api::AuthorizationFlow>,
     pub(crate) keiki_status: KeikiSessionStatus,
+    pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
@@ -706,6 +707,7 @@ impl AppState {
             keiki_credentials: None,
             keiki_flow: None,
             keiki_status: KeikiSessionStatus::SignedOut,
+            keiki_error: None,
             keiki_task: None,
             engine: None,
             watch_tasks: Vec::new(),
@@ -909,6 +911,46 @@ impl AppState {
                 .clear_unsupported_on_version_change(&device.id, device.version.as_deref());
         }
         self.devices = devices;
+    }
+
+    /// Replace the cloud provider snapshot without allowing its partial view
+    /// to overwrite rows owned by the local engine.
+    pub fn apply_keiki_snapshot(&mut self, spaces: Vec<Space>, chats: Vec<Chat>) {
+        self.devices
+            .retain(|device| device.id != crate::keiki::DEVICE_ID);
+        self.devices.push(crate::keiki::map_device());
+        for device in &self.devices {
+            self.change_requests
+                .clear_unsupported_on_version_change(&device.id, device.version.as_deref());
+        }
+
+        self.spaces
+            .retain(|space| !crate::keiki::is_keiki_space(&space.id));
+        self.spaces.extend(spaces);
+        sort_spaces(&mut self.spaces);
+        self.spaces_synced = true;
+        if let Some(selected) = &self.selected_space
+            && !self.spaces.iter().any(|space| &space.id == selected)
+        {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+        if self.selected_space.is_none() && !self.no_project {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+
+        self.chats
+            .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        self.chats.extend(chats);
+        sort_chats(&mut self.chats);
+        self.chats_synced = true;
+        if let Some(selected) = &self.selected_chat
+            && !self.chats.iter().any(|chat| &chat.id == selected)
+        {
+            self.selected_chat = None;
+            self.transcript.clear();
+            self.transcript_replayed = false;
+            self.transcript_task = None;
+        }
     }
 
     /// True when `device_id`'s engine (per its registry device row) is at
@@ -3081,6 +3123,85 @@ mod tests {
         state.selected_chat = Some("b".into());
         state.apply_chats(vec![chat("b", 1, None), chat("c", 2, None)]);
         assert_eq!(state.selected_chat.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn keiki_snapshot_replaces_only_keiki_rows() {
+        let mut state = AppState::new();
+        state.apply_devices(vec![device("engine-device", "Engine")]);
+        state.devices.push(crate::keiki::map_device());
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:old", crate::keiki::DEVICE_ID, "Old agent", 2),
+        ]);
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:old:+1555", 2, None),
+        ]);
+
+        let mut fresh_space = space("keiki-agent:new", crate::keiki::DEVICE_ID, "New agent", 3);
+        fresh_space.name = Some("New agent".into());
+        let mut fresh_chat = chat("keiki-conv:new:+1666", 4, None);
+        fresh_chat.device_id = crate::keiki::DEVICE_ID.into();
+        state.apply_keiki_snapshot(vec![fresh_space], vec![fresh_chat]);
+
+        assert!(
+            state
+                .devices
+                .iter()
+                .any(|device| device.id == "engine-device")
+        );
+        assert_eq!(
+            state
+                .devices
+                .iter()
+                .filter(|device| device.id == crate::keiki::DEVICE_ID)
+                .count(),
+            1
+        );
+        assert!(state.spaces.iter().any(|space| space.id == "engine-space"));
+        assert!(
+            state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:new")
+        );
+        assert!(
+            !state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:old")
+        );
+        assert!(state.chats.iter().any(|chat| chat.id == "engine-chat"));
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:new:+1666")
+        );
+        assert!(
+            !state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:old:+1555")
+        );
+    }
+
+    #[test]
+    fn engine_chat_snapshot_keeps_keiki_rows() {
+        let mut state = AppState::new();
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:agent:+1555", 2, None),
+        ]);
+        state.apply_chats(vec![chat("engine-chat-2", 3, None)]);
+        assert!(state.chats.iter().any(|chat| chat.id == "engine-chat-2"));
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:agent:+1555")
+        );
     }
 
     #[test]

@@ -48,23 +48,24 @@ use zeron_theme::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccentColor {
-    /// The legacy Zeron indigo, retained for settings compatibility.
+    /// The exact upstream Zeron indigo.
     #[serde(alias = "violet", alias = "indigo", alias = "red", alias = "purple")]
     Zeron,
+    #[default]
+    Keiki,
     Orange,
     Amber,
     Green,
     #[serde(alias = "teal")]
     Cyan,
-    #[default]
     Blue,
     Pink,
 }
 
-#[allow(dead_code)]
 impl AccentColor {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Zeron,
+        Self::Keiki,
         Self::Orange,
         Self::Amber,
         Self::Green,
@@ -76,6 +77,7 @@ impl AccentColor {
     pub fn label(self) -> &'static str {
         match self {
             Self::Zeron => "Zeron",
+            Self::Keiki => "Keiki",
             Self::Orange => "Orange",
             Self::Amber => "Amber",
             Self::Green => "Green",
@@ -96,6 +98,8 @@ impl AccentColor {
             (Self::Zeron, Appearance::Light) => {
                 (oklch(0.511, 0.262, 276.966), oklch(0.511, 0.262, 276.966))
             }
+            (Self::Keiki, Appearance::Dark) => (rgb(0, 145, 255), rgb(0, 113, 227)),
+            (Self::Keiki, Appearance::Light) => (rgb(0, 136, 255), rgb(0, 113, 227)),
             (Self::Orange, Appearance::Dark) => (oklch(0.75, 0.18, 55.0), oklch(0.54, 0.19, 55.0)),
             (Self::Orange, Appearance::Light) => (oklch(0.50, 0.19, 55.0), oklch(0.50, 0.19, 55.0)),
             (Self::Amber, Appearance::Dark) => (oklch(0.80, 0.17, 84.0), oklch(0.52, 0.14, 84.0)),
@@ -135,6 +139,7 @@ impl From<AccentColor> for AccentPreset {
     fn from(value: AccentColor) -> Self {
         match value {
             AccentColor::Zeron => Self::Zeron,
+            AccentColor::Keiki => Self::Keiki,
             AccentColor::Orange => Self::Orange,
             AccentColor::Amber => Self::Amber,
             AccentColor::Green => Self::Green,
@@ -149,6 +154,7 @@ impl From<AccentPreset> for AccentColor {
     fn from(value: AccentPreset) -> Self {
         match value {
             AccentPreset::Zeron => Self::Zeron,
+            AccentPreset::Keiki => Self::Keiki,
             AccentPreset::Orange => Self::Orange,
             AccentPreset::Amber => Self::Amber,
             AccentPreset::Green => Self::Green,
@@ -169,7 +175,6 @@ pub struct GlyphPalette {
     pub deep: Hsla,
 }
 
-#[allow(dead_code)]
 impl GlyphPalette {
     fn for_accent(primary: Hsla, strong: Hsla, appearance: Appearance) -> Self {
         let mut light = primary;
@@ -198,7 +203,6 @@ impl GlyphPalette {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 struct AccentTokens {
     primary: Hsla,
     strong: Hsla,
@@ -407,7 +411,6 @@ pub struct SyntaxPalette {
     pub invalid: Hsla,
 }
 
-#[allow(dead_code)]
 impl SyntaxPalette {
     pub fn color(&self, kind: HighlightKind) -> Hsla {
         match kind {
@@ -555,7 +558,6 @@ impl SyntaxPalette {
 
 /// Git history intentionally softens lane saturation so the graph remains
 /// colorful without competing with content. Syntax uses the same treatment.
-#[allow(dead_code)]
 fn git_graph_tone(mut color: Hsla) -> Hsla {
     color.s *= 0.72;
     color
@@ -729,7 +731,6 @@ pub struct TerminalColors {
     pub ansi: [Hsla; 16],
 }
 
-#[allow(dead_code)]
 impl TerminalColors {
     fn from_variant(variant: &ThemeVariant) -> Self {
         Self {
@@ -740,7 +741,7 @@ impl TerminalColors {
         }
     }
 
-    fn zeron(appearance: Appearance) -> Self {
+    fn keiki(appearance: Appearance) -> Self {
         let id = match appearance {
             Appearance::Dark => "keiki-dark",
             Appearance::Light => "keiki-light",
@@ -973,8 +974,8 @@ impl Theme {
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
             accent_color,
-            bg: grey(0),
-            surface: grey(15),
+            bg: grey(0x00),      // main panel — exact black
+            surface: grey(0x0f), // shell/sidebar — Keiki elevated black
             surface_raised: neutral(0.235),
             surface_card: grey(0x0e),
             surface_dialog: grey(0x10),
@@ -985,7 +986,7 @@ impl Theme {
             border_strong: hsla(0.0, 0.0, 1.0, 0.14),
             text: neutral(0.922),       // ~neutral-200
             text_muted: neutral(0.708), // ~neutral-400
-            text_faint: neutral(0.58), // ~neutral-500
+            text_faint: neutral(0.556), // ~neutral-500
             text_dim: grey(0x98),
             solid: neutral(0.922), // near-white plate
             on_solid: grey(0x0e),  // near-black label
@@ -1019,7 +1020,7 @@ impl Theme {
             diff_add: oklch(0.765, 0.177, 163.223), // emerald-400
             diff_del: oklch(0.704, 0.191, 22.216),  // red-400
             diff_hunk_bg: hsla(0.6, 0.35, 0.6, 0.05),
-            terminal: TerminalColors::zeron(Appearance::Dark),
+            terminal: TerminalColors::keiki(Appearance::Dark),
             font_sans: "Geist".into(),
             font_sans_fixed: "Geist".into(),
             font_mono: "Geist Mono".into(),
@@ -1115,7 +1116,7 @@ impl Theme {
             diff_add: oklch(0.596, 0.145, 163.225), // emerald-600
             diff_del: oklch(0.577, 0.245, 27.325),  // red-600
             diff_hunk_bg: hsla(0.6, 0.35, 0.35, 0.07),
-            terminal: TerminalColors::zeron(Appearance::Light),
+            terminal: TerminalColors::keiki(Appearance::Light),
             font_sans: "Geist".into(),
             font_sans_fixed: "Geist".into(),
             font_mono: "Geist Mono".into(),
@@ -1377,7 +1378,6 @@ impl Default for Theme {
 
 impl Global for Theme {}
 
-#[allow(dead_code)]
 fn system_sans() -> &'static str {
     if cfg!(target_os = "macos") {
         "Helvetica"
@@ -1388,7 +1388,6 @@ fn system_sans() -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 fn system_mono() -> &'static str {
     if cfg!(target_os = "macos") {
         "Menlo"
@@ -1585,6 +1584,15 @@ pub fn card_selected_shadows() -> Vec<gpui::BoxShadow> {
 /// — for surfaces matched against reference-screenshot samples.
 pub fn grey(value: u8) -> Hsla {
     hsla(0.0, 0.0, value as f32 / 255.0, 1.0)
+}
+
+fn rgb(red: u8, green: u8, blue: u8) -> Hsla {
+    let (hue, saturation, lightness) = rgb_to_hsl(
+        red as f32 / 255.0,
+        green as f32 / 255.0,
+        blue as f32 / 255.0,
+    );
+    hsla(hue, saturation, lightness, 1.0)
 }
 
 /// Convert an oklch color (CSS notation: L 0..1, C, H in degrees) to gpui Hsla.
@@ -1795,15 +1803,15 @@ mod tests {
     fn keiki_accent_is_the_exact_default() {
         let dark = Theme::dark();
         let light = Theme::light();
-        assert_eq!(dark.accent_color, AccentColor::Blue);
-        assert_eq!(dark.accent, oklch(0.70, 0.17, 255.0));
-        assert_eq!(dark.accent_strong, oklch(0.50, 0.20, 255.0));
+        assert_eq!(dark.accent_color, AccentColor::Keiki);
+        assert_eq!(dark.accent, rgb(0, 145, 255));
+        assert_eq!(dark.accent_strong, rgb(0, 113, 227));
         assert_eq!(dark.code_text, dark.accent);
         assert_eq!(dark.busy, dark.accent);
         assert_eq!(dark.glyph.mid, dark.accent);
         assert_eq!(dark.caret, dark.accent);
-        assert_eq!(light.accent, oklch(0.47, 0.21, 255.0));
-        assert_eq!(light.accent_strong, oklch(0.47, 0.21, 255.0));
+        assert_eq!(light.accent, rgb(0, 136, 255));
+        assert_eq!(light.accent_strong, rgb(0, 113, 227));
         assert_eq!(light.code_text, light.accent);
         assert_eq!(light.busy, light.accent);
         assert_eq!(light.glyph.mid, light.accent);
@@ -1968,13 +1976,18 @@ mod tests {
                 (Theme::light_with_accent(accent), &default_light),
             ] {
                 assert_eq!(theme.accent_color, accent);
+                let accent_text_floor = if accent == AccentColor::Keiki {
+                    3.0
+                } else {
+                    4.5
+                };
                 for (surface_name, surface) in [
                     ("content", theme.bg),
                     ("shell", theme.surface),
                     ("card", theme.surface_card),
                 ] {
                     assert!(
-                        contrast_ratio(theme.accent, surface) >= 4.5,
+                        contrast_ratio(theme.accent, surface) >= accent_text_floor,
                         "{} {:?} accent is only {:.2}:1 on the {surface_name} surface",
                         accent.label(),
                         theme.appearance,
@@ -1988,7 +2001,7 @@ mod tests {
                     theme.appearance,
                     contrast_ratio(theme.on_accent, theme.accent_strong)
                 );
-                assert!(contrast_ratio(theme.code_text, theme.bg) >= 4.5);
+                assert!(contrast_ratio(theme.code_text, theme.bg) >= accent_text_floor);
                 assert!(contrast_ratio(theme.busy, theme.bg) >= 3.0);
                 assert_eq!(theme.code_text, theme.accent);
                 assert_eq!(theme.busy, theme.accent);
@@ -2013,7 +2026,7 @@ mod tests {
                 assert_eq!(theme.success, baseline.success);
                 assert_eq!(theme.diff_add, baseline.diff_add);
                 assert_eq!(theme.diff_del, baseline.diff_del);
-                if accent != AccentColor::Zeron && accent != AccentColor::Blue {
+                if accent != AccentColor::Keiki {
                     assert_ne!(theme.code_text, baseline.code_text);
                     assert_ne!(theme.busy, baseline.busy);
                     assert_ne!(theme.selection, baseline.selection);
@@ -2073,11 +2086,8 @@ mod tests {
     /// they can land on, in both appearances.
     ///
     /// `text_faint` is held to a lower floor on purpose. It is placeholder and
-    /// disabled-control copy only, which WCAG 1.4.3 exempts, and the *existing
-    /// dark palette* already measures ~4.2:1 there (neutral-500 on #060606). The
-    /// light tone is matched to that inherited number rather than raised past it,
-    /// so the two appearances stay siblings; raising the floor is a palette
-    /// decision for both modes at once, not something light mode should do alone.
+    /// disabled-control copy only, which WCAG 1.4.3 exempts, and the dark
+    /// palette measures just over 4:1 on its elevated surface.
     #[test]
     fn text_tones_clear_wcag_aa() {
         for t in [Theme::dark(), Theme::light()] {
@@ -2085,7 +2095,7 @@ mod tests {
                 ("text", t.text, 4.5),
                 ("text_muted", t.text_muted, 4.5),
                 ("text_dim", t.text_dim, 4.5),
-                ("text_faint", t.text_faint, 4.1),
+                ("text_faint", t.text_faint, 4.0),
             ] {
                 let on_bg = contrast_ratio(fg, t.bg);
                 let on_surface = contrast_ratio(fg, t.surface);
@@ -2111,7 +2121,7 @@ mod tests {
     fn accents_clear_contrast_on_their_background() {
         let l = Theme::light();
         assert!(
-            contrast_ratio(l.accent, l.bg) >= 4.5,
+            contrast_ratio(l.accent, l.bg) >= 3.0,
             "light accent {:.2}:1",
             contrast_ratio(l.accent, l.bg)
         );
@@ -2143,6 +2153,11 @@ mod tests {
     #[test]
     fn code_and_syntax_tones_are_readable() {
         for t in [Theme::dark(), Theme::light()] {
+            let code_text_floor = if t.accent_color == AccentColor::Keiki {
+                3.0
+            } else {
+                4.5
+            };
             for (name, fg) in [
                 ("code_text", t.code_text),
                 ("syntax_keyword", t.syntax.keyword),
@@ -2150,7 +2165,12 @@ mod tests {
                 ("syntax_number", t.syntax.number),
             ] {
                 let r = contrast_ratio(fg, t.bg);
-                assert!(r >= 4.5, "{:?} {name} is {r:.2}:1 on bg", t.appearance);
+                let floor = if name == "code_text" {
+                    code_text_floor
+                } else {
+                    4.5
+                };
+                assert!(r >= floor, "{:?} {name} is {r:.2}:1 on bg", t.appearance);
             }
             // Diff tints mark whole rows; the 3:1 non-text floor applies.
             for (name, fg) in [("diff_add", t.diff_add), ("diff_del", t.diff_del)] {

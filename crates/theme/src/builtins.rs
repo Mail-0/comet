@@ -292,8 +292,8 @@ fn keiki_dark() -> ThemeVariant {
         terminal_background: "#0d1117",
         ansi: ANSI_DARK,
         syntax: [
-            "#8b949e", "#d2a8ff", "#30d158", "#e3b341", "#0091ff", "#0091ff", "#ff7b73", "#ededed",
-            "#8b949e", "#ff7b73", "#ffb340", "#ff4245",
+            "#8b949e", "#ff7b72", "#a5d6ff", "#79c0ff", "#ffa657", "#a5d6ff", "#ff7b72", "#ededed",
+            "#8b949e", "#ff7b72", "#ffa657", "#ff4245",
         ],
         source: source(
             "keiki-dark",
@@ -326,7 +326,7 @@ fn keiki_light() -> ThemeVariant {
         terminal_background: "#f6f8fa",
         ansi: ANSI_LIGHT,
         syntax: [
-            "#59636e", "#6f42c1", "#248a3d", "#9a6700", "#0088ff", "#0088ff", "#c80014", "#171717",
+            "#59636e", "#cf222e", "#248a3d", "#9a6700", "#0088ff", "#0088ff", "#c80014", "#171717",
             "#59636e", "#c80014", "#c93400", "#d70015",
         ],
         source: source(

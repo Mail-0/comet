@@ -157,6 +157,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
         let Some(credentials) = credentials else {
             boot_state.update(cx, |state, cx| {
                 state.keiki_status = SessionStatus::SignedOut;
+                state.keiki_error = None;
                 cx.notify();
             });
             return;
@@ -165,8 +166,15 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
         let Some(client) = client else {
             return;
         };
-        match client.refresh_token(&credentials).await {
-            Ok(tokens) => {
+        let refresh_client = client.clone();
+        let refresh_credentials = credentials.clone();
+        let refresh = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(cx, async move {
+                refresh_client.refresh_token(&refresh_credentials).await
+            })
+        });
+        match refresh.await {
+            Ok(Ok(tokens)) => {
                 if let Err(error) = persist_credentials(
                     &credentials.client_id,
                     &tokens,
@@ -181,22 +189,33 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                     state.keiki_credentials = Some(credentials);
                     state.keiki_token = Some(tokens);
                     state.keiki_status = SessionStatus::SignedIn;
+                    state.keiki_error = None;
                     cx.notify();
                 });
                 poll(boot_state.downgrade(), cx).await;
             }
-            Err(error) if error.is_invalid_refresh_token() => {
+            Ok(Err(error)) if error.is_invalid_refresh_token() => {
                 boot_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::SignedOut;
+                    state.keiki_error = None;
                     cx.delete_credentials(CREDENTIAL_KEY)
                         .detach_and_log_err(&*cx);
                     cx.notify();
                 });
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Keiki credential restore failed");
                 boot_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
+                    state.keiki_error = Some(error.to_string());
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Keiki credential restore task failed");
+                boot_state.update(cx, |state, cx| {
+                    state.keiki_status = SessionStatus::Error;
+                    state.keiki_error = Some(error.to_string());
                     cx.notify();
                 });
             }
@@ -236,11 +255,36 @@ async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
         let Some((client, mut token, credentials)) = context else {
             return;
         };
-        let agents = match client.list_agents(token.access_token()).await {
+        let access_token = token.access_token().to_string();
+        let agents_client = client.clone();
+        let agents_task = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(
+                cx,
+                async move { agents_client.list_agents(&access_token).await },
+            )
+        });
+        let agents_result = match agents_task.await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(error = %error, "Keiki agent poll task failed");
+                cx.background_executor()
+                    .timer(Duration::from_secs(10))
+                    .await;
+                continue;
+            }
+        };
+        let agents = match agents_result {
             Ok(agents) => agents,
             Err(error) if error.is_authentication_failure() => {
-                match client.refresh_token(&credentials).await {
-                    Ok(refreshed) => {
+                let refresh_client = client.clone();
+                let refresh_credentials = credentials.clone();
+                let refresh_task = cx.update(|cx| {
+                    gpui_tokio::Tokio::spawn(cx, async move {
+                        refresh_client.refresh_token(&refresh_credentials).await
+                    })
+                });
+                match refresh_task.await {
+                    Ok(Ok(refreshed)) => {
                         if let Err(error) =
                             persist_credentials(&credentials.client_id, &refreshed, &entity, cx)
                                 .await
@@ -254,18 +298,30 @@ async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
                                 tracing::warn!(%error, "Keiki token state update failed");
                             }
                         }
-                        match client.list_agents(token.access_token()).await {
-                            Ok(agents) => agents,
-                            Err(error) => {
+                        let access_token = token.access_token().to_string();
+                        let retry_client = client.clone();
+                        let retry_task = cx.update(|cx| {
+                            gpui_tokio::Tokio::spawn(cx, async move {
+                                retry_client.list_agents(&access_token).await
+                            })
+                        });
+                        match retry_task.await {
+                            Ok(Ok(agents)) => agents,
+                            Ok(Err(error)) => {
                                 tracing::warn!(error = %error, "Keiki agent poll failed");
+                                return;
+                            }
+                            Err(error) => {
+                                tracing::warn!(error = %error, "Keiki agent retry task failed");
                                 return;
                             }
                         }
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         tracing::warn!(error = %error, "Keiki token refresh failed");
                         match entity.update(cx, |state, cx| {
                             state.keiki_status = SessionStatus::SignedOut;
+                            state.keiki_error = Some("Keiki session expired".to_string());
                             cx.delete_credentials(CREDENTIAL_KEY)
                                 .detach_and_log_err(&*cx);
                         }) {
@@ -274,6 +330,10 @@ async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
                                 tracing::warn!(%error, "Keiki sign-out state update failed");
                             }
                         }
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "Keiki token refresh task failed");
                         return;
                     }
                 }
@@ -286,22 +346,82 @@ async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
                 continue;
             }
         };
-        let conversations = match client.list_conversations(token.access_token()).await {
-            Ok(conversations) => conversations,
-            Err(error) => {
+        let access_token = token.access_token().to_string();
+        let conversations_client = client.clone();
+        let conversations_task = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(cx, async move {
+                conversations_client.list_conversations(&access_token).await
+            })
+        });
+        let conversations = match conversations_task.await {
+            Ok(Ok(conversations)) => conversations,
+            Ok(Err(error)) if error.is_authentication_failure() => {
+                let refresh_client = client.clone();
+                let refresh_credentials = credentials.clone();
+                let refresh_task = cx.update(|cx| {
+                    gpui_tokio::Tokio::spawn(cx, async move {
+                        refresh_client.refresh_token(&refresh_credentials).await
+                    })
+                });
+                match refresh_task.await {
+                    Ok(Ok(refreshed)) => {
+                        if let Err(error) =
+                            persist_credentials(&credentials.client_id, &refreshed, &entity, cx)
+                                .await
+                        {
+                            tracing::warn!(%error, "Keiki credential persistence failed");
+                        }
+                        token = refreshed.clone();
+                        if let Err(error) =
+                            entity.update(cx, |state, _| state.keiki_token = Some(refreshed))
+                        {
+                            tracing::warn!(%error, "Keiki token state update failed");
+                        }
+                        let access_token = token.access_token().to_string();
+                        let retry_client = client.clone();
+                        let retry_task = cx.update(|cx| {
+                            gpui_tokio::Tokio::spawn(cx, async move {
+                                retry_client.list_conversations(&access_token).await
+                            })
+                        });
+                        match retry_task.await {
+                            Ok(Ok(conversations)) => conversations,
+                            Ok(Err(error)) => {
+                                tracing::warn!(error = %error, "Keiki conversation retry failed");
+                                Vec::new()
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "Keiki conversation retry task failed"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(error = %error, "Keiki token refresh failed");
+                        Vec::new()
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "Keiki token refresh task failed");
+                        Vec::new()
+                    }
+                }
+            }
+            Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Keiki conversation poll failed");
+                Vec::new()
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "Keiki conversation poll task failed");
                 Vec::new()
             }
         };
         let spaces = agents.iter().map(map_agent).collect();
         let chats = conversations.iter().filter_map(map_conversation).collect();
         match entity.update(cx, |state, cx| {
-            state.devices.retain(|device| device.id != DEVICE_ID);
-            state.spaces.retain(|space| !is_keiki_space(&space.id));
-            state.chats.retain(|chat| !is_keiki_chat(&chat.id));
-            state.apply_devices(vec![map_device()]);
-            state.apply_spaces(spaces);
-            state.apply_chats(chats);
+            state.apply_keiki_snapshot(spaces, chats);
             cx.notify();
         }) {
             Ok(()) => {}
@@ -324,24 +444,91 @@ pub fn spawn_transcript_watch(cx: &mut Context<AppState>, chat_id: String) -> Ta
         };
         let context = this
             .update(cx, |state, _| {
-                Some((state.keiki_client.clone()?, state.keiki_token.clone()?))
+                Some((
+                    state.keiki_client.clone()?,
+                    state.keiki_token.clone()?,
+                    state.keiki_credentials.clone()?,
+                ))
             })
             .ok()
             .flatten();
-        let Some((client, token)) = context else {
+        let Some((client, token, credentials)) = context else {
             return;
         };
-        match client.conversation(token.access_token(), &locator).await {
-            Ok(detail) => {
-                this.update(cx, |state, cx| {
-                    if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                        state.apply_transcript(map_transcript(&detail));
-                        cx.notify();
+        let access_token = token.access_token().to_string();
+        let conversation_client = client.clone();
+        let conversation_locator = locator.clone();
+        let conversation_task = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(cx, async move {
+                conversation_client
+                    .conversation(&access_token, &conversation_locator)
+                    .await
+            })
+        });
+        let detail = match conversation_task.await {
+            Ok(Ok(detail)) => Some(detail),
+            Ok(Err(error)) if error.is_authentication_failure() => {
+                let refresh_client = client.clone();
+                let refresh_credentials = credentials.clone();
+                let refresh_task = cx.update(|cx| {
+                    gpui_tokio::Tokio::spawn(cx, async move {
+                        refresh_client.refresh_token(&refresh_credentials).await
+                    })
+                });
+                match refresh_task.await {
+                    Ok(Ok(refreshed)) => {
+                        let access_token = refreshed.access_token().to_string();
+                        let retry_client = client.clone();
+                        let retry_locator = locator.clone();
+                        let retry_task = cx.update(|cx| {
+                            gpui_tokio::Tokio::spawn(cx, async move {
+                                retry_client
+                                    .conversation(&access_token, &retry_locator)
+                                    .await
+                            })
+                        });
+                        if let Ok(Ok(detail)) = retry_task.await {
+                            if let Err(error) =
+                                persist_credentials(&credentials.client_id, &refreshed, &this, cx)
+                                    .await
+                            {
+                                tracing::warn!(%error, "Keiki credential persistence failed");
+                            }
+                            this.update(cx, |state, _| state.keiki_token = Some(refreshed))
+                                .ok();
+                            Some(detail)
+                        } else {
+                            tracing::warn!(%chat_id, "Keiki transcript retry failed");
+                            None
+                        }
                     }
-                })
-                .ok();
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, %chat_id, "Keiki transcript refresh failed");
+                        None
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, %chat_id, "Keiki transcript refresh task failed");
+                        None
+                    }
+                }
             }
-            Err(error) => tracing::warn!(%error, %chat_id, "Keiki transcript fetch failed"),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, %chat_id, "Keiki transcript fetch failed");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(%error, %chat_id, "Keiki transcript fetch task failed");
+                None
+            }
+        };
+        if let Some(detail) = detail {
+            this.update(cx, |state, cx| {
+                if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                    state.apply_transcript(map_transcript(&detail));
+                    cx.notify();
+                }
+            })
+            .ok();
         }
     })
 }
@@ -357,7 +544,16 @@ pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<Ap
     cx.spawn(async move |this, cx| {
         let result = async {
             let code = flow.authorization_code(&callback)?;
-            let tokens = client.exchange_code(&flow, &code).await?;
+            let exchange_flow = flow.clone();
+            let exchange_client = client.clone();
+            let exchange = cx.update(|cx| {
+                gpui_tokio::Tokio::spawn(cx, async move {
+                    exchange_client.exchange_code(&exchange_flow, &code).await
+                })
+            });
+            let tokens = exchange
+                .await
+                .map_err(|_| keiki_api::Error::InvalidContract)??;
             let credentials = flow.stored_credentials(&tokens);
             let payload =
                 serde_json::to_vec(&credentials).map_err(|_| keiki_api::Error::InvalidContract)?;
@@ -377,10 +573,12 @@ pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<Ap
                 state.keiki_token = Some(tokens);
                 state.keiki_credentials = Some(credentials);
                 state.keiki_status = SessionStatus::SignedIn;
+                state.keiki_error = None;
                 cx.notify();
             }
             Err(error) => {
                 state.keiki_status = SessionStatus::Error;
+                state.keiki_error = Some(error.to_string());
                 tracing::warn!(error = %error, "Keiki sign-in failed");
                 cx.notify();
             }
@@ -394,14 +592,35 @@ pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<Ap
 }
 
 pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) -> Task<()> {
+    state.update(cx, |state, cx| {
+        state.keiki_status = SessionStatus::Loading;
+        state.keiki_error = None;
+        cx.notify();
+    });
     cx.spawn(async move |this, cx| {
         let client = state.read_with(cx, |state, _| state.keiki_client.clone());
         let Some(client) = client else {
             return;
         };
         let result = async {
-            client.discover_oauth().await?;
-            let client_id = client.register_client(OAUTH_REDIRECT_URI).await?;
+            let discovery_client = client.clone();
+            let discovery = cx.update(|cx| {
+                gpui_tokio::Tokio::spawn(cx, async move { discovery_client.discover_oauth().await })
+            });
+            discovery
+                .await
+                .map_err(|_| keiki_api::Error::InvalidContract)??;
+            let registration_client = client.clone();
+            let registration = cx.update(|cx| {
+                gpui_tokio::Tokio::spawn(cx, async move {
+                    registration_client
+                        .register_client(OAUTH_REDIRECT_URI)
+                        .await
+                })
+            });
+            let client_id = registration
+                .await
+                .map_err(|_| keiki_api::Error::InvalidContract)??;
             let flow = AuthorizationFlow::new(client_id, OAUTH_REDIRECT_URI.to_string());
             let url = client.authorization_url(&flow)?;
             state.update(cx, |state, _| state.keiki_flow = Some(flow));
@@ -411,6 +630,11 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
         this.update(cx, |shell, cx| match result {
             Ok(url) => cx.open_url(url.as_str()),
             Err(error) => {
+                state.update(cx, |state, cx| {
+                    state.keiki_status = SessionStatus::Error;
+                    state.keiki_error = Some(error.to_string());
+                    cx.notify();
+                });
                 shell.set_sidebar_notice(format!("Keiki sign in failed: {error}"));
                 cx.notify();
             }
@@ -425,14 +649,24 @@ pub fn sign_out(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) 
             (state.keiki_client.clone(), state.keiki_token.clone())
         });
         if let (Some(client), Some(token)) = credentials {
-            if let Err(error) = client.revoke_token(token.access_token()).await {
-                tracing::warn!(%error, "Keiki token revocation failed");
-            }
+            let access_token = token.access_token().to_string();
+            let revoke = cx.update(|cx| {
+                gpui_tokio::Tokio::spawn(
+                    cx,
+                    async move { client.revoke_token(&access_token).await },
+                )
+            });
+            match revoke.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "Keiki token revocation failed"),
+                Err(error) => tracing::warn!(%error, "Keiki token revocation task failed"),
+            };
         }
         state.update(cx, |state, cx| {
             state.keiki_token = None;
             state.keiki_credentials = None;
             state.keiki_status = SessionStatus::SignedOut;
+            state.keiki_error = None;
             cx.delete_credentials(CREDENTIAL_KEY)
                 .detach_and_log_err(&*cx);
             cx.notify();

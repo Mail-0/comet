@@ -4758,6 +4758,26 @@ impl Shell {
                     };
                     menu.child(row).child(popover::menu_separator())
                 })
+                .when(
+                    self.state.read(cx).keiki_status == crate::keiki::SessionStatus::SignedIn,
+                    |menu| {
+                        menu.child(
+                            popover::menu_row(theme, false, "user-menu-keiki-signout")
+                                .id("user-menu-keiki-signout")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    crate::keiki::sign_out(this.state.clone(), cx).detach();
+                                    this.close_user_menu(cx);
+                                }))
+                                .child(
+                                    icon(icons::LOGOUT_2)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Sign out of Keiki")),
+                        )
+                        .child(popover::menu_separator())
+                    },
+                )
                 .child(
                     popover::menu_row(theme, false, "user-menu-settings")
                         .id("user-menu-settings")
@@ -6656,6 +6676,9 @@ impl Shell {
 
     fn render_gate_card(&mut self, phase: &GatePhase, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
+        let keiki_status = self.state.read(cx).keiki_status;
+        let keiki_error = self.state.read(cx).keiki_error.clone();
+        let keiki_loading = matches!(keiki_status, crate::keiki::SessionStatus::Loading);
         let content: AnyElement = match phase {
             // Backend unreachable: quiet centered copy (zeron Gate `Failed`),
             // plus a Retry affordance (the native engine doesn't self-redial).
@@ -6754,16 +6777,33 @@ impl Shell {
                         .items_center()
                         .justify_center()
                         .rounded(px(6.0))
-                        .border_1()
-                        .border_color(theme.border)
+                        .bg(theme.text)
                         .text_size(crate::typography::ui_rems(14.0))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme.text)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.glass_hover()))
-                        .on_click(cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)))
-                        .child(SharedString::from("Sign in to Keiki")),
+                        .text_color(theme.on_solid)
+                        .when(!keiki_loading, |button| {
+                            button
+                                .cursor_pointer()
+                                .hover(|s| s.opacity(0.9))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.start_keiki_sign_in(cx)
+                                }))
+                        })
+                        .child(SharedString::from(if keiki_loading {
+                            "Opening Keiki…"
+                        } else {
+                            "Sign in to Keiki"
+                        })),
                 )
+                .when_some(keiki_error, |card, error| {
+                    card.child(
+                        div()
+                            .mt(px(10.0))
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.danger)
+                            .child(SharedString::from(error)),
+                    )
+                })
                 .into_any_element(),
         };
         div()
