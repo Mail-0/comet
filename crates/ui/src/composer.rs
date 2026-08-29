@@ -34,6 +34,7 @@ use zeron_rpc::{RpcError, methods};
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::pickers::Pickers;
+use crate::popover;
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
@@ -5820,26 +5821,16 @@ impl Composer {
             .is_some_and(|conversation| {
                 conversation.pending == Some(crate::keiki::KeikiConversationPending::Steer)
             });
-        div()
+        popover::btn_ghost(&theme, "Steer", "composer-steer")
             .id("composer-steer")
             .h(px(28.0))
             .px(px(10.0))
             .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .border_1()
-            .border_color(theme.border)
-            .text_size(crate::typography::ui_rems(11.0))
-            .text_color(theme.text_muted)
             .when(!has_text || pending, |el| el.opacity(0.35))
             .when(has_text && !pending, |el| {
                 el.cursor_pointer()
-                    .hover(|s| s.opacity(0.85))
                     .on_click(cx.listener(|this, _, _, cx| this.steer_keiki(cx)))
             })
-            .child("Steer")
             .into_any_element()
     }
 }
@@ -5860,6 +5851,11 @@ impl Render for Composer {
             .read(cx)
             .keiki_conversation()
             .and_then(|conversation| conversation.steer_reply.clone());
+        let keiki_error = self
+            .state
+            .read(cx)
+            .keiki_conversation()
+            .and_then(|conversation| conversation.error.clone());
         let keiki_reply_blocked = self
             .state
             .read(cx)
@@ -6082,6 +6078,42 @@ impl Render for Composer {
                                 .text_color(text_c),
                         )
                         .child(div().min_w_0().child(message)),
+                )
+            })
+            .when_some(keiki_error, |el, message| {
+                el.child(
+                    div()
+                        .id("composer-keiki-error")
+                        .mx(px(4.0))
+                        .mt(px(6.0))
+                        .flex()
+                        .items_start()
+                        .gap(px(8.0))
+                        .rounded(px(12.0))
+                        .border_1()
+                        .border_color(theme.danger.opacity(0.16))
+                        .bg(theme.danger.opacity(0.05))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .line_height(px(16.0))
+                        .text_color(theme.danger_muted.opacity(0.9))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |state, cx| {
+                                if let Some(conversation) = state.keiki_conversation.as_mut() {
+                                    conversation.error = None;
+                                    cx.notify();
+                                }
+                            });
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                .size(px(14.0))
+                                .mt(px(2.0))
+                                .text_color(theme.danger_muted.opacity(0.9)),
+                        )
+                        .child(div().flex_1().min_w_0().child(SharedString::from(message))),
                 )
             })
             .when_some(queue_notice, |el, (notice, offline)| {

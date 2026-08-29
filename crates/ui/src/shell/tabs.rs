@@ -365,20 +365,6 @@ impl Shell {
                                         .child(SharedString::from("Blocked")),
                                 )
                             })
-                            .when_some(
-                                conversation.error.clone(),
-                                |el, error| {
-                                    el.child(
-                                        div()
-                                            .flex_none()
-                                            .max_w(px(280.0))
-                                            .truncate()
-                                            .text_size(crate::typography::ui_rems(11.0))
-                                            .text_color(theme.danger_muted)
-                                            .child(SharedString::from(error)),
-                                    )
-                                },
-                            )
                         }),
                 )
             })

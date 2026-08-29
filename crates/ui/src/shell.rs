@@ -23,6 +23,8 @@ use gpui::{
 };
 
 use gpui_tokio::Tokio;
+use keiki_api;
+use keiki_model::{AgentTemplateSummary, CreateAgentFromTemplate};
 use zeron_engine::InstanceLock;
 use zeron_proto::{AuthState, WorkspaceScope};
 use zeron_rpc::methods;
@@ -66,6 +68,7 @@ actions!(
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
+        NewKeikiAgent,
         NewSession,
         OpenSettings,
         NextSession,
@@ -85,6 +88,21 @@ struct ChatMenuState {
     chat_id: String,
     position: Point<Pixels>,
     page: ChatMenuPage,
+}
+
+struct KeikiAgentDialog {
+    templates: Loadable<Vec<AgentTemplateSummary>>,
+    selected_template: Option<usize>,
+    name: Entity<ComposerInput>,
+    line_number: Entity<ComposerInput>,
+    error: Option<SharedString>,
+    focus_pending: bool,
+    template_task: Option<Task<()>>,
+    create_pending: bool,
+}
+
+fn keiki_menu_is_selected(chat_id: &str, selected_chat: Option<&str>) -> bool {
+    crate::keiki::is_keiki_chat(chat_id) && selected_chat == Some(chat_id)
 }
 
 /// Interruptible height tween for the sidebar's device/archive disclosures.
@@ -1056,6 +1074,8 @@ pub struct Shell {
     /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
     /// while open.
     add_space: Option<AddSpaceFlow>,
+    /// Keiki's template-backed agent creation dialog.
+    keiki_agent_dialog: Option<KeikiAgentDialog>,
     /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
     /// Persisted organization/sort/metadata controls beside the project filter.
@@ -1339,6 +1359,7 @@ impl Shell {
             rename_space_dialog: None,
             delete_space_confirm: None,
             add_space: None,
+            keiki_agent_dialog: None,
             spaces_menu: popover::Popup::default(),
             sidebar_view_menu: popover::Popup::default(),
             sidebar_view_trigger_focus: cx.focus_handle().tab_stop(true),
@@ -4530,6 +4551,156 @@ impl Shell {
         }
     }
 
+    fn open_keiki_agent_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).keiki_status != crate::keiki::SessionStatus::SignedIn {
+            return;
+        }
+        let name = cx.new(|cx| ComposerInput::new("Agent name", cx));
+        let line_number = cx.new(|cx| ComposerInput::new("Optional line number", cx));
+        self.keiki_agent_dialog = Some(KeikiAgentDialog {
+            templates: Loadable::Loading,
+            selected_template: None,
+            name,
+            line_number,
+            error: None,
+            focus_pending: true,
+            template_task: None,
+            create_pending: false,
+        });
+        let state = self.state.downgrade();
+        let task = cx.spawn(async move |this, cx| {
+            let result = crate::keiki::list_agent_templates(&state, cx).await;
+            if let Err(error) = this.update(cx, |shell, cx| {
+                let Some(dialog) = shell.keiki_agent_dialog.as_mut() else {
+                    return;
+                };
+                dialog.template_task = None;
+                match result {
+                    Ok(templates) => {
+                        dialog.templates = Loadable::Ready(templates);
+                        if let Some(template) = dialog.templates.ready().and_then(|v| v.first()) {
+                            dialog.selected_template = Some(0);
+                            dialog.name.update(cx, |input, cx| {
+                                input.set_text(template.name.clone(), cx);
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        dialog.templates = Loadable::Error(error.to_string());
+                    }
+                }
+                cx.notify();
+            }) {
+                tracing::error!("update Keiki template dialog: {error}");
+            }
+        });
+        if let Some(dialog) = self.keiki_agent_dialog.as_mut() {
+            dialog.template_task = Some(task);
+        }
+        cx.notify();
+    }
+
+    fn select_keiki_template(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_dialog.as_mut() else {
+            return;
+        };
+        let Some(template) = dialog.templates.ready().and_then(|v| v.get(index)).cloned() else {
+            return;
+        };
+        dialog.selected_template = Some(index);
+        dialog.name.update(cx, |input, cx| {
+            input.set_text(template.name, cx);
+        });
+        dialog.error = None;
+        cx.notify();
+    }
+
+    fn submit_keiki_agent(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_dialog.as_mut() else {
+            return;
+        };
+        if dialog.create_pending {
+            return;
+        }
+        let Some(index) = dialog.selected_template else {
+            dialog.error = Some("Select a template to continue.".into());
+            cx.notify();
+            return;
+        };
+        let Some(template) = dialog.templates.ready().and_then(|v| v.get(index)) else {
+            return;
+        };
+        let input = CreateAgentFromTemplate {
+            template: template.id.clone(),
+            name: {
+                let value = dialog.name.read(cx).text().trim().to_string();
+                (!value.is_empty()).then_some(value)
+            },
+            line_number: {
+                let value = dialog.line_number.read(cx).text().trim().to_string();
+                (!value.is_empty()).then_some(value)
+            },
+        };
+        dialog.create_pending = true;
+        dialog.error = None;
+        let state = self.state.downgrade();
+        let task = cx.spawn(async move |this, cx| {
+            let result = crate::keiki::create_agent_from_template(&state, input, cx).await;
+            let outcome = match result {
+                Ok(response) if response.ok => {
+                    let refresh = crate::keiki::refresh_keiki_snapshot(state.clone(), cx).await;
+                    refresh.map(|()| response)
+                }
+                Ok(_) => Err(keiki_api::Error::Local(
+                    "Keiki did not confirm that the agent was created".into(),
+                )),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = this.update(cx, |shell, cx| {
+                if shell.keiki_agent_dialog.is_none() {
+                    return;
+                }
+                match outcome {
+                    Ok(response) => {
+                        let space_id = format!("{}{}", crate::keiki::AGENT_PREFIX, response.id);
+                        shell.keiki_agent_dialog = None;
+                        if let Err(error) = state.update(cx, |state, cx| {
+                            state.select_space(Some(space_id), cx);
+                        }) {
+                            tracing::error!("select newly created Keiki agent: {error}");
+                        }
+                        if !response.missing_secrets.is_empty() {
+                            let secrets = response
+                                .missing_secrets
+                                .iter()
+                                .map(|secret| secret.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            shell.sidebar_notice = Some(
+                                format!(
+                                    "Agent created. Add these secrets on onkeiki.com before it can run: {secrets}."
+                                )
+                                .into(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = shell.keiki_agent_dialog.as_mut() {
+                            dialog.create_pending = false;
+                            dialog.error = Some(error.to_string().into());
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            {
+                tracing::error!("update Keiki agent creation dialog: {error}");
+            }
+        });
+        dialog.template_task = Some(task);
+        cx.notify();
+    }
+
     /// Fetch the manifest and stage the new Zeron desktop bundle under the data dir
     /// (tokio — reqwest); the strip flips to "restart to apply" when done.
     fn begin_update_download(&mut self, cx: &mut Context<Self>) {
@@ -5217,6 +5388,150 @@ impl Shell {
         Some(popover::modal("sync-lifecycle-dialog", viewport, card))
     }
 
+    fn render_keiki_agent_overlay(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let dialog = self.keiki_agent_dialog.as_mut()?;
+        if std::mem::take(&mut dialog.focus_pending) {
+            window.focus(&dialog.name.focus_handle(cx), cx);
+        }
+        let selected = dialog.selected_template;
+        let busy = dialog.create_pending;
+        let name = dialog.name.clone();
+        let line_number = dialog.line_number.clone();
+        let templates = dialog.templates.clone();
+        let error = dialog.error.clone();
+        let template_body: AnyElement = match templates {
+            Loadable::Idle | Loadable::Loading => div()
+                .py(px(18.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .child("Loading Keiki templates…")
+                .into_any_element(),
+            Loadable::Error(message) => div()
+                .py(px(8.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.danger_muted)
+                .child(SharedString::from(message))
+                .into_any_element(),
+            Loadable::Ready(templates) => div()
+                .id("keiki-template-list")
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .max_h(px(220.0))
+                .overflow_y_scroll()
+                .children(templates.into_iter().enumerate().map(|(index, template)| {
+                    let is_selected = selected == Some(index);
+                    popover::menu_row(&theme, is_selected, format!("keiki-template-{index}"))
+                        .id(("keiki-template", index))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_keiki_template(index, cx);
+                        }))
+                        .child(
+                            div()
+                                .w(px(28.0))
+                                .flex_none()
+                                .text_size(crate::typography::ui_rems(18.0))
+                                .child(SharedString::from(template.emoji)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(13.0))
+                                        .text_color(theme.text)
+                                        .child(SharedString::from(template.name)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(template.blurb)),
+                                ),
+                        )
+                }))
+                .into_any_element(),
+        };
+        let can_create = !busy
+            && dialog.templates.ready().is_some_and(|templates| {
+                selected.is_some_and(|index| templates.get(index).is_some())
+            });
+        let card = popover::dialog_card(&theme)
+            .w(px(500.0))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.keiki_agent_dialog = None;
+                    cx.notify();
+                }
+            }))
+            .child(popover::dialog_title(&theme, "New Keiki agent"))
+            .child(div().mt(px(6.0)).child(popover::dialog_body(
+                &theme,
+                "Choose a template, then customize the agent name and line.",
+            )))
+            .child(div().mt(px(12.0)).child(template_body))
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(popover::dialog_field(name.into_any_element()))
+                    .child(popover::dialog_field(line_number.into_any_element())),
+            )
+            .when_some(error, |card, error| {
+                card.child(
+                    div()
+                        .mt(px(10.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .line_height(px(16.0))
+                        .text_color(theme.danger_muted)
+                        .child(error),
+                )
+            })
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(&theme, "Cancel", "keiki-agent-cancel")
+                            .id("keiki-agent-cancel")
+                            .when(busy, |button| button.opacity(0.5))
+                            .when(!busy, |button| {
+                                button.on_click(cx.listener(|this, _, _, cx| {
+                                    this.keiki_agent_dialog = None;
+                                    cx.notify();
+                                }))
+                            }),
+                    )
+                    .child(
+                        popover::btn_primary(&theme, "Create agent")
+                            .id("keiki-agent-create")
+                            .when(!can_create, |button| button.opacity(0.45))
+                            .when(can_create, |button| {
+                                button.on_click(cx.listener(|this, _, _, cx| {
+                                    this.submit_keiki_agent(cx);
+                                }))
+                            }),
+                    ),
+            )
+            .into_any_element();
+        Some(popover::modal("keiki-agent-dialog", viewport, card))
+    }
+
     /// Floating layers owned by the shell: context menus, edit dialogs, and
     /// the local-to-synced account lifecycle.
     fn render_overlays(
@@ -5314,22 +5629,20 @@ impl Shell {
                         .as_ref()
                         .and_then(|chat| chat.harness_session_id.as_deref())
                         .is_some_and(|id| !id.trim().is_empty());
-                    let is_keiki = crate::keiki::is_keiki_chat(&chat_id);
-                    let keiki_pending = self
-                        .state
-                        .read(cx)
-                        .keiki_conversation()
-                        .and_then(|conversation| conversation.pending);
-                    let keiki_blocked = self
-                        .state
-                        .read(cx)
-                        .keiki_conversation()
-                        .is_some_and(|conversation| conversation.blocked);
-                    let keiki_takeover_live = self
-                        .state
-                        .read(cx)
-                        .keiki_conversation()
-                        .is_some_and(crate::keiki::takeover_live);
+                    let selected_chat = self.state.read(cx).selected_chat.clone();
+                    let is_selected_keiki =
+                        keiki_menu_is_selected(&chat_id, selected_chat.as_deref());
+                    let (keiki_pending, keiki_blocked, keiki_takeover_live) = if is_selected_keiki {
+                        let state = self.state.read(cx);
+                        let conversation = state.keiki_conversation();
+                        (
+                            conversation.and_then(|conversation| conversation.pending),
+                            conversation.is_some_and(|conversation| conversation.blocked),
+                            conversation.is_some_and(crate::keiki::takeover_live),
+                        )
+                    } else {
+                        (None, false, false)
+                    };
                     let zeron_id = chat_id.clone();
                     let harness_id = chat_id.clone();
                     let session_chat_id = chat_id.clone();
@@ -5363,7 +5676,7 @@ impl Shell {
                             )
                             .child(SharedString::from("Conversation link")),
                     )
-                    .when(is_keiki, |menu| {
+                    .when(is_selected_keiki, |menu| {
                         let takeover_id = chat_id.clone();
                         let hand_back_id = chat_id.clone();
                         let block_id = chat_id.clone();
@@ -5442,9 +5755,7 @@ impl Shell {
                                     )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if keiki_pending
-                                            != Some(
-                                                crate::keiki::KeikiConversationPending::Block,
-                                            )
+                                            != Some(crate::keiki::KeikiConversationPending::Block)
                                             && this.state.read(cx).selected_chat.as_deref()
                                                 == Some(block_id.as_str())
                                         {
@@ -5469,9 +5780,7 @@ impl Shell {
                                     )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if keiki_pending
-                                            != Some(
-                                                crate::keiki::KeikiConversationPending::Block,
-                                            )
+                                            != Some(crate::keiki::KeikiConversationPending::Block)
                                             && this.state.read(cx).selected_chat.as_deref()
                                                 == Some(unblock_id.as_str())
                                         {
@@ -5578,6 +5887,9 @@ impl Shell {
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         if let Some(overlay) = self.render_add_space_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_keiki_agent_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
 
@@ -7689,9 +8001,7 @@ impl Render for Shell {
             // forward the slot instead of eating it.
             .on_action(cx.listener(|this, jump: &JumpSession, _, cx| {
                 let pickers = this.composer.read(cx).pickers().clone();
-                let handled = pickers.update(cx, |pickers, cx| {
-                    pickers.jump_model_slot(jump.0, cx)
-                });
+                let handled = pickers.update(cx, |pickers, cx| pickers.jump_model_slot(jump.0, cx));
                 if !handled && !this.overlay_owns_keyboard(cx) {
                     this.jump_to_session(jump.0, cx)
                 }
@@ -7706,6 +8016,9 @@ impl Render for Shell {
                 } else {
                     this.open_add_space(cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &NewKeikiAgent, _, cx| {
+                this.open_keiki_agent_dialog(cx);
             }));
 
         let render_gate = if restart_required {
@@ -8729,5 +9042,18 @@ mod tests {
         tween.started = std::time::Instant::now() - motion::COLLAPSE.total().mul_f32(2.0);
         assert_eq!(tween.current(), 0.0);
         assert!(!tween.animating());
+    }
+
+    #[test]
+    fn keiki_menu_is_scoped_to_the_selected_chat() {
+        assert!(keiki_menu_is_selected(
+            "keiki-conv:one",
+            Some("keiki-conv:one")
+        ));
+        assert!(!keiki_menu_is_selected(
+            "keiki-conv:one",
+            Some("keiki-conv:two")
+        ));
+        assert!(!keiki_menu_is_selected("engine-chat", Some("engine-chat")));
     }
 }

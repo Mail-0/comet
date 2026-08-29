@@ -1987,6 +1987,32 @@ impl Pickers {
                     .truncate()
                     .child(SharedString::from("New agent…")),
             );
+        let new_keiki = self
+            .state
+            .read(cx)
+            .keiki_status
+            .eq(&crate::keiki::SessionStatus::SignedIn)
+            .then(|| {
+                popover::menu_row_nav(&theme, false, false, "keiki-agent-new".to_string())
+                    .id("keiki-agent-new")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close(cx);
+                        window.dispatch_action(Box::new(crate::shell::NewKeikiAgent), cx);
+                    }))
+                    .child(
+                        crate::icons::icon(crate::icons::PLUS)
+                            .size(px(12.0))
+                            .flex_none()
+                            .text_color(theme.text_muted.opacity(0.7)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from("New Keiki agent…")),
+                    )
+            });
         div()
             .flex()
             .flex_col()
@@ -2006,6 +2032,17 @@ impl Pickers {
                     .bg(theme.border.opacity(0.6)),
             )
             .child(new_project)
+            .when_some(new_keiki, |el, row| {
+                el.child(
+                    div()
+                        .my(px(2.0))
+                        .mx(px(-4.0))
+                        .h(px(1.0))
+                        .flex_none()
+                        .bg(theme.border.opacity(0.6)),
+                )
+                .child(row)
+            })
             .into_any_element()
     }
 
