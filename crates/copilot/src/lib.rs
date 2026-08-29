@@ -334,6 +334,7 @@ pub enum AgUiEvent {
         run_id: String,
         outcome: Option<RunOutcome>,
         result: Option<Value>,
+        finish_reason: Option<String>,
     },
     RunError {
         message: String,
@@ -629,6 +630,15 @@ fn parse_run_finished(value: Value) -> Result<AgUiEvent, Error> {
         .unwrap_or_default()
         .to_owned();
     let result = object.get("result").cloned();
+    let finish_reason = object
+        .get("metadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("tanstack"))
+        .and_then(Value::as_object)
+        .and_then(|tanstack| tanstack.get("finishReason"))
+        .and_then(Value::as_str)
+        .or_else(|| object.get("finishReason").and_then(Value::as_str))
+        .map(str::to_owned);
     let outcome = object.get("outcome").and_then(|raw| {
         let object = raw.as_object()?;
         match object.get("type").and_then(Value::as_str) {
@@ -652,6 +662,7 @@ fn parse_run_finished(value: Value) -> Result<AgUiEvent, Error> {
         run_id,
         outcome,
         result,
+        finish_reason,
     })
 }
 
@@ -850,6 +861,10 @@ impl TurnMapper {
                 events
             }
             AgUiEvent::RunFinished {
+                finish_reason: Some(finish_reason),
+                ..
+            } if finish_reason == "tool_calls" => Vec::new(),
+            AgUiEvent::RunFinished {
                 outcome: Some(RunOutcome::Success),
                 result,
                 ..
@@ -1045,6 +1060,100 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
                 session_id: Some("thread".into()),
             }]
         );
+    }
+
+    #[test]
+    fn tool_call_finish_keeps_the_run_open_for_following_text_and_tools() {
+        let events = events_from_chunks(&[
+            b"data: {\"type\":\"RUN_STARTED\",\"threadId\":\"thread\",\"runId\":\"run\"}\n\n",
+            b"data: {\"type\":\"REASONING_MESSAGE_CONTENT\",\"messageId\":\"reasoning\",\"delta\":\"Planning\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"first\",\"toolCallName\":\"search\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"first\",\"input\":{\"query\":\"Delete Me B\"}}\n\n",
+            b"data: {\"type\":\"RUN_FINISHED\",\"runId\":\"run\",\"metadata\":{\"tanstack\":{\"finishReason\":\"tool_calls\"}}}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_RESULT\",\"toolCallId\":\"first\",\"content\":\"found\"}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_START\",\"messageId\":\"text\"}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"text\",\"delta\":\"Found Delete Me B. Approve to proceed.\"}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_END\",\"messageId\":\"text\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"second\",\"toolCallName\":\"execute\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"second\",\"input\":{\"approved\":true}}\n\n",
+            b"data: {\"type\":\"RUN_FINISHED\",\"runId\":\"run\",\"metadata\":{\"tanstack\":{\"finishReason\":\"stop\"}}}\n\n",
+        ]);
+        let mut mapper = TurnMapper::new();
+        let mapped = events
+            .into_iter()
+            .flat_map(|event| mapper.handle(event))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            mapped
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::Done { .. }))
+                .count(),
+            1
+        );
+        assert!(mapped.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { text } if text == "Found Delete Me B. Approve to proceed."
+        )));
+        assert_eq!(
+            mapped
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::ToolCall { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn interrupt_outcome_takes_priority_over_tool_call_finish_reason() {
+        let events = events_from_chunks(&[
+            b"data: {\"type\":\"RUN_STARTED\",\"threadId\":\"thread\",\"runId\":\"run\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_START\",\"toolCallId\":\"call\",\"toolCallName\":\"execute\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_END\",\"toolCallId\":\"call\",\"input\":{}}\n\n",
+            b"data: {\"type\":\"RUN_FINISHED\",\"runId\":\"run\",\"metadata\":{\"tanstack\":{\"finishReason\":\"tool_calls\"}}}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_START\",\"messageId\":\"text\"}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"text\",\"delta\":\"Approve to proceed.\"}\n\n",
+            b"data: {\"type\":\"RUN_FINISHED\",\"runId\":\"run\",\"metadata\":{\"tanstack\":{\"finishReason\":\"tool_calls\"}},\"outcome\":{\"type\":\"interrupt\",\"interrupts\":[{\"id\":\"approval\",\"reason\":\"Approve\"}]}}\n\n",
+        ]);
+        let mut mapper = TurnMapper::new();
+        let mapped = events
+            .into_iter()
+            .flat_map(|event| mapper.handle(event))
+            .collect::<Vec<_>>();
+
+        assert!(
+            mapped
+                .iter()
+                .all(|event| !matches!(event, AgentEvent::Done { .. }))
+        );
+        assert!(mapped.iter().any(|event| matches!(
+            event,
+            AgentEvent::TextDelta { text } if text == "Approve to proceed."
+        )));
+        assert_eq!(mapper.take_interrupt_ids(), vec!["approval"]);
+    }
+
+    #[test]
+    fn top_level_tool_call_finish_reason_keeps_the_run_open() {
+        let started =
+            AgUiEvent::from_json(r#"{"type":"RUN_STARTED","threadId":"thread","runId":"run"}"#)
+                .unwrap();
+        let continuing = AgUiEvent::from_json(
+            r#"{"type":"RUN_FINISHED","runId":"run","finishReason":"tool_calls"}"#,
+        )
+        .unwrap();
+        let terminal = AgUiEvent::from_json(r#"{"type":"RUN_FINISHED","runId":"run"}"#).unwrap();
+        let mut mapper = TurnMapper::new();
+
+        assert!(matches!(
+            mapper.handle(started).as_slice(),
+            [AgentEvent::SessionStarted { .. }]
+        ));
+        assert!(mapper.handle(continuing).is_empty());
+        assert!(matches!(
+            mapper.handle(terminal).as_slice(),
+            [AgentEvent::Done { .. }]
+        ));
     }
 
     #[test]

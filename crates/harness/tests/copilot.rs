@@ -478,6 +478,7 @@ async fn text_before_tool_call_is_kept_as_assistant_text() {
             run_id: "provider".into(),
             outcome: None,
             result: None,
+            finish_reason: None,
         },
     ];
     let mut mapper = zeron_copilot::TurnMapper::new();
