@@ -941,6 +941,114 @@ pub(crate) async fn create_agent_from_template(
     .await
 }
 
+pub(crate) async fn load_agent_config(
+    state: &WeakEntity<AppState>,
+    agent_id: String,
+    cx: &mut AsyncApp,
+) -> Result<keiki_api::AgentConfigWithLines, keiki_api::Error> {
+    let context = state
+        .update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        })
+        .map_err(|error| keiki_api::Error::TaskFailed(error.to_string()))?;
+    let Some((client, token, credentials)) = context else {
+        return Err(keiki_api::Error::Local(
+            "Keiki credentials are unavailable".into(),
+        ));
+    };
+    authorized(
+        state,
+        client,
+        token,
+        credentials,
+        "Keiki agent configuration load",
+        move |client, access_token| {
+            let agent_id = agent_id.clone();
+            async move {
+                client
+                    .agent_config_with_lines(&access_token, &agent_id)
+                    .await
+            }
+        },
+        cx,
+    )
+    .await
+}
+
+pub(crate) async fn update_agent(
+    state: &WeakEntity<AppState>,
+    agent_id: String,
+    update: keiki_api::AgentUpdate,
+    cx: &mut AsyncApp,
+) -> Result<keiki_api::AgentMutationResponse, keiki_api::Error> {
+    let context = state
+        .update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        })
+        .map_err(|error| keiki_api::Error::TaskFailed(error.to_string()))?;
+    let Some((client, token, credentials)) = context else {
+        return Err(keiki_api::Error::Local(
+            "Keiki credentials are unavailable".into(),
+        ));
+    };
+    authorized(
+        state,
+        client,
+        token,
+        credentials,
+        "Keiki agent update",
+        move |client, access_token| {
+            let agent_id = agent_id.clone();
+            let update = update.clone();
+            async move { client.update_agent(&access_token, &agent_id, &update).await }
+        },
+        cx,
+    )
+    .await
+}
+
+pub(crate) async fn delete_agent(
+    state: &WeakEntity<AppState>,
+    agent_id: String,
+    cx: &mut AsyncApp,
+) -> Result<keiki_api::AgentMutationResponse, keiki_api::Error> {
+    let context = state
+        .update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        })
+        .map_err(|error| keiki_api::Error::TaskFailed(error.to_string()))?;
+    let Some((client, token, credentials)) = context else {
+        return Err(keiki_api::Error::Local(
+            "Keiki credentials are unavailable".into(),
+        ));
+    };
+    authorized(
+        state,
+        client,
+        token,
+        credentials,
+        "Keiki agent deletion",
+        move |client, access_token| {
+            let agent_id = agent_id.clone();
+            async move { client.delete_agent(&access_token, &agent_id).await }
+        },
+        cx,
+    )
+    .await
+}
+
 async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
     loop {
         let signed_in =

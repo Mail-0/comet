@@ -23,7 +23,10 @@ use gpui::{
 };
 
 use gpui_tokio::Tokio;
-use keiki_model::{AgentTemplateSummary, CreateAgentFromTemplate};
+use keiki_model::{
+    AgentConfig, AgentConfigWithLines, AgentFeatures, AgentRuntime, AgentTemplateSummary,
+    AgentUpdate, CreateAgentFromTemplate, ReasoningEffort,
+};
 use zeron_engine::InstanceLock;
 use zeron_proto::{AuthState, WorkspaceScope};
 use zeron_rpc::methods;
@@ -101,8 +104,111 @@ struct KeikiAgentDialog {
     create_pending: bool,
 }
 
+struct KeikiAgentSettingsDialog {
+    agent_id: String,
+    config: Loadable<AgentConfigWithLines>,
+    original: Option<AgentConfig>,
+    name: Entity<ComposerInput>,
+    model: Entity<ComposerInput>,
+    system_prompt: Entity<ComposerInput>,
+    max_steps: Entity<ComposerInput>,
+    history_limit: Entity<ComposerInput>,
+    line_number: Option<String>,
+    reasoning_effort: ReasoningEffort,
+    features: AgentFeatures,
+    error: Option<SharedString>,
+    focus_pending: bool,
+    load_task: Option<Task<()>>,
+    save_task: Option<Task<()>>,
+    save_pending: bool,
+}
+
+struct KeikiAgentDeleteDialog {
+    agent_id: String,
+    agent_name: String,
+    error: Option<SharedString>,
+    pending: bool,
+    load_task: Option<Task<()>>,
+    runtime: Option<AgentRuntime>,
+    delete_task: Option<Task<()>>,
+}
+
 fn keiki_menu_is_selected(chat_id: &str, selected_chat: Option<&str>) -> bool {
     crate::keiki::is_keiki_chat(chat_id) && selected_chat == Some(chat_id)
+}
+
+fn validate_keiki_agent_fields(
+    name: &str,
+    model: &str,
+    system_prompt: &str,
+    max_steps: u32,
+    history_limit: u32,
+    features: &AgentFeatures,
+) -> Option<&'static str> {
+    if name.is_empty() {
+        return Some("Name is required.");
+    }
+    if name.chars().count() > 100 {
+        return Some("Name must be 100 characters or fewer.");
+    }
+    if model.is_empty() {
+        return Some("Model is required.");
+    }
+    if system_prompt.is_empty() {
+        return Some("System prompt is required.");
+    }
+    if !(1..=50).contains(&max_steps) {
+        return Some("Max steps must be from 1 to 50.");
+    }
+    if !(1..=200).contains(&history_limit) {
+        return Some("History limit must be from 1 to 200.");
+    }
+    if features.mcp && !features.sandbox {
+        return Some("MCP requires the Sandbox capability.");
+    }
+    None
+}
+
+fn keiki_agent_update(
+    original: &AgentConfig,
+    name: String,
+    model: String,
+    system_prompt: String,
+    max_steps: u32,
+    history_limit: u32,
+    reasoning_effort: ReasoningEffort,
+    line_number: Option<String>,
+    features: AgentFeatures,
+) -> AgentUpdate {
+    AgentUpdate {
+        name: (name != original.name).then_some(name),
+        model: (model != original.model).then_some(model),
+        system_prompt: (system_prompt != original.system_prompt).then_some(system_prompt),
+        max_steps: (max_steps != original.max_steps).then_some(max_steps),
+        history_limit: (history_limit != original.history_limit).then_some(history_limit),
+        reasoning_effort: (reasoning_effort != original.reasoning_effort)
+            .then_some(reasoning_effort),
+        line_number: (line_number != original.line_number)
+            .then_some(line_number.unwrap_or_default()),
+        features: (features != original.features).then_some(features),
+    }
+}
+
+fn keiki_readonly_field(theme: &Theme, label: &str, value: &str) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .child(popover::dialog_body(theme, label))
+        .child(
+            div()
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(crate::theme::ink(0.04))
+                .text_color(theme.text)
+                .child(SharedString::from(value.to_string())),
+        )
 }
 
 /// Interruptible height tween for the sidebar's device/archive disclosures.
@@ -1076,6 +1182,10 @@ pub struct Shell {
     add_space: Option<AddSpaceFlow>,
     /// Keiki's template-backed agent creation dialog.
     keiki_agent_dialog: Option<KeikiAgentDialog>,
+    /// Keiki agent configuration dialog.
+    keiki_agent_settings: Option<KeikiAgentSettingsDialog>,
+    /// Keiki agent deletion confirmation.
+    keiki_agent_delete: Option<KeikiAgentDeleteDialog>,
     /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
     /// Persisted organization/sort/metadata controls beside the project filter.
@@ -1360,6 +1470,8 @@ impl Shell {
             delete_space_confirm: None,
             add_space: None,
             keiki_agent_dialog: None,
+            keiki_agent_settings: None,
+            keiki_agent_delete: None,
             spaces_menu: popover::Popup::default(),
             sidebar_view_menu: popover::Popup::default(),
             sidebar_view_trigger_focus: cx.focus_handle().tab_stop(true),
@@ -4601,6 +4713,313 @@ impl Shell {
         cx.notify();
     }
 
+    pub(super) fn open_keiki_agent_settings(&mut self, space_id: String, cx: &mut Context<Self>) {
+        if self.state.read(cx).keiki_status != crate::keiki::SessionStatus::SignedIn {
+            return;
+        }
+        let Some(agent_id) = space_id.strip_prefix(crate::keiki::AGENT_PREFIX) else {
+            return;
+        };
+        let name = cx.new(|cx| ComposerInput::new("Agent name", cx));
+        let model = cx.new(|cx| ComposerInput::new("Model", cx));
+        let system_prompt = cx.new(|cx| ComposerInput::new("System prompt", cx));
+        let max_steps = cx.new(|cx| ComposerInput::new("Max steps", cx));
+        let history_limit = cx.new(|cx| ComposerInput::new("History limit", cx));
+        self.keiki_agent_settings = Some(KeikiAgentSettingsDialog {
+            agent_id: agent_id.to_string(),
+            config: Loadable::Loading,
+            original: None,
+            name,
+            model,
+            system_prompt,
+            max_steps,
+            history_limit,
+            line_number: None,
+            reasoning_effort: ReasoningEffort::Medium,
+            features: AgentFeatures {
+                memory: false,
+                steering: false,
+                media: false,
+                browser: false,
+                scrape: false,
+                sandbox: false,
+                mcp: false,
+                escalation: false,
+                loops: false,
+                guards: false,
+                wallet: false,
+            },
+            error: None,
+            focus_pending: true,
+            load_task: None,
+            save_task: None,
+            save_pending: false,
+        });
+        let state = self.state.downgrade();
+        let requested_agent_id = agent_id.to_string();
+        let task = cx.spawn(async move |this, cx| {
+            let result =
+                crate::keiki::load_agent_config(&state, requested_agent_id.clone(), cx).await;
+            if let Err(error) = this.update(cx, |shell, cx| {
+                let Some(dialog) = shell.keiki_agent_settings.as_mut() else {
+                    return;
+                };
+                if dialog.agent_id != requested_agent_id {
+                    return;
+                }
+                dialog.load_task = None;
+                match result {
+                    Ok(config) => {
+                        dialog.name.update(cx, |input, cx| {
+                            input.set_text(config.agent.name.clone(), cx);
+                        });
+                        dialog.model.update(cx, |input, cx| {
+                            input.set_text(config.agent.model.clone(), cx);
+                        });
+                        dialog.system_prompt.update(cx, |input, cx| {
+                            input.set_text(config.agent.system_prompt.clone(), cx);
+                        });
+                        dialog.max_steps.update(cx, |input, cx| {
+                            input.set_text(config.agent.max_steps.to_string(), cx);
+                        });
+                        dialog.history_limit.update(cx, |input, cx| {
+                            input.set_text(config.agent.history_limit.to_string(), cx);
+                        });
+                        dialog.line_number = config.agent.line_number.clone();
+                        dialog.reasoning_effort = config.agent.reasoning_effort;
+                        dialog.features = config.agent.features.clone();
+                        dialog.original = Some(config.agent.clone());
+                        dialog.config = Loadable::Ready(config);
+                    }
+                    Err(error) => {
+                        dialog.config = Loadable::Error(error.to_string());
+                    }
+                }
+                cx.notify();
+            }) {
+                tracing::error!("update Keiki agent settings dialog: {error}");
+            }
+        });
+        if let Some(dialog) = self.keiki_agent_settings.as_mut() {
+            dialog.load_task = Some(task);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn open_keiki_agent_delete(&mut self, space_id: String, cx: &mut Context<Self>) {
+        if self.state.read(cx).keiki_status != crate::keiki::SessionStatus::SignedIn {
+            return;
+        }
+        let Some(agent_id) = space_id.strip_prefix(crate::keiki::AGENT_PREFIX) else {
+            return;
+        };
+        let agent_name = self
+            .state
+            .read(cx)
+            .spaces
+            .iter()
+            .find(|space| space.id == space_id)
+            .and_then(|space| space.name.clone())
+            .unwrap_or_else(|| agent_id.to_string());
+        self.keiki_agent_delete = Some(KeikiAgentDeleteDialog {
+            agent_id: agent_id.to_string(),
+            agent_name,
+            error: None,
+            pending: false,
+            load_task: None,
+            delete_task: None,
+            runtime: None,
+        });
+        let state = self.state.downgrade();
+        let requested_agent_id = agent_id.to_string();
+        let task = cx.spawn(async move |this, cx| {
+            let result =
+                crate::keiki::load_agent_config(&state, requested_agent_id.clone(), cx).await;
+            if let Err(error) = this.update(cx, |shell, cx| {
+                let Some(dialog) = shell.keiki_agent_delete.as_mut() else {
+                    return;
+                };
+                if dialog.agent_id != requested_agent_id {
+                    return;
+                }
+                dialog.load_task = None;
+                match result {
+                    Ok(config) => dialog.runtime = Some(config.agent.runtime),
+                    Err(error) => dialog.error = Some(error.to_string().into()),
+                }
+                cx.notify();
+            }) {
+                tracing::error!("update Keiki agent deletion dialog: {error}");
+            }
+        });
+        if let Some(dialog) = self.keiki_agent_delete.as_mut() {
+            dialog.load_task = Some(task);
+        }
+        cx.notify();
+    }
+
+    fn submit_keiki_agent_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_settings.as_mut() else {
+            return;
+        };
+        if dialog.save_pending {
+            return;
+        }
+        let Some(original) = dialog.original.clone() else {
+            return;
+        };
+        if original.runtime == AgentRuntime::Local {
+            dialog.error =
+                Some("Local agents are managed by the SDK and cannot be edited here.".into());
+            cx.notify();
+            return;
+        }
+        let name = dialog.name.read(cx).text().trim().to_string();
+        let model = dialog.model.read(cx).text().trim().to_string();
+        let system_prompt = dialog.system_prompt.read(cx).text().trim().to_string();
+        let max_steps = match dialog.max_steps.read(cx).text().trim().parse::<u32>() {
+            Ok(value) => value,
+            Err(_) => {
+                dialog.error = Some("Max steps must be a number from 1 to 50.".into());
+                cx.notify();
+                return;
+            }
+        };
+        let history_limit = match dialog.history_limit.read(cx).text().trim().parse::<u32>() {
+            Ok(value) => value,
+            Err(_) => {
+                dialog.error = Some("History limit must be a number from 1 to 200.".into());
+                cx.notify();
+                return;
+            }
+        };
+        if let Some(error) = validate_keiki_agent_fields(
+            &name,
+            &model,
+            &system_prompt,
+            max_steps,
+            history_limit,
+            &dialog.features,
+        ) {
+            dialog.error = Some(error.into());
+            cx.notify();
+            return;
+        }
+        let update = keiki_agent_update(
+            &original,
+            name,
+            model,
+            system_prompt,
+            max_steps,
+            history_limit,
+            dialog.reasoning_effort,
+            dialog.line_number.clone(),
+            dialog.features.clone(),
+        );
+        if update == AgentUpdate::default() {
+            self.keiki_agent_settings = None;
+            cx.notify();
+            return;
+        }
+        dialog.save_pending = true;
+        dialog.error = None;
+        let state = self.state.downgrade();
+        let agent_id = dialog.agent_id.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = crate::keiki::update_agent(&state, agent_id.clone(), update, cx).await;
+            let outcome = match result {
+                Ok(response) if response.ok => {
+                    crate::keiki::refresh_keiki_snapshot(state.clone(), cx)
+                        .await
+                        .map(|()| ())
+                }
+                Ok(_) => Err(keiki_api::Error::Local(
+                    "Keiki did not confirm that the agent was updated".into(),
+                )),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = this.update(cx, |shell, cx| {
+                let Some(dialog) = shell.keiki_agent_settings.as_mut() else {
+                    return;
+                };
+                if dialog.agent_id != agent_id {
+                    return;
+                }
+                dialog.save_task = None;
+                match outcome {
+                    Ok(()) => shell.keiki_agent_settings = None,
+                    Err(error) => {
+                        dialog.save_pending = false;
+                        dialog.error = Some(error.to_string().into());
+                    }
+                }
+                cx.notify();
+            }) {
+                tracing::error!("update Keiki agent settings dialog: {error}");
+            }
+        });
+        dialog.save_task = Some(task);
+        cx.notify();
+    }
+
+    fn submit_keiki_agent_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_delete.as_mut() else {
+            return;
+        };
+        if dialog.pending || dialog.runtime.is_none() {
+            return;
+        }
+        if dialog.runtime == Some(AgentRuntime::Local) {
+            dialog.error =
+                Some("Local agents are managed by the SDK and cannot be deleted here.".into());
+            cx.notify();
+            return;
+        }
+        dialog.pending = true;
+        dialog.error = None;
+        let state = self.state.downgrade();
+        let agent_id = dialog.agent_id.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = crate::keiki::delete_agent(&state, agent_id.clone(), cx).await;
+            let outcome = match result {
+                Ok(response) if response.ok => {
+                    match state.update(cx, |state, cx| {
+                        state.clear_keiki_agent_rows(&agent_id);
+                        cx.notify();
+                    }) {
+                        Ok(()) => crate::keiki::refresh_keiki_snapshot(state.clone(), cx).await,
+                        Err(error) => Err(keiki_api::Error::TaskFailed(error.to_string())),
+                    }
+                }
+                Ok(_) => Err(keiki_api::Error::Local(
+                    "Keiki did not confirm that the agent was deleted".into(),
+                )),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = this.update(cx, |shell, cx| {
+                let Some(dialog) = shell.keiki_agent_delete.as_mut() else {
+                    return;
+                };
+                if dialog.agent_id != agent_id {
+                    return;
+                }
+                dialog.delete_task = None;
+                match outcome {
+                    Ok(()) => shell.keiki_agent_delete = None,
+                    Err(error) => {
+                        dialog.pending = false;
+                        dialog.error = Some(error.to_string().into());
+                    }
+                }
+                cx.notify();
+            }) {
+                tracing::error!("update Keiki agent deletion dialog: {error}");
+            }
+        });
+        dialog.delete_task = Some(task);
+        cx.notify();
+    }
+
     fn select_keiki_template(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(dialog) = self.keiki_agent_dialog.as_mut() else {
             return;
@@ -5536,6 +5955,406 @@ impl Shell {
         Some(popover::modal("keiki-agent-dialog", viewport, card))
     }
 
+    fn toggle_keiki_feature(&mut self, feature: &'static str, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_settings.as_mut() else {
+            return;
+        };
+        match feature {
+            "memory" => dialog.features.memory = !dialog.features.memory,
+            "steering" => dialog.features.steering = !dialog.features.steering,
+            "media" => dialog.features.media = !dialog.features.media,
+            "browser" => dialog.features.browser = !dialog.features.browser,
+            "scrape" => dialog.features.scrape = !dialog.features.scrape,
+            "sandbox" => dialog.features.sandbox = !dialog.features.sandbox,
+            "mcp" => dialog.features.mcp = !dialog.features.mcp,
+            "escalation" => dialog.features.escalation = !dialog.features.escalation,
+            "loops" => dialog.features.loops = !dialog.features.loops,
+            "guards" => dialog.features.guards = !dialog.features.guards,
+            "wallet" => dialog.features.wallet = !dialog.features.wallet,
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    fn select_keiki_line(&mut self, line_number: Option<String>, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_settings.as_mut() else {
+            return;
+        };
+        dialog.line_number = line_number;
+        cx.notify();
+    }
+
+    fn select_keiki_reasoning(
+        &mut self,
+        reasoning_effort: ReasoningEffort,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = self.keiki_agent_settings.as_mut() else {
+            return;
+        };
+        dialog.reasoning_effort = reasoning_effort;
+        cx.notify();
+    }
+
+    fn render_keiki_agent_settings_overlay(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let dialog = self.keiki_agent_settings.as_mut()?;
+        if std::mem::take(&mut dialog.focus_pending) {
+            window.focus(&dialog.name.focus_handle(cx), cx);
+        }
+        let agent_id = dialog.agent_id.clone();
+        let busy = dialog.save_pending;
+        let config = dialog.config.clone();
+        let error = dialog.error.clone();
+        let card = match config {
+            Loadable::Idle | Loadable::Loading => popover::dialog_card(&theme)
+                .w(px(560.0))
+                .child(popover::dialog_title(&theme, "Agent settings"))
+                .child(div().mt(px(12.0)).child(popover::dialog_body(
+                    &theme,
+                    "Loading the agent configuration…",
+                )))
+                .child(
+                    div().mt(px(16.0)).flex().flex_row().justify_end().child(
+                        popover::btn_ghost(&theme, "Cancel", "keiki-settings-loading-cancel")
+                            .id("keiki-settings-loading-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.keiki_agent_settings = None;
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            Loadable::Error(message) => popover::dialog_card(&theme)
+                .w(px(560.0))
+                .child(popover::dialog_title(&theme, "Agent settings"))
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .text_color(theme.danger_muted)
+                        .child(SharedString::from(message)),
+                )
+                .child(
+                    div().mt(px(16.0)).flex().justify_end().child(
+                        popover::btn_ghost(&theme, "Close", "keiki-settings-error-close")
+                            .id("keiki-settings-error-close")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.keiki_agent_settings = None;
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .into_any_element(),
+            Loadable::Ready(config) => {
+                let local = config.agent.runtime == AgentRuntime::Local;
+                let name = dialog.name.clone();
+                let model = dialog.model.clone();
+                let system_prompt = dialog.system_prompt.clone();
+                let max_steps = dialog.max_steps.clone();
+                let history_limit = dialog.history_limit.clone();
+                let selected_line = dialog.line_number.clone();
+                let selected_reasoning = dialog.reasoning_effort;
+                let selected_features = dialog.features.clone();
+                let lines = config.lines.clone();
+                let mut body = div()
+                    .id("keiki-agent-settings-scroll")
+                    .max_h(px(600.0))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0));
+                if local {
+                    body = body
+                        .child(popover::dialog_body(
+                            &theme,
+                            "Local agents are managed by the SDK and cannot be edited here.",
+                        ))
+                        .child(keiki_readonly_field(&theme, "Name", &config.agent.name))
+                        .child(keiki_readonly_field(&theme, "Model", &config.agent.model))
+                        .child(keiki_readonly_field(
+                            &theme,
+                            "System prompt",
+                            &config.agent.system_prompt,
+                        ))
+                        .child(keiki_readonly_field(
+                            &theme,
+                            "Max steps",
+                            &config.agent.max_steps.to_string(),
+                        ))
+                        .child(keiki_readonly_field(
+                            &theme,
+                            "History limit",
+                            &config.agent.history_limit.to_string(),
+                        ));
+                } else {
+                    body = body
+                        .child(popover::dialog_field(name.into_any_element()))
+                        .child(popover::dialog_field(model.into_any_element()))
+                        .child(
+                            div()
+                                .max_h(px(150.0))
+                                .child(popover::dialog_field(system_prompt.into_any_element())),
+                        )
+                        .child(popover::dialog_field(max_steps.into_any_element()))
+                        .child(popover::dialog_field(history_limit.into_any_element()));
+                }
+                let reasoning_values = [
+                    (ReasoningEffort::None, "None"),
+                    (ReasoningEffort::Low, "Low"),
+                    (ReasoningEffort::Medium, "Medium"),
+                    (ReasoningEffort::High, "High"),
+                ];
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(popover::dialog_body(&theme, "Reasoning effort"))
+                        .children(reasoning_values.into_iter().map(|(value, label)| {
+                            popover::menu_row(
+                                &theme,
+                                selected_reasoning == value,
+                                format!("keiki-reasoning-{label}"),
+                            )
+                            .id(SharedString::from(format!("keiki-reasoning-{label}")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !local {
+                                    this.select_keiki_reasoning(value, cx);
+                                }
+                            }))
+                            .child(SharedString::from(label))
+                        })),
+                );
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(popover::dialog_body(&theme, "Line"))
+                        .child(
+                            popover::menu_row(&theme, selected_line.is_none(), "keiki-line-none")
+                                .id("keiki-line-none")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.select_keiki_line(None, cx);
+                                }))
+                                .child(SharedString::from("No line")),
+                        )
+                        .children(lines.into_iter().map(|line| {
+                            let number = line.number.clone();
+                            let selected = selected_line.as_deref() == Some(number.as_str());
+                            let owner = match (line.agent_id.as_deref(), line.agent_name.as_deref())
+                            {
+                                (Some(agent_id), Some(agent_name)) => {
+                                    format!(" — owned by {agent_name} ({agent_id})")
+                                }
+                                (Some(agent_id), None) => {
+                                    format!(" — owned by {agent_id}")
+                                }
+                                (None, Some(agent_name)) => {
+                                    format!(" — owned by {agent_name}")
+                                }
+                                (None, None) => String::new(),
+                            };
+                            popover::menu_row(&theme, selected, format!("keiki-line-{number}"))
+                                .id(SharedString::from(format!("keiki-line-{number}")))
+                                .on_click(cx.listener({
+                                    let number = number.clone();
+                                    move |this, _, _, cx| {
+                                        if !local {
+                                            this.select_keiki_line(Some(number.clone()), cx);
+                                        }
+                                    }
+                                }))
+                                .child(SharedString::from(format!("{}{}", line.number, owner)))
+                        })),
+                );
+                let feature_values = [
+                    ("memory", "Memory", selected_features.memory),
+                    ("steering", "Steering", selected_features.steering),
+                    ("media", "Media", selected_features.media),
+                    ("browser", "Browser", selected_features.browser),
+                    ("scrape", "Scrape", selected_features.scrape),
+                    ("sandbox", "Sandbox", selected_features.sandbox),
+                    ("mcp", "MCP", selected_features.mcp),
+                    ("escalation", "Escalation", selected_features.escalation),
+                    ("loops", "Loops", selected_features.loops),
+                    ("guards", "Guards", selected_features.guards),
+                    ("wallet", "Wallet", selected_features.wallet),
+                ];
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(popover::dialog_body(&theme, "Features"))
+                        .children(feature_values.into_iter().map(|(key, label, enabled)| {
+                            popover::menu_row(&theme, false, format!("keiki-feature-{key}"))
+                                .id(SharedString::from(format!("keiki-feature-{key}")))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !local {
+                                        this.toggle_keiki_feature(key, cx);
+                                    }
+                                }))
+                                .child(div().flex_1().child(SharedString::from(label)))
+                                .child(crate::settings::widgets::toggle_switch(&theme, enabled))
+                        })),
+                );
+                let mut card = popover::dialog_card(&theme)
+                    .w(px(560.0))
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "escape" {
+                            this.keiki_agent_settings = None;
+                            cx.notify();
+                        }
+                    }))
+                    .child(popover::dialog_title(&theme, "Agent settings"))
+                    .child(div().mt(px(6.0)).child(popover::dialog_body(
+                        &theme,
+                        format!("Configure Keiki agent {agent_id}"),
+                    )))
+                    .child(div().mt(px(14.0)).child(body));
+                if let Some(error) = error {
+                    card = card.child(
+                        div()
+                            .mt(px(10.0))
+                            .text_color(theme.danger_muted)
+                            .child(error),
+                    );
+                }
+                card.child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "keiki-settings-cancel")
+                                .id("keiki-settings-cancel")
+                                .when(busy, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if !this
+                                        .keiki_agent_settings
+                                        .as_ref()
+                                        .is_some_and(|dialog| dialog.save_pending)
+                                    {
+                                        this.keiki_agent_settings = None;
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            popover::btn_primary(&theme, if busy { "Saving…" } else { "Save" })
+                                .id("keiki-settings-save")
+                                .when(local || busy, |button| button.opacity(0.5))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if !this.keiki_agent_settings.as_ref().is_some_and(|dialog| {
+                                        dialog.save_pending
+                                            || dialog.original.as_ref().is_some_and(|config| {
+                                                config.runtime == AgentRuntime::Local
+                                            })
+                                    }) {
+                                        this.submit_keiki_agent_settings(cx);
+                                    }
+                                })),
+                        ),
+                )
+                .into_any_element()
+            }
+        };
+        Some(popover::modal("keiki-agent-settings", viewport, card))
+    }
+
+    fn render_keiki_agent_delete_overlay(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let dialog = self.keiki_agent_delete.as_ref()?;
+        let loading = dialog.load_task.is_some();
+        let local = dialog.runtime == Some(AgentRuntime::Local);
+        let can_delete = !loading && !dialog.pending && !local && dialog.error.is_none();
+        let name = dialog.agent_name.clone();
+        let error = dialog.error.clone();
+        let mut card = popover::dialog_card(&theme)
+            .w(px(440.0))
+            .child(popover::dialog_title(&theme, "Delete Keiki agent?"))
+            .child(div().mt(px(6.0)).child(popover::dialog_body(
+                &theme,
+                format!(
+                    "“{name}” and its conversations will be permanently deleted. This cannot be undone."
+                ),
+            )));
+        if loading {
+            card = card.child(div().mt(px(12.0)).child(popover::dialog_body(
+                &theme,
+                "Checking whether this agent can be deleted…",
+            )));
+        }
+        if local {
+            card = card.child(
+                div()
+                    .mt(px(10.0))
+                    .text_color(theme.text_muted)
+                    .child("Local agents are managed by the SDK and cannot be deleted here."),
+            );
+        }
+        if let Some(error) = error {
+            card = card.child(
+                div()
+                    .mt(px(10.0))
+                    .text_color(theme.danger_muted)
+                    .child(error),
+            );
+        }
+        card = card.child(
+            div()
+                .mt(px(16.0))
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(
+                    popover::btn_ghost(&theme, "Cancel", "keiki-delete-cancel")
+                        .id("keiki-delete-cancel")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if !this
+                                .keiki_agent_delete
+                                .as_ref()
+                                .is_some_and(|dialog| dialog.pending)
+                            {
+                                this.keiki_agent_delete = None;
+                                cx.notify();
+                            }
+                        })),
+                )
+                .child(
+                    popover::btn_danger(
+                        &theme,
+                        if dialog.pending {
+                            "Deleting…"
+                        } else {
+                            "Delete agent"
+                        },
+                    )
+                    .id("keiki-delete-confirm")
+                    .when(!can_delete, |button| button.opacity(0.5))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.submit_keiki_agent_delete(cx);
+                    })),
+                ),
+        );
+        Some(popover::modal(
+            "keiki-agent-delete",
+            viewport,
+            card.into_any_element(),
+        ))
+    }
+
     fn render_keiki_chat_action_rows(
         &self,
         chat_id: &str,
@@ -5872,6 +6691,12 @@ impl Shell {
             overlays.push(overlay);
         }
         if let Some(overlay) = self.render_keiki_agent_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_keiki_agent_settings_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_keiki_agent_delete_overlay(viewport, cx) {
             overlays.push(overlay);
         }
 

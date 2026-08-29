@@ -990,6 +990,41 @@ impl AppState {
         }
     }
 
+    pub fn clear_keiki_agent_rows(&mut self, agent_id: &str) {
+        let space_id = crate::keiki::agent_id(agent_id);
+        let selected_chat_owned = self.selected_chat.as_deref().is_some_and(|chat_id| {
+            self.chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .and_then(|chat| chat.space_id.as_deref())
+                == Some(space_id.as_str())
+        });
+
+        self.spaces.retain(|space| space.id != space_id);
+        self.chats
+            .retain(|chat| chat.space_id.as_deref() != Some(space_id.as_str()));
+        if self.selected_space.as_deref() == Some(space_id.as_str()) {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+        if selected_chat_owned {
+            self.selected_chat = None;
+            self.keiki_conversation = None;
+            self.transcript.clear();
+            self.transcript_replayed = false;
+            self.transcript_task = None;
+        } else if self
+            .keiki_conversation
+            .as_ref()
+            .is_some_and(|conversation| {
+                self.chats
+                    .iter()
+                    .all(|chat| chat.id != conversation.chat_id)
+            })
+        {
+            self.keiki_conversation = None;
+        }
+    }
+
     pub(crate) fn mark_keiki_signed_out(&mut self, error: Option<String>) {
         self.clear_keiki_rows();
         self.keiki_token = None;
@@ -3363,6 +3398,58 @@ mod tests {
                 .iter()
                 .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
         );
+    }
+
+    #[test]
+    fn clearing_one_keiki_agent_preserves_other_agents_and_selection_cleanup() {
+        let mut state = AppState::new();
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:keep", crate::keiki::DEVICE_ID, "Keep", 2),
+            space("keiki-agent:remove", crate::keiki::DEVICE_ID, "Remove", 3),
+        ]);
+        let mut removed_chat = chat("keiki-conv:remove:+1666", 3, None);
+        removed_chat.space_id = Some("keiki-agent:remove".into());
+        let mut kept_chat = chat("keiki-conv:keep:+1555", 2, None);
+        kept_chat.space_id = Some("keiki-agent:keep".into());
+        state.apply_chats(vec![chat("engine-chat", 1, None), kept_chat, removed_chat]);
+        state.selected_chat = Some("keiki-conv:remove:+1666".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:remove:+1666".into(),
+        ));
+        state.transcript = vec![user_entry("remove-entry")];
+        state.transcript_replayed = true;
+
+        state.clear_keiki_agent_rows("remove");
+
+        assert!(
+            state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:keep")
+        );
+        assert!(
+            !state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:remove")
+        );
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:keep:+1555")
+        );
+        assert!(
+            !state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:remove:+1666")
+        );
+        assert_eq!(state.selected_chat, None);
+        assert!(state.keiki_conversation.is_none());
+        assert!(state.transcript.is_empty());
+        assert!(!state.transcript_replayed);
     }
 
     #[test]

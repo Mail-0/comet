@@ -189,9 +189,56 @@ pub struct AgentInput {
     pub storage_mode: Option<StorageMode>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLine {
+    pub number: String,
+    pub channel: String,
+    pub line_type: String,
+    pub routing_status: RoutingStatus,
+    pub routing_message: Option<String>,
+    pub activated_at: String,
+    pub agent_id: Option<String>,
+    pub agent_name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AgentEditResponse {
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub lines: Vec<AgentLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentConfigWithLines {
+    pub agent: AgentConfig,
+    pub lines: Vec<AgentLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<AgentFeatures>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentMutationResponse {
+    pub ok: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

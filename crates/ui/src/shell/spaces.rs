@@ -2946,42 +2946,83 @@ impl Shell {
 
         if let Some((space_id, position)) = self.space_menu.get().cloned() {
             let closing = self.space_menu.closing_since();
-            let rename_id = space_id.clone();
-            let delete_id = space_id.clone();
-            let menu = popover::popover_card(&theme)
+            let is_keiki = crate::keiki::is_keiki_space(&space_id);
+            let mut menu = popover::popover_card(&theme)
                 .w(px(170.0))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.close_space_menu(cx);
                 }))
                 .flex()
-                .flex_col()
-                .child(
-                    popover::menu_row(&theme, false, format!("space-menu-rename-{space_id}"))
-                        .id("space-menu-rename")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_rename_space(rename_id.clone(), cx)
-                        }))
-                        .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
-                        .child(SharedString::from("Rename…")),
-                )
-                .child(popover::menu_separator())
-                .child(
-                    popover::menu_row(&theme, false, format!("space-menu-delete-{space_id}"))
-                        .id("space-menu-delete")
+                .flex_col();
+            if is_keiki {
+                let settings_id = space_id.clone();
+                let delete_id = space_id.clone();
+                menu = menu
+                    .child(
+                        popover::menu_row(&theme, false, format!("space-menu-settings-{space_id}"))
+                            .id("space-menu-settings")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_space_menu(cx);
+                                this.open_keiki_agent_settings(settings_id.clone(), cx);
+                            }))
+                            .child(
+                                icon(icons::SETTINGS_MINIMALISTIC)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Agent settings…")),
+                    )
+                    .child(
+                        popover::menu_row(
+                            &theme,
+                            false,
+                            format!("space-menu-delete-agent-{space_id}"),
+                        )
+                        .id("space-menu-delete-agent")
                         .text_color(theme.danger)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.close_space_menu(cx);
-                            this.delete_space_confirm = Some(delete_id.clone());
-                            cx.notify();
+                            this.open_keiki_agent_delete(delete_id.clone(), cx);
                         }))
                         .child(
                             icon(icons::TRASH_BIN_MINIMALISTIC)
                                 .size(px(16.0))
                                 .text_color(theme.danger),
                         )
-                        .child(SharedString::from("Remove…")),
-                )
-                .into_any_element();
+                        .child(SharedString::from("Delete agent…")),
+                    );
+            } else {
+                let rename_id = space_id.clone();
+                let delete_id = space_id.clone();
+                menu = menu
+                    .child(
+                        popover::menu_row(&theme, false, format!("space-menu-rename-{space_id}"))
+                            .id("space-menu-rename")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_rename_space(rename_id.clone(), cx)
+                            }))
+                            .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
+                            .child(SharedString::from("Rename…")),
+                    )
+                    .child(popover::menu_separator())
+                    .child(
+                        popover::menu_row(&theme, false, format!("space-menu-delete-{space_id}"))
+                            .id("space-menu-delete")
+                            .text_color(theme.danger)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_space_menu(cx);
+                                this.delete_space_confirm = Some(delete_id.clone());
+                                cx.notify();
+                            }))
+                            .child(
+                                icon(icons::TRASH_BIN_MINIMALISTIC)
+                                    .size(px(16.0))
+                                    .text_color(theme.danger),
+                            )
+                            .child(SharedString::from("Remove…")),
+                    );
+            }
+            let menu = menu.into_any_element();
             overlays.push(popover::menu_at(
                 "space-context-menu",
                 position,
