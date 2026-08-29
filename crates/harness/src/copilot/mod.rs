@@ -4,17 +4,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::StreamExt;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use zeron_copilot::{
-    AgUiEvent, Client, CopilotCredentials, Error as CopilotError, Interrupt, ResumeEntry,
-    ResumePayload, ResumeStatus, SseDecoder, TurnMapper,
+    AgUiEvent, Client, CopilotCredentials, Error as CopilotError, Interrupt, PendingInterrupts,
+    ResumeEntry, ResumePayload, ResumeStatus, SseDecoder, TurnMapper,
 };
 use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
@@ -112,6 +112,8 @@ struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     resume: Option<Vec<ResumeEntry>>,
     messages: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    append_to_transcript: Option<bool>,
 }
 
 fn chat_request(
@@ -120,6 +122,7 @@ fn chat_request(
     parent_run_id: Option<String>,
     resume: Option<ResumePayload>,
     messages: Vec<Value>,
+    append_to_transcript: bool,
 ) -> ChatRequest {
     ChatRequest {
         thread_id: thread_id.to_owned(),
@@ -127,49 +130,52 @@ fn chat_request(
         parent_run_id,
         resume: resume.map(|payload| payload.resume),
         messages,
+        append_to_transcript: append_to_transcript.then_some(true),
     }
 }
 
-async fn chat_request_with_history(
+async fn pending_interrupts(
     client: &Client,
     credentials: &Arc<dyn CopilotCredentialSource>,
     thread_id: &str,
-    run_id: &str,
-    parent_run_id: Option<String>,
-    resume: Option<ResumePayload>,
-    prompt: Option<String>,
-) -> Result<ChatRequest, String> {
+) -> Result<Option<PendingInterrupts>, String> {
     let current = credentials
         .snapshot()
         .ok_or_else(|| "Copilot credentials are unavailable".to_owned())?;
-    let mut messages = match client.get_thread(&current, thread_id).await {
-        Ok(thread) => thread
-            .messages
-            .as_array()
-            .cloned()
-            .ok_or_else(|| "Copilot thread history was not an array".to_owned())?,
-        Err(CopilotError::Api { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            Vec::new()
-        }
-        Err(CopilotError::Unauthorized) => {
-            return Err("Copilot authorization expired".into());
-        }
-        Err(error) => {
-            return Err(format!("Copilot thread history failed: {error}"));
-        }
-    };
-    if let Some(prompt) = prompt {
-        messages.push(json!({ "role": "user", "content": prompt }));
-    } else if messages.is_empty() {
-        return Err("Copilot cannot resume an empty thread".into());
+    match client.get_chat_thread(&current, thread_id).await {
+        Ok(state) => Ok(state
+            .interrupts
+            .filter(|interrupts| !interrupts.pending.is_empty())),
+        Err(CopilotError::Unauthorized) => Err("Copilot authorization expired".into()),
+        Err(error) => Err(format!("Copilot thread hydration failed: {error}")),
     }
-    Ok(chat_request(
+}
+
+fn normal_chat_request(thread_id: &str, run_id: &str, prompt: String) -> ChatRequest {
+    chat_request(
         thread_id,
         run_id,
-        parent_run_id,
-        resume,
-        messages,
-    ))
+        None,
+        None,
+        vec![json!({ "role": "user", "content": prompt })],
+        true,
+    )
+}
+
+fn resume_chat_request(
+    thread_id: &str,
+    run_id: &str,
+    parent_run_id: String,
+    resume: ResumePayload,
+) -> ChatRequest {
+    chat_request(
+        thread_id,
+        run_id,
+        Some(parent_run_id),
+        Some(resume),
+        Vec::new(),
+        false,
+    )
 }
 
 async fn run_copilot(
@@ -201,18 +207,28 @@ async fn run_copilot(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let mut pending_steers = VecDeque::new();
     let mut steering_closed = false;
-    let mut next_body = match chat_request_with_history(
-        &client,
-        &credentials,
-        &thread_id,
-        &Uuid::new_v4().to_string(),
-        None,
-        None,
-        Some(request.prompt),
-    )
-    .await
-    {
-        Ok(body) => body,
+    let mut prompt_after_resume = None;
+    let mut next_body;
+    match pending_interrupts(&client, &credentials, &thread_id).await {
+        Ok(Some(interrupts)) => {
+            let resume =
+                await_interrupts(request_input.clone(), interrupts.pending, &interrupt).await;
+            let Some(resume) = resume else {
+                send_done_interrupted(&event_tx).await;
+                return;
+            };
+            prompt_after_resume = Some(request.prompt);
+            next_body = resume_chat_request(
+                &thread_id,
+                &Uuid::new_v4().to_string(),
+                interrupts.run_id,
+                resume,
+            );
+        }
+        Ok(None) => {
+            next_body =
+                normal_chat_request(&thread_id, &Uuid::new_v4().to_string(), request.prompt);
+        }
         Err(error) => {
             send_done_error(&event_tx, &error).await;
             return;
@@ -236,10 +252,12 @@ async fn run_copilot(
             }
         };
 
+        let request_run_id = next_body.run_id.clone();
         let result = consume_response(
             &client,
             &credentials,
             response,
+            &request_run_id,
             &interrupt,
             &mut steering,
             &mut pending_steers,
@@ -247,9 +265,43 @@ async fn run_copilot(
         )
         .await;
         match result {
-            ConsumeResult::Done => {
+            ConsumeResult::Done(done) => {
+                let pending = match pending_interrupts(&client, &credentials, &thread_id).await {
+                    Ok(pending) => pending,
+                    Err(error) => {
+                        send_done_error(&event_tx, &error).await;
+                        break 'session;
+                    }
+                };
+                if let Some(interrupts) = pending {
+                    let resume =
+                        await_interrupts(request_input.clone(), interrupts.pending, &interrupt)
+                            .await;
+                    let Some(resume) = resume else {
+                        send_done_interrupted(&event_tx).await;
+                        break 'session;
+                    };
+                    pending_steers.clear();
+                    next_body = resume_chat_request(
+                        &thread_id,
+                        &Uuid::new_v4().to_string(),
+                        interrupts.run_id,
+                        resume,
+                    );
+                    continue;
+                }
+                if let Some(prompt) = prompt_after_resume.take() {
+                    next_body =
+                        normal_chat_request(&thread_id, &Uuid::new_v4().to_string(), prompt);
+                    continue;
+                }
+                if event_tx.send(Ok(done)).await.is_err() {
+                    break 'session;
+                }
                 let steer = if let Some(steer) = pending_steers.pop_front() {
                     Some(steer)
+                } else if steering_closed {
+                    None
                 } else {
                     tokio::select! {
                         _ = interrupt.cancelled() => {
@@ -281,48 +333,21 @@ async fn run_copilot(
                 {
                     break 'session;
                 }
-                next_body = match chat_request_with_history(
-                    &client,
-                    &credentials,
-                    &thread_id,
-                    &next,
-                    None,
-                    None,
-                    Some(steer.prompt),
-                )
-                .await
-                {
-                    Ok(body) => body,
-                    Err(error) => {
-                        send_done_error(&event_tx, &error).await;
-                        break 'session;
-                    }
-                };
+                next_body = normal_chat_request(&thread_id, &next, steer.prompt);
             }
-            ConsumeResult::Interrupt { run_id, interrupts } => {
+            ConsumeResult::Interrupt { interrupts } => {
                 let resume = await_interrupts(request_input.clone(), interrupts, &interrupt).await;
                 let Some(resume) = resume else {
                     send_done_interrupted(&event_tx).await;
                     break 'session;
                 };
                 pending_steers.clear();
-                next_body = match chat_request_with_history(
-                    &client,
-                    &credentials,
+                next_body = resume_chat_request(
                     &thread_id,
                     &Uuid::new_v4().to_string(),
-                    Some(run_id),
-                    Some(resume),
-                    None,
-                )
-                .await
-                {
-                    Ok(body) => body,
-                    Err(error) => {
-                        send_done_error(&event_tx, &error).await;
-                        break 'session;
-                    }
-                };
+                    request_run_id,
+                    resume,
+                );
             }
             ConsumeResult::Stopped => break 'session,
         }
@@ -330,11 +355,8 @@ async fn run_copilot(
 }
 
 enum ConsumeResult {
-    Done,
-    Interrupt {
-        run_id: String,
-        interrupts: Vec<Interrupt>,
-    },
+    Done(AgentEvent),
+    Interrupt { interrupts: Vec<Interrupt> },
     Stopped,
 }
 
@@ -342,6 +364,7 @@ async fn consume_response(
     client: &Client,
     credentials: &Arc<dyn CopilotCredentialSource>,
     response: reqwest::Response,
+    request_run_id: &str,
     interrupt: &CancellationToken,
     steering: &mut mpsc::Receiver<SteerMessage>,
     pending_steers: &mut VecDeque<SteerMessage>,
@@ -349,14 +372,13 @@ async fn consume_response(
 ) -> ConsumeResult {
     let mut decoder = SseDecoder::new();
     let mut mapper = TurnMapper::new();
-    let mut run_id = String::new();
     let mut steering_closed = false;
     let mut body = response.bytes_stream();
     loop {
         tokio::select! {
             _ = interrupt.cancelled() => {
-                if !run_id.is_empty() && let Some(current) = credentials.snapshot() {
-                    let _ = client.cancel_run(&current, &run_id).await;
+                if let Some(current) = credentials.snapshot() {
+                    let _ = client.cancel_run(&current, request_run_id).await;
                 }
                 send_done_interrupted(event_tx).await;
                 return ConsumeResult::Stopped;
@@ -372,7 +394,7 @@ async fn consume_response(
                     if let Ok(Some(frame)) = decoder.finish()
                         && let Ok(event) = frame.ag_ui_event()
                         && let Some(result) =
-                            handle_event(event, &mut mapper, &mut run_id, event_tx).await
+                            handle_event(event, &mut mapper, event_tx).await
                     {
                         return result;
                     }
@@ -402,7 +424,7 @@ async fn consume_response(
                         }
                     };
                     if let Some(result) = handle_event(
-                        event, &mut mapper, &mut run_id, event_tx
+                        event, &mut mapper, event_tx
                     ).await {
                         return result;
                     }
@@ -415,34 +437,27 @@ async fn consume_response(
 async fn handle_event(
     event: AgUiEvent,
     mapper: &mut TurnMapper,
-    run_id: &mut String,
     event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
 ) -> Option<ConsumeResult> {
-    if let AgUiEvent::RunStarted {
-        run_id: started_run_id,
-        ..
-    } = &event
-    {
-        *run_id = started_run_id.clone();
-    }
     let mapped = mapper.handle(event);
-    let is_done = mapped
-        .iter()
-        .any(|event| matches!(event, AgentEvent::Done { .. }));
+    let done = mapped.iter().find_map(|event| match event {
+        AgentEvent::Done { .. } => Some(event.clone()),
+        _ => None,
+    });
     for event in mapped {
+        if matches!(event, AgentEvent::Done { .. }) {
+            continue;
+        }
         if event_tx.send(Ok(event)).await.is_err() {
             return Some(ConsumeResult::Stopped);
         }
     }
     let interrupts = mapper.take_interrupts();
     if !interrupts.is_empty() {
-        return Some(ConsumeResult::Interrupt {
-            run_id: run_id.clone(),
-            interrupts,
-        });
+        return Some(ConsumeResult::Interrupt { interrupts });
     }
-    if is_done {
-        return Some(ConsumeResult::Done);
+    if let Some(done) = done {
+        return Some(ConsumeResult::Done(done));
     }
     None
 }
