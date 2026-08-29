@@ -7251,12 +7251,13 @@ impl Shell {
                         .text_size(crate::typography::ui_rems(14.0))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(theme.on_solid)
-                        .cursor_pointer()
-                        .hover(|s| s.opacity(0.9))
                         .when(!keiki_loading, |button| {
-                            button.on_click(cx.listener(|this, _, _, cx| {
-                                this.start_keiki_sign_in(cx)
-                            }))
+                            button
+                                .cursor_pointer()
+                                .hover(|s| s.opacity(0.9))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.start_keiki_sign_in(cx)
+                                }))
                         })
                         .child(SharedString::from(if keiki_loading {
                             "Opening Keiki…"
