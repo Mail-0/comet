@@ -72,22 +72,10 @@ impl Shell {
             if !state.chats_synced || state.selected_chat.is_some() || state.auto_selected {
                 return;
             }
-            self.settings
-                .copilot_chat_id
-                .as_deref()
-                .and_then(|id| {
-                    state
-                        .chats
-                        .iter()
-                        .find(|chat| chat.id == id && !chat.archived)
-                        .map(|chat| chat.id.clone())
-                })
-                .or_else(|| {
-                    state
-                        .overview_chats(Utc::now())
-                        .first()
-                        .map(|(_, c)| c.id.clone())
-                })
+            state
+                .overview_chats(Utc::now())
+                .first()
+                .map(|(_, c)| c.id.clone())
         };
         if let Some(first) = first {
             self.state
@@ -154,13 +142,12 @@ impl Shell {
                 model: Some("copilot".into()),
                 reasoning: None,
                 model_options: Default::default(),
-                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                sandbox: zeron_proto::SandboxLevel::ReadOnly,
             };
             let params = serde_json::json!({
                 "op": "createChat",
                 "chatId": chat_id,
                 "deviceId": device_id,
-                "cwd": "~",
                 "config": config,
             });
             let result = engine.client().call(methods::MUTATE, params).await;

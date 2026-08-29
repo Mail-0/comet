@@ -1291,8 +1291,8 @@ impl Shell {
                     .map(|(status, chat)| (status, chat.clone()))
             })
         };
-        let copilot_row = if copilot_available {
-            if let Some((status, chat)) = copilot_chat {
+        let copilot_row = match (copilot_available, copilot_chat) {
+            (true, Some((status, chat))) => {
                 let is_selected = selected.as_deref() == Some(chat.id.as_str());
                 let element = self.render_chat_row(
                     chat.id.clone(),
@@ -1314,11 +1314,8 @@ impl Shell {
                     super::chat_row_height(false, false),
                     element,
                 )
-            } else {
-                self.render_unavailable_copilot_row(copilot_available, theme, cx)
             }
-        } else {
-            self.render_unavailable_copilot_row(false, theme, cx)
+            (available, _) => self.render_copilot_launcher_row(available, theme, cx),
         };
         rendered.push(copilot_row);
         for (group, rows) in groups {
@@ -1442,7 +1439,7 @@ impl Shell {
         rendered
     }
 
-    fn render_unavailable_copilot_row(
+    fn render_copilot_launcher_row(
         &self,
         available: bool,
         theme: &Theme,
