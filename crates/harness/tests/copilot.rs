@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use zeron_copilot::CopilotCredentials;
@@ -283,9 +283,11 @@ async fn run_to_end(harness: &CopilotHarness, request: RunRequest, controls: Run
     )
     .await
     .unwrap();
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, AgentEvent::Done { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Done { .. }))
+    );
 }
 
 fn harness(fake: &FakeCopilot) -> CopilotHarness {
@@ -309,10 +311,11 @@ async fn normal_turn_uses_server_append_without_history_fetch() {
         json!([{"role":"user","content":"first"}])
     );
     assert_eq!(posts[0]["appendToTranscript"], true);
-    assert!(fake
-        .gets()
-        .iter()
-        .all(|target| !target.contains("/threads/")));
+    assert!(
+        fake.gets()
+            .iter()
+            .all(|target| !target.contains("/threads/"))
+    );
 }
 
 #[tokio::test]
@@ -466,7 +469,6 @@ async fn text_before_tool_call_is_kept_as_assistant_text() {
         zeron_copilot::AgUiEvent::ToolCallStart {
             tool_call_id: "call".into(),
             tool_call_name: "delete".into(),
-            parent_message_id: Some("assistant".into()),
         },
         zeron_copilot::AgUiEvent::ToolCallEnd {
             tool_call_id: "call".into(),

@@ -3,7 +3,7 @@
 use std::{collections::HashMap, fmt};
 
 use reqwest::{Response, StatusCode};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use zeron_proto::{AgentEvent, DoneStatus, HarnessId, ToolCall};
 
@@ -118,46 +118,6 @@ impl Client {
         .await
     }
 
-    pub async fn list_threads(
-        &self,
-        credentials: &CopilotCredentials,
-    ) -> Result<ThreadList, Error> {
-        self.send_json(self.authorized(credentials, self.http.get(self.endpoint("/threads"))))
-            .await
-    }
-
-    pub async fn update_thread<T: Serialize>(
-        &self,
-        credentials: &CopilotCredentials,
-        thread_id: &str,
-        body: &T,
-    ) -> Result<Thread, Error> {
-        self.send_json(
-            self.authorized(
-                credentials,
-                self.http
-                    .put(self.endpoint(&format!("/threads/{thread_id}")))
-                    .json(body),
-            ),
-        )
-        .await
-    }
-
-    pub async fn delete_thread(
-        &self,
-        credentials: &CopilotCredentials,
-        thread_id: &str,
-    ) -> Result<Value, Error> {
-        self.send_json(
-            self.authorized(
-                credentials,
-                self.http
-                    .delete(self.endpoint(&format!("/threads/{thread_id}"))),
-            ),
-        )
-        .await
-    }
-
     fn endpoint(&self, path: &str) -> String {
         format!("{}/api/copilot{path}", self.base_url)
     }
@@ -205,42 +165,8 @@ async fn ensure_success(response: Response) -> Result<Response, Error> {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ThreadSummary {
-    pub id: String,
-    pub title: Option<String>,
-    pub updated_at: Option<String>,
-    pub message_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct ThreadList {
-    pub threads: Vec<ThreadSummary>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Thread {
-    pub id: String,
-    pub title: Option<String>,
-    pub messages: Value,
-    pub activity: Value,
-    pub updated_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChatState {
-    #[allow(dead_code)]
-    pub messages: Value,
-    #[allow(dead_code)]
-    pub active_run: Option<ActiveRun>,
     pub interrupts: Option<PendingInterrupts>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActiveRun {
-    pub run_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -386,7 +312,6 @@ pub enum AgUiEvent {
     ToolCallStart {
         tool_call_id: String,
         tool_call_name: String,
-        parent_message_id: Option<String>,
     },
     ToolCallArgs {
         tool_call_id: String,
@@ -396,7 +321,6 @@ pub enum AgUiEvent {
         tool_call_id: Option<String>,
         tool_call_name: Option<String>,
         delta: Option<String>,
-        parent_message_id: Option<String>,
     },
     ToolCallEnd {
         tool_call_id: String,
@@ -532,7 +456,6 @@ impl AgUiEvent {
                 Ok(Self::ToolCallStart {
                     tool_call_id: wire.tool_call_id,
                     tool_call_name: wire.tool_call_name,
-                    parent_message_id: wire.parent_message_id,
                 })
             }
             "TOOL_CALL_ARGS" => {
@@ -548,7 +471,6 @@ impl AgUiEvent {
                     tool_call_id: wire.tool_call_id,
                     tool_call_name: wire.tool_call_name,
                     delta: wire.delta,
-                    parent_message_id: wire.parent_message_id,
                 })
             }
             "TOOL_CALL_END" => {
@@ -656,8 +578,6 @@ struct ThinkingContentWire {
 struct ToolCallStartWire {
     tool_call_id: String,
     tool_call_name: String,
-    #[serde(default)]
-    parent_message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -676,8 +596,6 @@ struct ToolCallChunkWire {
     tool_call_name: Option<String>,
     #[serde(default)]
     delta: Option<String>,
-    #[serde(default)]
-    parent_message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -781,7 +699,6 @@ impl ResumePayload {
 /// AG-UI events reduced to Comet's existing transcript event contract.
 #[derive(Debug, Default)]
 pub struct TurnMapper {
-    assistant_message_id: Option<String>,
     tool_calls: HashMap<String, PendingToolCall>,
     last_tool_call_id: Option<String>,
     interrupts: Vec<Interrupt>,
@@ -815,10 +732,7 @@ impl TurnMapper {
                     assistant_message_id: String::new(),
                 }]
             }
-            AgUiEvent::TextMessageStart { message_id } => {
-                self.assistant_message_id = Some(message_id);
-                Vec::new()
-            }
+            AgUiEvent::TextMessageStart { .. } => Vec::new(),
             AgUiEvent::TextMessageContent { delta, .. }
             | AgUiEvent::TextMessageChunk {
                 delta: Some(delta), ..
@@ -844,11 +758,7 @@ impl TurnMapper {
             AgUiEvent::ToolCallStart {
                 tool_call_id,
                 tool_call_name,
-                parent_message_id,
             } => {
-                if let Some(parent_message_id) = parent_message_id {
-                    self.assistant_message_id = Some(parent_message_id);
-                }
                 self.last_tool_call_id = Some(tool_call_id.clone());
                 self.tool_calls.insert(
                     tool_call_id,
@@ -878,11 +788,7 @@ impl TurnMapper {
                 tool_call_id,
                 tool_call_name,
                 delta,
-                parent_message_id,
             } => {
-                if let Some(parent_message_id) = parent_message_id {
-                    self.assistant_message_id = Some(parent_message_id);
-                }
                 let id = tool_call_id
                     .or_else(|| self.last_tool_call_id.clone())
                     .or_else(|| tool_call_name.clone())
