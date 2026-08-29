@@ -24,6 +24,7 @@ use url::{Url, form_urlencoded};
 pub const OAUTH_REDIRECT_URI: &str = "keiki://oauth/callback";
 const LOOPBACK_CALLBACK_PATH: &str = "/oauth/callback";
 const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const CONVERSATION_MESSAGE_PAGE_LIMIT: u32 = 500;
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -595,10 +596,27 @@ impl Client {
         access_token: &str,
         locator: &ConversationLocator,
     ) -> Result<reqwest::RequestBuilder, Error> {
-        Ok(self
-            .http
-            .get(self.conversation_endpoint(locator, None)?)
-            .bearer_auth(access_token))
+        self.conversation_page_authenticated_request(
+            access_token,
+            locator,
+            CONVERSATION_MESSAGE_PAGE_LIMIT,
+            0,
+        )
+    }
+
+    pub fn conversation_page_authenticated_request(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        limit: u32,
+        offset: u32,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let mut endpoint = self.conversation_endpoint(locator, None)?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("limit", &limit.to_string())
+            .append_pair("offset", &offset.to_string());
+        Ok(self.http.get(endpoint).bearer_auth(access_token))
     }
 
     pub async fn conversation(
@@ -606,8 +624,44 @@ impl Client {
         access_token: &str,
         locator: &ConversationLocator,
     ) -> Result<ConversationDetail, Error> {
-        self.send_json(self.conversation_authenticated_request(access_token, locator)?)
-            .await
+        let mut detail: ConversationDetail = self
+            .send_json(self.conversation_authenticated_request(access_token, locator)?)
+            .await?;
+        let initial_offset = detail
+            .meta
+            .message_count
+            .saturating_sub(CONVERSATION_MESSAGE_PAGE_LIMIT);
+        let mut messages = Vec::new();
+        let mut offset = initial_offset;
+
+        if initial_offset == 0 {
+            let page_len = detail.messages.len();
+            messages.append(&mut detail.messages);
+            if page_len < CONVERSATION_MESSAGE_PAGE_LIMIT as usize {
+                return Ok(detail);
+            }
+            offset = CONVERSATION_MESSAGE_PAGE_LIMIT;
+        }
+
+        loop {
+            let page: ConversationDetail = self
+                .send_json(self.conversation_page_authenticated_request(
+                    access_token,
+                    locator,
+                    CONVERSATION_MESSAGE_PAGE_LIMIT,
+                    offset,
+                )?)
+                .await?;
+            let page_len = page.messages.len();
+            messages.extend(page.messages);
+            if page_len < CONVERSATION_MESSAGE_PAGE_LIMIT as usize {
+                break;
+            }
+            offset = offset.saturating_add(CONVERSATION_MESSAGE_PAGE_LIMIT);
+        }
+
+        detail.messages = newest_messages(messages);
+        Ok(detail)
     }
 
     pub fn conversation_action_authenticated_request(
@@ -847,6 +901,16 @@ impl Client {
         }
         serde_json::from_str(&body).map_err(Error::Json)
     }
+}
+
+fn newest_messages(
+    mut messages: Vec<keiki_model::ConversationMessage>,
+) -> Vec<keiki_model::ConversationMessage> {
+    let first_message = messages
+        .len()
+        .saturating_sub(CONVERSATION_MESSAGE_PAGE_LIMIT as usize);
+    messages.drain(..first_message);
+    messages
 }
 
 impl AuthorizationFlow {
@@ -1454,7 +1518,17 @@ mod tests {
             .unwrap();
         assert_eq!(
             detail.url().as_str(),
-            "https://keiki.example/api/webapp/conversations/tg:user%2Fname@example.com?agentId=agent%2Fid"
+            "https://keiki.example/api/webapp/conversations/tg:user%2Fname@example.com?agentId=agent%2Fid&limit=500&offset=0"
+        );
+
+        let newest_page = client
+            .conversation_page_authenticated_request("access-token", &locator, 500, 272)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            newest_page.url().as_str(),
+            "https://keiki.example/api/webapp/conversations/tg:user%2Fname@example.com?agentId=agent%2Fid&limit=500&offset=272"
         );
 
         let takeover = client
@@ -1484,7 +1558,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             agentless_detail.url().as_str(),
-            "https://keiki.example/api/webapp/conversations/foo@example.com?apiKey=key%2Fwith+space"
+            "https://keiki.example/api/webapp/conversations/foo@example.com?apiKey=key%2Fwith+space&limit=500&offset=0"
         );
 
         let search = client
@@ -1528,6 +1602,36 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(steer.body().unwrap().as_bytes().unwrap())
                 .unwrap(),
             serde_json::json!({ "text": "Draft a response" })
+        );
+    }
+
+    #[test]
+    fn newest_message_window_keeps_the_tail_of_multiple_pages() {
+        let messages = (0..503)
+            .map(|index| keiki_model::ConversationMessage {
+                id: index.to_string(),
+                direction: keiki_model::MessageDirection::Inbound,
+                content: format!("Message {index}"),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                trace_id: None,
+                trace_duration_ms: None,
+                trace_status: None,
+                trace_model: None,
+                trace_tokens_in: None,
+                trace_tokens_out: None,
+                trace_total_steps: None,
+                trace_error: None,
+                internal: false,
+                staff_name: None,
+            })
+            .collect();
+        let newest = newest_messages(messages);
+
+        assert_eq!(newest.len(), 500);
+        assert_eq!(newest.first().map(|message| message.id.as_str()), Some("3"));
+        assert_eq!(
+            newest.last().map(|message| message.id.as_str()),
+            Some("502")
         );
     }
 }

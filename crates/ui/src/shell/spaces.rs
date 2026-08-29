@@ -181,6 +181,7 @@ pub(super) enum SpacesMenuRow {
     All,
     Space(String),
     AddSpace,
+    NewKeikiAgent,
 }
 
 /// The add-space palette (a command-K surface, summoned by ⌘K): search bar
@@ -430,6 +431,9 @@ impl Shell {
                 .map(|ix| SpacesMenuRow::Space(spaces[ix].id.clone())),
         );
         rows.push(SpacesMenuRow::AddSpace);
+        if state.keiki_status == crate::keiki::SessionStatus::SignedIn {
+            rows.push(SpacesMenuRow::NewKeikiAgent);
+        }
         rows
     }
 
@@ -473,7 +477,12 @@ impl Shell {
         cx.notify();
     }
 
-    fn activate_spaces_menu_row(&mut self, row: SpacesMenuRow, cx: &mut Context<Self>) {
+    fn activate_spaces_menu_row(
+        &mut self,
+        row: SpacesMenuRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match row {
             SpacesMenuRow::All => self.set_space_filter(None, cx),
             SpacesMenuRow::Space(id) => self.set_space_filter(Some(id), cx),
@@ -481,12 +490,21 @@ impl Shell {
                 self.close_spaces_menu(cx);
                 self.open_add_space(cx);
             }
+            SpacesMenuRow::NewKeikiAgent => {
+                self.close_spaces_menu(cx);
+                window.dispatch_action(Box::new(crate::shell::NewKeikiAgent), cx);
+            }
         }
     }
 
     /// Dropdown keys (bubbling from the focused search input): ↑↓ navigate,
     /// ⏎ activates the highlighted row, esc closes.
-    fn spaces_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+    fn spaces_menu_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The card stays mounted (and focused) through the exit animation —
         // keys must not drive a dying menu.
         if !self.spaces_menu.is_open() {
@@ -516,7 +534,7 @@ impl Shell {
                     self.spaces_menu_rows(cx).get(active).cloned()
                 };
                 if let Some(row) = row {
-                    self.activate_spaces_menu_row(row, cx);
+                    self.activate_spaces_menu_row(row, window, cx);
                 }
             }
             popover::MenuKey::Backspace | popover::MenuKey::Other => {}
@@ -964,6 +982,12 @@ impl Shell {
                     SpacesMenuRow::AddSpace => {
                         (row.clone(), SharedString::from("New agent…"), None, false)
                     }
+                    SpacesMenuRow::NewKeikiAgent => (
+                        row.clone(),
+                        SharedString::from("New Keiki agent…"),
+                        None,
+                        false,
+                    ),
                 })
                 .collect()
         };
@@ -982,10 +1006,10 @@ impl Shell {
                         let is_selected = match &row {
                             SpacesMenuRow::All => filter.is_none(),
                             SpacesMenuRow::Space(id) => filter.as_deref() == Some(id.as_str()),
-                            SpacesMenuRow::AddSpace => false,
+                            SpacesMenuRow::AddSpace | SpacesMenuRow::NewKeikiAgent => false,
                         };
                         let leading = match &row {
-                            SpacesMenuRow::AddSpace => icons::PLUS,
+                            SpacesMenuRow::AddSpace | SpacesMenuRow::NewKeikiAgent => icons::PLUS,
                             _ => icons::FOLDER,
                         };
                         let menu_space = match &row {
@@ -1000,8 +1024,8 @@ impl Shell {
                             format!("spaces-menu-row-{ix}"),
                         )
                         .id(("spaces-menu-row", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.activate_spaces_menu_row(activate.clone(), cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_spaces_menu_row(activate.clone(), window, cx);
                         }))
                         .when_some(menu_space, |el, space_id| {
                             el.on_mouse_down(
@@ -1047,8 +1071,8 @@ impl Shell {
             // inside the same SPACE_SM horizontal gutters.
             .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
             .track_focus(&focus)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                this.spaces_menu_key(event, cx)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.spaces_menu_key(event, window, cx)
             }))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.close_spaces_menu(cx);

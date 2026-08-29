@@ -6077,7 +6077,15 @@ impl Render for Composer {
                                 .mt(px(2.0))
                                 .text_color(text_c),
                         )
-                        .child(div().min_w_0().child(message)),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .max_h(px(96.0))
+                                .id("composer-failure-scroll")
+                                .overflow_y_scroll()
+                                .child(message),
+                        ),
                 )
             })
             .when_some(keiki_error, |el, message| {
@@ -6113,7 +6121,15 @@ impl Render for Composer {
                                 .mt(px(2.0))
                                 .text_color(theme.danger_muted.opacity(0.9)),
                         )
-                        .child(div().flex_1().min_w_0().child(SharedString::from(message))),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .max_h(px(96.0))
+                                .id("composer-keiki-error-scroll")
+                                .overflow_y_scroll()
+                                .child(SharedString::from(message)),
+                        ),
                 )
             })
             .when_some(queue_notice, |el, (notice, offline)| {

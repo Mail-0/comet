@@ -701,7 +701,7 @@ fn transcript_message_text(message: &ConversationMessage) -> String {
             || "Internal turn".to_string(),
             |name| format!("Internal turn — {name}"),
         );
-    format!("**{label}**\n\n{}", message.content)
+    format!("{label}\n\n{}", message.content)
 }
 
 pub fn map_transcript(detail: &ConversationDetail) -> Vec<SessionMessageEntry> {
@@ -1273,7 +1273,7 @@ mod tests {
     fn internal_messages_are_labeled_with_staff_name() {
         let message = ConversationMessage {
             id: "m".into(),
-            direction: MessageDirection::Outbound,
+            direction: MessageDirection::Inbound,
             content: "I can help with that.".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             trace_id: None,
@@ -1288,11 +1288,12 @@ mod tests {
             staff_name: Some("Devin".into()),
         };
         let entry = map_message(&message).expect("internal messages map");
+        assert_eq!(entry.role, MessageRole::User);
         assert_eq!(
             entry.parts,
             vec![MessagePart::Text {
                 id: "m:text".into(),
-                text: "**Internal turn — Devin**\n\nI can help with that.".into(),
+                text: "Internal turn — Devin\n\nI can help with that.".into(),
             }]
         );
     }

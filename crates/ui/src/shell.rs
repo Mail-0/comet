@@ -5536,6 +5536,112 @@ impl Shell {
         Some(popover::modal("keiki-agent-dialog", viewport, card))
     }
 
+    fn render_keiki_chat_action_rows(
+        &self,
+        chat_id: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let selected_chat = self.state.read(cx).selected_chat.clone();
+        if !keiki_menu_is_selected(chat_id, selected_chat.as_deref()) {
+            return Vec::new();
+        }
+        let (keiki_pending, keiki_blocked, keiki_takeover_live) = {
+            let state = self.state.read(cx);
+            let conversation = state.keiki_conversation();
+            (
+                conversation.and_then(|conversation| conversation.pending),
+                conversation.is_some_and(|conversation| conversation.blocked),
+                conversation.is_some_and(crate::keiki::takeover_live),
+            )
+        };
+
+        let takeover_id = chat_id.to_string();
+        let hand_back_id = chat_id.to_string();
+        let block_id = chat_id.to_string();
+        let unblock_id = chat_id.to_string();
+        let mut rows = vec![popover::menu_separator().into_any_element()];
+        if !keiki_takeover_live {
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-takeover-{chat_id}"))
+                    .id("chat-keiki-takeover")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Takeover),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::Takeover)
+                            && this.state.read(cx).selected_chat.as_deref()
+                                == Some(takeover_id.as_str())
+                        {
+                            crate::keiki::take_over(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("Take over"))
+                    .into_any_element(),
+            );
+        } else {
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-hand-back-{chat_id}"))
+                    .id("chat-keiki-hand-back")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::HandBack),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::HandBack)
+                            && this.state.read(cx).selected_chat.as_deref()
+                                == Some(hand_back_id.as_str())
+                        {
+                            crate::keiki::hand_back(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("Hand back"))
+                    .into_any_element(),
+            );
+        }
+        if !keiki_blocked {
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-block-{chat_id}"))
+                    .id("chat-keiki-block")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Block),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::Block)
+                            && this.state.read(cx).selected_chat.as_deref()
+                                == Some(block_id.as_str())
+                        {
+                            crate::keiki::block(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("Block"))
+                    .into_any_element(),
+            );
+        } else {
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-unblock-{chat_id}"))
+                    .id("chat-keiki-unblock")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Block),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::Block)
+                            && this.state.read(cx).selected_chat.as_deref()
+                                == Some(unblock_id.as_str())
+                        {
+                            crate::keiki::unblock(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("Unblock"))
+                    .into_any_element(),
+            );
+        }
+        rows
+    }
+
     /// Floating layers owned by the shell: context menus, edit dialogs, and
     /// the local-to-synced account lifecycle.
     fn render_overlays(
@@ -5585,6 +5691,7 @@ impl Shell {
                             )
                             .child(SharedString::from("Archive")),
                     )
+                    .children(self.render_keiki_chat_action_rows(&chat_id, &theme, cx))
                     .child(
                         popover::menu_row(&theme, false, format!("chat-menu-copy-{chat_id}"))
                             .id("chat-menu-copy")
@@ -5633,20 +5740,6 @@ impl Shell {
                         .as_ref()
                         .and_then(|chat| chat.harness_session_id.as_deref())
                         .is_some_and(|id| !id.trim().is_empty());
-                    let selected_chat = self.state.read(cx).selected_chat.clone();
-                    let is_selected_keiki =
-                        keiki_menu_is_selected(&chat_id, selected_chat.as_deref());
-                    let (keiki_pending, keiki_blocked, keiki_takeover_live) = if is_selected_keiki {
-                        let state = self.state.read(cx);
-                        let conversation = state.keiki_conversation();
-                        (
-                            conversation.and_then(|conversation| conversation.pending),
-                            conversation.is_some_and(|conversation| conversation.blocked),
-                            conversation.is_some_and(crate::keiki::takeover_live),
-                        )
-                    } else {
-                        (None, false, false)
-                    };
                     let zeron_id = chat_id.clone();
                     let harness_id = chat_id.clone();
                     let session_chat_id = chat_id.clone();
@@ -5680,121 +5773,6 @@ impl Shell {
                             )
                             .child(SharedString::from("Conversation link")),
                     )
-                    .when(is_selected_keiki, |menu| {
-                        let takeover_id = chat_id.clone();
-                        let hand_back_id = chat_id.clone();
-                        let block_id = chat_id.clone();
-                        let unblock_id = chat_id.clone();
-                        menu.child(popover::menu_separator())
-                            .when(!keiki_takeover_live, |menu| {
-                                menu.child(
-                                    popover::menu_row(
-                                        &theme,
-                                        false,
-                                        format!("chat-keiki-takeover-{chat_id}"),
-                                    )
-                                    .id("chat-keiki-takeover")
-                                    .when(
-                                        keiki_pending
-                                            == Some(
-                                                crate::keiki::KeikiConversationPending::Takeover,
-                                            ),
-                                        |row| row.opacity(0.45),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if keiki_pending
-                                            != Some(
-                                                crate::keiki::KeikiConversationPending::Takeover,
-                                            )
-                                            && this.state.read(cx).selected_chat.as_deref()
-                                                == Some(takeover_id.as_str())
-                                        {
-                                            crate::keiki::take_over(this.state.clone(), cx);
-                                        }
-                                    }))
-                                    .child(SharedString::from("Take over")),
-                                )
-                            })
-                            .when(keiki_takeover_live, |menu| {
-                                menu.child(
-                                    popover::menu_row(
-                                        &theme,
-                                        false,
-                                        format!("chat-keiki-hand-back-{chat_id}"),
-                                    )
-                                    .id("chat-keiki-hand-back")
-                                    .when(
-                                        keiki_pending
-                                            == Some(
-                                                crate::keiki::KeikiConversationPending::HandBack,
-                                            ),
-                                        |row| row.opacity(0.45),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if keiki_pending
-                                            != Some(
-                                                crate::keiki::KeikiConversationPending::HandBack,
-                                            )
-                                            && this.state.read(cx).selected_chat.as_deref()
-                                                == Some(hand_back_id.as_str())
-                                        {
-                                            crate::keiki::hand_back(this.state.clone(), cx);
-                                        }
-                                    }))
-                                    .child(SharedString::from("Hand back")),
-                                )
-                            })
-                            .when(!keiki_blocked, |menu| {
-                                menu.child(
-                                    popover::menu_row(
-                                        &theme,
-                                        false,
-                                        format!("chat-keiki-block-{chat_id}"),
-                                    )
-                                    .id("chat-keiki-block")
-                                    .when(
-                                        keiki_pending
-                                            == Some(crate::keiki::KeikiConversationPending::Block),
-                                        |row| row.opacity(0.45),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if keiki_pending
-                                            != Some(crate::keiki::KeikiConversationPending::Block)
-                                            && this.state.read(cx).selected_chat.as_deref()
-                                                == Some(block_id.as_str())
-                                        {
-                                            crate::keiki::block(this.state.clone(), cx);
-                                        }
-                                    }))
-                                    .child(SharedString::from("Block")),
-                                )
-                            })
-                            .when(keiki_blocked, |menu| {
-                                menu.child(
-                                    popover::menu_row(
-                                        &theme,
-                                        false,
-                                        format!("chat-keiki-unblock-{chat_id}"),
-                                    )
-                                    .id("chat-keiki-unblock")
-                                    .when(
-                                        keiki_pending
-                                            == Some(crate::keiki::KeikiConversationPending::Block),
-                                        |row| row.opacity(0.45),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if keiki_pending
-                                            != Some(crate::keiki::KeikiConversationPending::Block)
-                                            && this.state.read(cx).selected_chat.as_deref()
-                                                == Some(unblock_id.as_str())
-                                        {
-                                            crate::keiki::unblock(this.state.clone(), cx);
-                                        }
-                                    }))
-                                    .child(SharedString::from("Unblock")),
-                                )
-                            })
-                    })
                     .when_some(harness_link, |menu, link| {
                         menu.child(
                             popover::menu_row(
