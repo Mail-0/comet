@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+keiki-api.workspace = true
+keiki-model.workspace = true
 zeron-proto.workspace = true
 similar.workspace = true
 zeron-doc.workspace = true

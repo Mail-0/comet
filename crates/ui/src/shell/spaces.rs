@@ -82,6 +82,7 @@ impl Render for SidebarViewOptionsTooltip {
 #[derive(Clone, Copy)]
 enum SidebarViewRow {
     ByDevice,
+    ByAgent,
     InOneList,
     LastUpdated,
     Created,
@@ -96,13 +97,14 @@ impl SidebarViewRow {
     fn closes_menu(self) -> bool {
         matches!(
             self,
-            Self::ByDevice | Self::InOneList | Self::LastUpdated | Self::Created
+            Self::ByDevice | Self::ByAgent | Self::InOneList | Self::LastUpdated | Self::Created
         )
     }
 }
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 7] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 8] = [
     SidebarViewRow::ByDevice,
+    SidebarViewRow::ByAgent,
     SidebarViewRow::InOneList,
     SidebarViewRow::LastUpdated,
     SidebarViewRow::Created,
@@ -542,6 +544,9 @@ impl Shell {
             SidebarViewRow::ByDevice => {
                 self.settings.sidebar_organization = SidebarOrganization::ByDevice
             }
+            SidebarViewRow::ByAgent => {
+                self.settings.sidebar_organization = SidebarOrganization::ByAgent
+            }
             SidebarViewRow::InOneList => {
                 self.settings.sidebar_organization = SidebarOrganization::InOneList
             }
@@ -613,6 +618,7 @@ impl Shell {
 
         let labels = [
             "By device",
+            "By agent",
             "In one list",
             "Last updated",
             "Created",
@@ -622,6 +628,7 @@ impl Shell {
         ];
         let icons = [
             icons::LAPTOP,
+            icons::BOT,
             icons::LIST,
             icons::CLOCK_CIRCLE,
             icons::CALENDAR,
@@ -631,6 +638,7 @@ impl Shell {
         ];
         let selected = [
             organization == SidebarOrganization::ByDevice,
+            organization == SidebarOrganization::ByAgent,
             organization == SidebarOrganization::InOneList,
             sort == SidebarSort::LastUpdated,
             sort == SidebarSort::Created,
@@ -1067,19 +1075,32 @@ impl Shell {
             .map(|(_, chat)| chat.clone())
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
-        if self.settings.sidebar_organization != SidebarOrganization::ByDevice {
+        if !matches!(
+            self.settings.sidebar_organization,
+            SidebarOrganization::ByDevice | SidebarOrganization::ByAgent
+        ) {
             return chats.into_iter().map(|chat| chat.id).collect();
         }
         let mut groups: Vec<(Option<(String, String)>, Vec<zeron_proto::Chat>)> = Vec::new();
         for chat in chats {
-            let key = Some((chat.device_id.clone(), String::new()));
+            let key = Some(match self.settings.sidebar_organization {
+                SidebarOrganization::ByDevice => (chat.device_id.clone(), String::new()),
+                SidebarOrganization::ByAgent => {
+                    (chat.space_id.clone().unwrap_or_default(), String::new())
+                }
+                SidebarOrganization::ByProject | SidebarOrganization::InOneList => {
+                    unreachable!("flat sidebar organization returned above")
+                }
+            });
             if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &key) {
                 existing.push(chat);
             } else {
                 groups.push((key, vec![chat]));
             }
         }
-        promote_local_device_group(&mut groups, state.local_device_id.as_deref());
+        if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
+            promote_local_device_group(&mut groups, state.local_device_id.as_deref());
+        }
         groups
             .into_iter()
             .flat_map(|(_, rows)| rows)
@@ -1136,6 +1157,13 @@ impl Shell {
                     let change_request = state.change_request_for_chat(&chat).cloned();
                     let group = match self.settings.sidebar_organization {
                         SidebarOrganization::ByDevice => Some((chat.device_id.clone(), device)),
+                        SidebarOrganization::ByAgent => {
+                            chat.space_id.as_deref().and_then(|space_id| {
+                                state.space_for_chat(&chat).map(|space| {
+                                    (space_id.to_string(), space.display_name().to_string())
+                                })
+                            })
+                        }
                         SidebarOrganization::ByProject | SidebarOrganization::InOneList => None,
                     };
                     ActiveChatRow {
@@ -1168,7 +1196,10 @@ impl Shell {
                 groups.push((row.group.clone(), vec![row]));
             }
         }
-        if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
+        if matches!(
+            self.settings.sidebar_organization,
+            SidebarOrganization::ByDevice | SidebarOrganization::ByAgent
+        ) {
             let local_device_id = self.state.read(cx).local_device_id.clone();
             promote_local_device_group(&mut groups, local_device_id.as_deref());
         }
@@ -1239,6 +1270,7 @@ impl Shell {
             };
             let organization = match self.settings.sidebar_organization {
                 SidebarOrganization::ByDevice => "device",
+                SidebarOrganization::ByAgent => "agent",
                 SidebarOrganization::ByProject | SidebarOrganization::InOneList => "list",
             };
             let collapse_key = format!("{organization}:{key}");

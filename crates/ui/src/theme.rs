@@ -48,8 +48,7 @@ use zeron_theme::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccentColor {
-    /// The exact upstream Zeron indigo.
-    #[default]
+    /// The legacy Zeron indigo, retained for settings compatibility.
     #[serde(alias = "violet", alias = "indigo", alias = "red", alias = "purple")]
     Zeron,
     Orange,
@@ -57,10 +56,12 @@ pub enum AccentColor {
     Green,
     #[serde(alias = "teal")]
     Cyan,
+    #[default]
     Blue,
     Pink,
 }
 
+#[allow(dead_code)]
 impl AccentColor {
     pub const ALL: [Self; 7] = [
         Self::Zeron,
@@ -168,6 +169,7 @@ pub struct GlyphPalette {
     pub deep: Hsla,
 }
 
+#[allow(dead_code)]
 impl GlyphPalette {
     fn for_accent(primary: Hsla, strong: Hsla, appearance: Appearance) -> Self {
         let mut light = primary;
@@ -196,6 +198,7 @@ impl GlyphPalette {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct AccentTokens {
     primary: Hsla,
     strong: Hsla,
@@ -404,6 +407,7 @@ pub struct SyntaxPalette {
     pub invalid: Hsla,
 }
 
+#[allow(dead_code)]
 impl SyntaxPalette {
     pub fn color(&self, kind: HighlightKind) -> Hsla {
         match kind {
@@ -551,6 +555,7 @@ impl SyntaxPalette {
 
 /// Git history intentionally softens lane saturation so the graph remains
 /// colorful without competing with content. Syntax uses the same treatment.
+#[allow(dead_code)]
 fn git_graph_tone(mut color: Hsla) -> Hsla {
     color.s *= 0.72;
     color
@@ -724,6 +729,7 @@ pub struct TerminalColors {
     pub ansi: [Hsla; 16],
 }
 
+#[allow(dead_code)]
 impl TerminalColors {
     fn from_variant(variant: &ThemeVariant) -> Self {
         Self {
@@ -736,11 +742,11 @@ impl TerminalColors {
 
     fn zeron(appearance: Appearance) -> Self {
         let id = match appearance {
-            Appearance::Dark => "zeron-dark",
-            Appearance::Light => "zeron-light",
+            Appearance::Dark => "keiki-dark",
+            Appearance::Light => "keiki-light",
         };
         let registry = ThemeRegistry::active();
-        Self::from_variant(registry.variant(id).expect("Zeron terminal palette exists"))
+        Self::from_variant(registry.variant(id).expect("Keiki terminal palette exists"))
     }
 }
 
@@ -961,14 +967,14 @@ impl Theme {
         let accent = accent_color.tokens(Appearance::Dark);
         Self {
             appearance: Appearance::Dark,
-            variant_id: "zeron-dark".into(),
-            family_id: "zeron".into(),
+            variant_id: "keiki-dark".into(),
+            family_id: "keiki".into(),
             accent_selection: AccentSelection::Preset(accent_color.into()),
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
             accent_color,
-            bg: grey(6),       // main panel — sampled #060606
-            surface: grey(13), // shell / sidebar — sampled #0d0d0d
+            bg: grey(0),
+            surface: grey(15),
             surface_raised: neutral(0.235),
             surface_card: grey(0x0e),
             surface_dialog: grey(0x10),
@@ -979,7 +985,7 @@ impl Theme {
             border_strong: hsla(0.0, 0.0, 1.0, 0.14),
             text: neutral(0.922),       // ~neutral-200
             text_muted: neutral(0.708), // ~neutral-400
-            text_faint: neutral(0.556), // ~neutral-500
+            text_faint: neutral(0.58), // ~neutral-500
             text_dim: grey(0x98),
             solid: neutral(0.922), // near-white plate
             on_solid: grey(0x0e),  // near-black label
@@ -1038,8 +1044,8 @@ impl Theme {
         let accent = accent_color.tokens(Appearance::Light);
         Self {
             appearance: Appearance::Light,
-            variant_id: "zeron-light".into(),
-            family_id: "zeron".into(),
+            variant_id: "keiki-light".into(),
+            family_id: "keiki".into(),
             accent_selection: AccentSelection::Preset(accent_color.into()),
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
@@ -1146,14 +1152,14 @@ impl Theme {
     ) -> Self {
         let registry = ThemeRegistry::active();
         let fallback_id = match appearance {
-            Appearance::Dark => "zeron-dark",
-            Appearance::Light => "zeron-light",
+            Appearance::Dark => "keiki-dark",
+            Appearance::Light => "keiki-light",
         };
         let variant = registry
             .variant(variant_id)
             .filter(|variant| model_appearance(variant.appearance) == appearance)
             .or_else(|| registry.variant(fallback_id))
-            .expect("the built-in registry contains both Zeron appearances");
+            .expect("the built-in registry contains both Keiki appearances");
         Self::from_variant(variant, accent_selection, surface_preference)
     }
 
@@ -1164,7 +1170,7 @@ impl Theme {
     ) -> Self {
         let appearance = model_appearance(variant.appearance);
         let accent_color = match accent_selection {
-            AccentSelection::ThemeDefault => AccentColor::Zeron,
+            AccentSelection::ThemeDefault => AccentColor::default(),
             AccentSelection::Preset(preset) => preset.into(),
         };
         let mut theme = Self::for_preferences(appearance, accent_color);
@@ -1371,6 +1377,7 @@ impl Default for Theme {
 
 impl Global for Theme {}
 
+#[allow(dead_code)]
 fn system_sans() -> &'static str {
     if cfg!(target_os = "macos") {
         "Helvetica"
@@ -1381,6 +1388,7 @@ fn system_sans() -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn system_mono() -> &'static str {
     if cfg!(target_os = "macos") {
         "Menlo"
@@ -1784,18 +1792,18 @@ mod tests {
     }
 
     #[test]
-    fn zeron_accent_is_the_exact_upstream_default() {
+    fn keiki_accent_is_the_exact_default() {
         let dark = Theme::dark();
         let light = Theme::light();
-        assert_eq!(dark.accent_color, AccentColor::Zeron);
-        assert_eq!(dark.accent, oklch(0.673, 0.182, 276.935));
-        assert_eq!(dark.accent_strong, oklch(0.585, 0.233, 277.117));
+        assert_eq!(dark.accent_color, AccentColor::Blue);
+        assert_eq!(dark.accent, oklch(0.70, 0.17, 255.0));
+        assert_eq!(dark.accent_strong, oklch(0.50, 0.20, 255.0));
         assert_eq!(dark.code_text, dark.accent);
         assert_eq!(dark.busy, dark.accent);
         assert_eq!(dark.glyph.mid, dark.accent);
         assert_eq!(dark.caret, dark.accent);
-        assert_eq!(light.accent, oklch(0.511, 0.262, 276.966));
-        assert_eq!(light.accent_strong, oklch(0.511, 0.262, 276.966));
+        assert_eq!(light.accent, oklch(0.47, 0.21, 255.0));
+        assert_eq!(light.accent_strong, oklch(0.47, 0.21, 255.0));
         assert_eq!(light.code_text, light.accent);
         assert_eq!(light.busy, light.accent);
         assert_eq!(light.glyph.mid, light.accent);
@@ -2005,7 +2013,7 @@ mod tests {
                 assert_eq!(theme.success, baseline.success);
                 assert_eq!(theme.diff_add, baseline.diff_add);
                 assert_eq!(theme.diff_del, baseline.diff_del);
-                if accent != AccentColor::Zeron {
+                if accent != AccentColor::Zeron && accent != AccentColor::Blue {
                     assert_ne!(theme.code_text, baseline.code_text);
                     assert_ne!(theme.busy, baseline.busy);
                     assert_ne!(theme.selection, baseline.selection);

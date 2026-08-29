@@ -3500,6 +3500,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "keiki-api"
+version = "0.2.29"
+dependencies = [
+ "base64",
+ "keiki-model",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "url",
+]
+
+[[package]]
+name = "keiki-model"
+version = "0.2.29"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9365,6 +9388,8 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "gpui_tokio",
+ "keiki-api",
+ "keiki-model",
  "objc",
  "pulldown-cmark",
  "serde",

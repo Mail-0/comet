@@ -4699,7 +4699,10 @@ impl Composer {
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         if state.selected_chat.is_some() {
-            return false;
+            return state
+                .selected_chat
+                .as_deref()
+                .is_some_and(crate::keiki::is_keiki_chat);
         }
         // New-chat canvas: needs a project AND a runnable agent. The
         // no-agents check only fires once the catalog is loaded — offline

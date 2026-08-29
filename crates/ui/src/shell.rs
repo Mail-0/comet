@@ -1187,6 +1187,10 @@ pub struct Shell {
 }
 
 impl Shell {
+    pub(crate) fn set_sidebar_notice(&mut self, notice: impl Into<SharedString>) {
+        self.sidebar_notice = Some(notice.into());
+    }
+
     pub fn new(state: Entity<AppState>, boot: EngineBootConfig, cx: &mut Context<Self>) -> Self {
         let observation = cx.observe(&state, |this: &mut Shell, state, cx| {
             this.on_state_changed(&state, cx);
@@ -1240,7 +1244,12 @@ impl Shell {
             }
         });
         let data_dir = boot.data_dir.clone();
-        let settings = settings::current(cx);
+        let mut settings = settings::current(cx);
+        if state.read(cx).keiki_client.is_some()
+            && settings.sidebar_organization == SidebarOrganization::InOneList
+        {
+            settings.sidebar_organization = SidebarOrganization::ByAgent;
+        }
         state.update(cx, |state, cx| {
             state.set_change_requests_visible(settings.sidebar_show_pull_request, cx)
         });
@@ -3081,6 +3090,10 @@ impl Shell {
             .ok();
         }));
         cx.notify();
+    }
+
+    fn start_keiki_sign_in(&mut self, cx: &mut Context<Self>) {
+        crate::keiki::begin_sign_in(self.state.clone(), cx).detach();
     }
 
     // ---- org gate ----
@@ -6730,6 +6743,26 @@ impl Shell {
                         .hover(|s| s.opacity(0.9))
                         .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
                         .child(SharedString::from("Log in")),
+                )
+                .child(
+                    div()
+                        .id("keiki-sign-in")
+                        .mt(px(10.0))
+                        .w_full()
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_size(crate::typography::ui_rems(14.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.glass_hover()))
+                        .on_click(cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)))
+                        .child(SharedString::from("Sign in to Keiki")),
                 )
                 .into_any_element(),
         };

@@ -199,6 +199,10 @@ fn main() -> anyhow::Result<()> {
                 org_id: std::env::var("ZERON_ORG_ID").ok(),
                 default_harness: zeron_ui::HarnessId::ClaudeCode,
                 initial_url: cli.open_url,
+                keiki_api_url: std::env::var("KEIKI_API_URL")
+                    .ok()
+                    .filter(|url| !url.trim().is_empty())
+                    .unwrap_or_else(|| "https://onkeiki.com".into()),
             });
             Ok(())
         }

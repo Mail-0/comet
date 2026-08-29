@@ -174,6 +174,7 @@ pub enum SidebarOrganization {
     /// project selector and is normalized to [`Self::InOneList`] on load.
     ByProject,
     ByDevice,
+    ByAgent,
     #[default]
     InOneList,
 }

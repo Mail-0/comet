@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/theme",
+    "crates/keiki-model",
+    "crates/keiki-api",
     "crates/proto",
     "crates/doc",
     "crates/sync",
@@ -21,6 +23,8 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+keiki-model = { path = "crates/keiki-model" }
+keiki-api = { path = "crates/keiki-api" }
 zeron-proto = { path = "crates/proto" }
 zeron-doc = { path = "crates/doc" }
 zeron-sync = { path = "crates/sync" }
@@ -85,6 +89,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 json5 = "0.4"
 plist = "1"
+base64 = "0.22"
+rand = "0.9"
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # storage

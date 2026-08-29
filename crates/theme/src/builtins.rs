@@ -12,6 +12,7 @@ pub fn builtin_registry() -> &'static ThemeRegistry {
     static REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| ThemeRegistry {
         families: vec![
+            family("keiki", "Keiki", vec![keiki_light(), keiki_dark()]),
             family("zeron", "Zeron", vec![zeron_light(), zeron_dark()]),
             family(
                 "vscode-default",
@@ -265,6 +266,74 @@ fn zeron_dark() -> ThemeVariant {
             "native",
             "https://github.com/zeronsh/comet",
             "d138049",
+            "MIT",
+        ),
+    })
+}
+
+fn keiki_dark() -> ThemeVariant {
+    variant(Seeds {
+        id: "keiki-dark",
+        family_id: "keiki",
+        name: "Keiki Dark",
+        appearance: Appearance::Dark,
+        treatment: SurfaceTreatment::Opaque,
+        background: "#000000",
+        shell: "#0f0f0f",
+        raised: "#0f0f0f",
+        card: "#0f0f0f",
+        text: "#ededed",
+        muted: "#a1a1a6",
+        faint: "#8e8e93",
+        accent: "#0091ff",
+        danger: "#ff4245",
+        warning: "#ff9230",
+        success: "#30d158",
+        terminal_background: "#0d1117",
+        ansi: ANSI_DARK,
+        syntax: [
+            "#8b949e", "#d2a8ff", "#30d158", "#e3b341", "#0091ff", "#0091ff", "#ff7b73", "#ededed",
+            "#8b949e", "#ff7b73", "#ffb340", "#ff4245",
+        ],
+        source: source(
+            "keiki-dark",
+            "native",
+            "https://onkeiki.com",
+            "builtin",
+            "MIT",
+        ),
+    })
+}
+
+fn keiki_light() -> ThemeVariant {
+    variant(Seeds {
+        id: "keiki-light",
+        family_id: "keiki",
+        name: "Keiki Light",
+        appearance: Appearance::Light,
+        treatment: SurfaceTreatment::Opaque,
+        background: "#ffffff",
+        shell: "#ffffff",
+        raised: "#ebebeb",
+        card: "#ffffff",
+        text: "#171717",
+        muted: "#5f6368",
+        faint: "#6e6e73",
+        accent: "#0088ff",
+        danger: "#ff383c",
+        warning: "#ff8d28",
+        success: "#34c759",
+        terminal_background: "#f6f8fa",
+        ansi: ANSI_LIGHT,
+        syntax: [
+            "#59636e", "#6f42c1", "#248a3d", "#9a6700", "#0088ff", "#0088ff", "#c80014", "#171717",
+            "#59636e", "#c80014", "#c93400", "#d70015",
+        ],
+        source: source(
+            "keiki-light",
+            "native",
+            "https://onkeiki.com",
+            "builtin",
             "MIT",
         ),
     })

@@ -2352,11 +2352,11 @@ mod tests {
             registry
                 .variants_for(zeron_theme::Appearance::Light)
                 .count(),
-            10
+            11
         );
         assert_eq!(
             registry.variants_for(zeron_theme::Appearance::Dark).count(),
-            20
+            21
         );
     }
 

@@ -811,7 +811,9 @@ mod tests {
     #[test]
     fn builtins_have_complete_provenance_and_no_validation_errors() {
         let registry = ThemeRegistry::builtin();
-        assert_eq!(registry.families.len(), 19);
+        assert_eq!(registry.families.len(), 20);
+        assert!(registry.variant("keiki-light").is_some());
+        assert!(registry.variant("keiki-dark").is_some());
         assert!(registry.variant("zeron-light").is_some());
         assert!(registry.variant("zeron-dark").is_some());
         let errors: Vec<_> = registry
@@ -830,7 +832,7 @@ mod tests {
             .iter()
             .map(|family| family.variants.len())
             .sum::<usize>();
-        assert_eq!(variants, 30);
-        assert_eq!(variants * VisualFixture::ALL.len(), 300);
+        assert_eq!(variants, 32);
+        assert_eq!(variants * VisualFixture::ALL.len(), 320);
     }
 }

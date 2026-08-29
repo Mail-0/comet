@@ -24,6 +24,7 @@ pub mod edge_fade;
 pub mod frost;
 pub mod history;
 pub mod icons;
+pub mod keiki;
 pub mod links;
 pub mod loaders;
 pub mod markdown;
@@ -72,6 +73,8 @@ pub struct UiConfig {
     pub default_harness: HarnessId,
     /// Conversation URL passed by the OS on a cold launch.
     pub initial_url: Option<String>,
+    /// Keiki API base URL. Defaults to Keiki production when unset.
+    pub keiki_api_url: String,
 }
 
 impl UiConfig {
@@ -150,16 +153,24 @@ pub fn run_app(config: UiConfig) {
         terminal::panel::init(cx);
         app_menus::init(cx);
         cx.register_url_scheme("zeron").detach();
+        cx.register_url_scheme("keiki").detach();
 
         let state = cx.new(|_| state::AppState::new());
         let url_state = state.clone();
         cx.spawn(async move |cx| {
             while let Some(url) = url_rx.next().await {
-                url_state.update(cx, |state, cx| state.open_deep_link(&url, cx));
+                url_state.update(cx, |state, cx| {
+                    if url.starts_with("keiki://") {
+                        state.open_keiki_deep_link(&url, cx);
+                    } else {
+                        state.open_deep_link(&url, cx);
+                    }
+                });
             }
         })
         .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        keiki::start(state.clone(), config.keiki_api_url.clone(), cx);
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).

@@ -39,6 +39,7 @@ use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_cl
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
 };
+use crate::keiki::SessionStatus as KeikiSessionStatus;
 
 // ---------------------------------------------------------------------------
 // Engine handle
@@ -646,6 +647,12 @@ pub struct AppState {
     /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
     /// bootstrap so child views can persist small preference files.
     pub data_dir: Option<PathBuf>,
+    pub(crate) keiki_client: Option<keiki_api::Client>,
+    pub(crate) keiki_token: Option<keiki_api::TokenSet>,
+    pub(crate) keiki_credentials: Option<keiki_api::StoredCredentials>,
+    pub(crate) keiki_flow: Option<keiki_api::AuthorizationFlow>,
+    pub(crate) keiki_status: KeikiSessionStatus,
+    pub(crate) keiki_task: Option<Task<()>>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -694,6 +701,12 @@ impl AppState {
             local_device_id: None,
             update: None,
             data_dir: None,
+            keiki_client: None,
+            keiki_token: None,
+            keiki_credentials: None,
+            keiki_flow: None,
+            keiki_status: KeikiSessionStatus::SignedOut,
+            keiki_task: None,
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -751,6 +764,18 @@ impl AppState {
     // ---- reducers (pure) ----
 
     pub fn apply_chats(&mut self, mut chats: Vec<Chat>) {
+        let incoming_ids = chats
+            .iter()
+            .map(|chat| chat.id.clone())
+            .collect::<HashSet<_>>();
+        chats.extend(
+            self.chats
+                .iter()
+                .filter(|chat| {
+                    crate::keiki::is_keiki_chat(&chat.id) && !incoming_ids.contains(&chat.id)
+                })
+                .cloned(),
+        );
         sort_chats(&mut chats);
         self.chats = chats;
         self.chats_synced = true;
@@ -770,6 +795,18 @@ impl AppState {
     }
 
     pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
+        let incoming_ids = spaces
+            .iter()
+            .map(|space| space.id.clone())
+            .collect::<HashSet<_>>();
+        spaces.extend(
+            self.spaces
+                .iter()
+                .filter(|space| {
+                    crate::keiki::is_keiki_space(&space.id) && !incoming_ids.contains(&space.id)
+                })
+                .cloned(),
+        );
         sort_spaces(&mut spaces);
         self.spaces = spaces;
         self.spaces_synced = true;
@@ -845,6 +882,18 @@ impl AppState {
     }
 
     pub fn apply_devices(&mut self, mut devices: Vec<Device>) {
+        let incoming_ids = devices
+            .iter()
+            .map(|device| device.id.clone())
+            .collect::<HashSet<_>>();
+        devices.extend(
+            self.devices
+                .iter()
+                .filter(|device| {
+                    device.id == crate::keiki::DEVICE_ID && !incoming_ids.contains(&device.id)
+                })
+                .cloned(),
+        );
         // A local-only workspace has no remote device identity to distinguish.
         // Keep the engine's legacy sentinel out of the UI while preserving real
         // hostnames and user-assigned device names.
@@ -1483,7 +1532,11 @@ impl AppState {
         self.connection = ConnectionStatus::Ready;
         // Re-subscribe the transcript if a chat was already selected (reconnect path).
         if let Some(chat_id) = self.selected_chat.clone() {
-            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
+            self.transcript_task = if crate::keiki::is_keiki_chat(&chat_id) {
+                Some(crate::keiki::spawn_transcript_watch(cx, chat_id))
+            } else {
+                Some(spawn_transcript_watch(cx, handle, chat_id))
+            };
         }
         cx.notify();
     }
@@ -1536,6 +1589,10 @@ impl AppState {
             Err(error) => self.deep_link_notice = Some(error.to_string()),
         }
         cx.notify();
+    }
+
+    pub fn open_keiki_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
+        crate::keiki::handle_callback(self, url, cx);
     }
 
     fn apply_pending_deep_link(&mut self, cx: &mut Context<Self>) {
@@ -1602,8 +1659,14 @@ impl AppState {
             }
             self.mark_chat_seen(id, cx);
         }
-        if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
-            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
+        if let Some(chat_id) = chat_id {
+            self.transcript_task = if crate::keiki::is_keiki_chat(&chat_id) {
+                Some(crate::keiki::spawn_transcript_watch(cx, chat_id))
+            } else {
+                self.engine
+                    .clone()
+                    .map(|handle| spawn_transcript_watch(cx, handle, chat_id))
+            };
         }
         cx.notify();
     }
