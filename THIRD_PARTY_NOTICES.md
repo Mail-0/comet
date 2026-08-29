@@ -1,6 +1,10 @@
 # Third-party notices
 
-Zeron bundles the following syntax-highlighting components. Their parsers and
+Keiki Desktop derives its GPUI presentation, theme, and syntax foundations from
+[zeronsh/comet](https://github.com/zeronsh/comet), distributed under the MIT
+License. The fork retains the upstream Git history and copyright notices.
+
+Keiki bundles the following syntax-highlighting components. Their parsers and
 queries are consumed from the pinned Rust crates listed in `Cargo.lock`.
 
 | Component | Version | License | Source |
@@ -13,14 +17,14 @@ queries are consumed from the pinned Rust crates listed in `Cargo.lock`.
 | Tree-sitter Python, Go, JSON, Bash, HTML, CSS, C, C++, C#, Java, Ruby and PHP grammars and queries | pinned in `Cargo.lock` | MIT | https://github.com/tree-sitter |
 | Tree-sitter TOML, Markdown, YAML, Kotlin, Swift, SQL, Lua, Nix, Make and Containerfile grammars and queries | pinned in `Cargo.lock` | MIT-compatible; see each crate | Crate repositories recorded in `Cargo.lock` |
 
-The full Zeron distribution remains licensed under the terms in `LICENSE`.
+The full Keiki distribution remains licensed under the terms in `LICENSE`.
 
 ## Bundled theme palette adaptations
 
-Zeron includes manually curated palette adaptations derived from the projects
+Keiki includes manually curated palette adaptations derived from the projects
 below. The source repository and exact audited revision are also embedded in
 each resolved theme variant. These projects are not affiliated with or endorsed
-by Zeron. Their names identify the corresponding palette adaptations.
+by Keiki. Their names identify the corresponding palette adaptations.
 
 | Theme project | Audited revision | License and upstream notice |
 | --- | --- | --- |
@@ -39,7 +43,7 @@ by Zeron. Their names identify the corresponding palette adaptations.
 | Winter is Coming | `260547834cb6ac37dd5b8bb5842cc1c8d3164946` | [MIT](https://github.com/johnpapa/vscode-winteriscoming/blob/260547834cb6ac37dd5b8bb5842cc1c8d3164946/LICENSE.md) |
 | Palenight Theme | `6291efaace90855abe3d79025327ca41b9a3138c` | [MIT](https://github.com/whizkydee/vscode-palenight-theme/blob/6291efaace90855abe3d79025327ca41b9a3138c/license.md) |
 | SynthWave '84 | `ecfa2fe1279f7233663fa3f98a96e6756000567b` | [MIT](https://github.com/robb0wen/synthwave-vscode/blob/ecfa2fe1279f7233663fa3f98a96e6756000567b/LICENSE) |
-| Shades of Purple | `e8eb49f33e5db05ceba6677367b33ddb27ad821c` | [MIT text with an additional “With condition” section](https://github.com/ahmadawais/shades-of-purple-vscode/blob/e8eb49f33e5db05ceba6677367b33ddb27ad821c/LICENSE.md); Zeron is MIT-licensed, satisfying the stated condition |
+| Shades of Purple | `e8eb49f33e5db05ceba6677367b33ddb27ad821c` | [MIT text with an additional “With condition” section](https://github.com/ahmadawais/shades-of-purple-vscode/blob/e8eb49f33e5db05ceba6677367b33ddb27ad821c/LICENSE.md); Keiki is MIT-licensed, satisfying the stated condition |
 | Cobalt2 | `c4e9574372b85afad1682ed0fdd1ac0411c62512` | [MIT](https://github.com/wesbos/cobalt2-vscode/blob/c4e9574372b85afad1682ed0fdd1ac0411c62512/LICENSE) |
 | Andromeda | `d1abb48c69493000aa0133a32d594eb25e523d4f` | [MIT](https://github.com/EliverLara/Andromeda/blob/d1abb48c69493000aa0133a32d594eb25e523d4f/LICENSE.md) |
 
@@ -89,4 +93,4 @@ The common MIT permission notice for the adaptations above follows:
 > SOFTWARE.
 
 The pinned Shades of Purple license additionally says that anything built with
-it should also be MIT licensed. Zeron is distributed under MIT terms.
+it should also be MIT licensed. Keiki is distributed under MIT terms.

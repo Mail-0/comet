@@ -6,7 +6,7 @@ use std::{borrow::Cow, collections::BTreeSet};
 use gpui::{App, Global, Rems, SharedString, Window, px, rems};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::settings::{self, SavePolicy};
+use crate::settings;
 
 /// A bundled, virtual, or device-local interface font choice.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -380,8 +380,8 @@ pub fn set_family(family: UiFontFamily, cx: &mut App) -> bool {
         crate::theme::Theme::install_selection(
             appearance,
             themes.variant_id(match appearance {
-                crate::theme::Appearance::Dark => zeron_theme::Appearance::Dark,
-                crate::theme::Appearance::Light => zeron_theme::Appearance::Light,
+                crate::theme::Appearance::Dark => keiki_theme::Appearance::Dark,
+                crate::theme::Appearance::Light => keiki_theme::Appearance::Light,
             }),
             crate::appearance::accent(cx),
             crate::appearance::surface(cx),
@@ -389,7 +389,7 @@ pub fn set_family(family: UiFontFamily, cx: &mut App) -> bool {
         );
         cx.refresh_windows();
     }
-    settings::update(SavePolicy::Immediate, cx, |settings| {
+    settings::update(cx, |settings| {
         settings.ui_font_family = family;
     });
     effective_changed
@@ -411,7 +411,7 @@ pub fn set_font_size(size: UiFontSize, window: &mut Window, cx: &mut App) -> boo
     window.set_rem_size(px(size.pixels()));
     crate::theme::bump_style_generation();
     cx.refresh_windows();
-    settings::update(SavePolicy::Immediate, cx, |settings| {
+    settings::update(cx, |settings| {
         settings.ui_font_size = size;
     });
     true

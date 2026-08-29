@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Keiki
+GenericName=Agent Manager
+Comment=Create, manage, and communicate with Keiki agents
+Exec=keiki %u
+TryExec=keiki
+Icon=keiki
+Terminal=false
+Categories=Development;Utility;
+Keywords=agent;ai;automation;keiki;
+StartupWMClass=keiki
+MimeType=x-scheme-handler/keiki;

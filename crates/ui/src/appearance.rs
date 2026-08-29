@@ -20,10 +20,10 @@
 //! already-laid-out elements to re-run their paint with the new palette.
 
 use gpui::{App, Global, Subscription, Window};
+use keiki_theme::{AccentSelection, SurfacePreference, ThemeSelection};
 use serde::{Deserialize, Serialize};
-use zeron_theme::{AccentSelection, SurfacePreference, ThemeSelection};
 
-use crate::settings::{self, SavePolicy};
+use crate::settings;
 use crate::theme::{Appearance, Theme};
 
 /// The user's appearance preference. Persisted in `ui-settings.json`.
@@ -141,7 +141,7 @@ pub fn set_mode(mode: AppearanceMode, cx: &mut App) {
     }
     state.mode = mode;
     apply(cx);
-    settings::update(SavePolicy::Immediate, cx, |settings| {
+    settings::update(cx, |settings| {
         settings.appearance = mode;
     });
 }
@@ -161,7 +161,7 @@ pub fn set_theme(appearance: Appearance, variant_id: impl Into<String>, cx: &mut
         .set_variant(model_appearance(appearance), variant_id);
     let themes = state.themes.clone();
     apply(cx);
-    settings::update(SavePolicy::Immediate, cx, |settings| {
+    settings::update(cx, |settings| {
         settings.theme_selection = themes;
     });
 }
@@ -176,7 +176,7 @@ pub fn set_accent(accent: AccentSelection, cx: &mut App) {
     }
     state.accent = accent;
     apply(cx);
-    settings::update(SavePolicy::Immediate, cx, |settings| {
+    settings::update(cx, |settings| {
         settings.accent = accent;
     });
 }
@@ -192,7 +192,7 @@ pub fn set_surface(surface: SurfacePreference, cx: &mut App) {
     }
     state.surface = surface;
     apply(cx);
-    settings::update(SavePolicy::Immediate, cx, |settings| {
+    settings::update(cx, |settings| {
         settings.surface = surface;
     });
 }
@@ -282,10 +282,10 @@ pub fn apply_registry_change(cx: &mut App) {
     reapply_window_background(cx);
 }
 
-fn model_appearance(appearance: Appearance) -> zeron_theme::Appearance {
+fn model_appearance(appearance: Appearance) -> keiki_theme::Appearance {
     match appearance {
-        Appearance::Dark => zeron_theme::Appearance::Dark,
-        Appearance::Light => zeron_theme::Appearance::Light,
+        Appearance::Dark => keiki_theme::Appearance::Dark,
+        Appearance::Light => keiki_theme::Appearance::Light,
     }
 }
 

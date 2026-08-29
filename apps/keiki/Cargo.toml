@@ -1,0 +1,17 @@
+[package]
+name = "keiki"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "keiki"
+path = "src/main.rs"
+
+[dependencies]
+keiki-ui.workspace = true
+mimalloc.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

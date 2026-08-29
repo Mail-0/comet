@@ -34,7 +34,7 @@ pub enum CustomThemeSource {
     LinkedPackage {
         path: PathBuf,
     },
-    /// A native resolved-family file created by Zeron for direct editing.
+    /// A native resolved-family file created by Keiki for direct editing.
     EditableFile {
         path: PathBuf,
     },
@@ -67,17 +67,14 @@ impl CustomThemeSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CustomThemeStatus {
+    #[default]
     Ready,
-    Warning { message: String },
-}
-
-impl Default for CustomThemeStatus {
-    fn default() -> Self {
-        Self::Ready
-    }
+    Warning {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,7 +397,7 @@ impl CustomThemeLibrary {
         let editable_dir = data_dir.join("custom-themes");
         fs::create_dir_all(&editable_dir)
             .with_context(|| format!("could not create {}", editable_dir.display()))?;
-        let path = editable_dir.join(format!("{new_id}.zeron-theme.json"));
+        let path = editable_dir.join(format!("{new_id}.keiki-theme.json"));
         replace_file_recoverably(&path, &serde_json::to_vec_pretty(&family)?)?;
 
         let selected_variant_ids = family
