@@ -179,6 +179,14 @@ fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f
     }
 }
 
+fn composer_visible(has_selection: bool, has_spaces: bool) -> bool {
+    has_selection || has_spaces
+}
+
+fn no_spaces_onboarding_visible(has_selection: bool, has_spaces: bool, no_project: bool) -> bool {
+    !has_selection && !has_spaces && !no_project
+}
+
 /// Open the session at `slot` (zero-based) of the sidebar's active list. One
 /// action carrying the slot, rather than nine near-identical action types.
 #[derive(Clone, PartialEq, Action)]
@@ -6083,7 +6091,7 @@ impl Shell {
         // (new-chat mode mints the chat id on first send).
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
-        } else if !has_spaces && !no_project {
+        } else if no_spaces_onboarding_visible(has_selection, has_spaces, no_project) {
             // Onboarding (first boot / after the destructive wipe): no folders
             // to work in yet — one clear affordance.
             let _ = faint;
@@ -6224,7 +6232,9 @@ impl Shell {
                         .inset_0(),
                     )
                     .child(status)
-                    .when(has_spaces, |el| el.child(self.composer.clone()))
+                    .when(composer_visible(has_selection, has_spaces), |el| {
+                        el.child(self.composer.clone())
+                    })
                     .child(self.render_terminal_container(cx))
             })
             .child(
@@ -9143,5 +9153,20 @@ mod tests {
             Some("keiki-conv:two")
         ));
         assert!(!keiki_menu_is_selected("engine-chat", Some("engine-chat")));
+    }
+
+    #[test]
+    fn selected_chat_keeps_composer_visible_without_spaces() {
+        assert!(composer_visible(true, false));
+        assert!(composer_visible(true, true));
+    }
+
+    #[test]
+    fn no_selection_without_spaces_keeps_onboarding_without_composer() {
+        assert!(!composer_visible(false, false));
+        assert!(no_spaces_onboarding_visible(false, false, false));
+        assert!(!no_spaces_onboarding_visible(true, false, false));
+        assert!(!no_spaces_onboarding_visible(false, true, false));
+        assert!(!no_spaces_onboarding_visible(false, false, true));
     }
 }
