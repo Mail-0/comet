@@ -3,6 +3,7 @@ pub mod appearance;
 pub mod icons;
 pub mod settings;
 pub mod shell;
+pub mod text_input;
 pub mod theme;
 pub mod theme_library;
 pub mod typography;
@@ -67,6 +68,7 @@ pub fn run_app(config: UiConfig) {
         );
         app_menus::init(cx);
         app_menus::bind_keys(cx);
+        text_input::bind_keys(cx);
         cx.register_url_scheme("keiki").detach();
         cx.on_app_quit(|cx| {
             settings::flush(cx);

@@ -217,6 +217,190 @@ pub struct AgentConfig {
     pub sandbox_env_secrets: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageDirection {
+    Inbound,
+    Outbound,
+}
+
+impl MessageDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbound => "inbound",
+            Self::Outbound => "outbound",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSummary {
+    pub phone: String,
+    pub contact_name: Option<String>,
+    pub agent_name: String,
+    pub agent_id: Option<String>,
+    api_key: String,
+    pub last_message: String,
+    pub last_message_at: String,
+    pub last_direction: MessageDirection,
+    pub message_count: u32,
+    pub is_active: bool,
+    pub has_errors: bool,
+}
+
+impl ConversationSummary {
+    pub fn locator(&self) -> ConversationLocator {
+        ConversationLocator {
+            identity: self.phone.clone(),
+            agent_id: self.agent_id.clone(),
+            api_key: self.agent_id.is_none().then(|| self.api_key.clone()),
+        }
+    }
+}
+
+impl std::fmt::Debug for ConversationSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConversationSummary")
+            .field("phone", &self.phone)
+            .field("contact_name", &self.contact_name)
+            .field("agent_name", &self.agent_name)
+            .field("agent_id", &self.agent_id)
+            .field("api_key", &"[redacted]")
+            .field("last_message", &self.last_message)
+            .field("last_message_at", &self.last_message_at)
+            .field("last_direction", &self.last_direction)
+            .field("message_count", &self.message_count)
+            .field("is_active", &self.is_active)
+            .field("has_errors", &self.has_errors)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConversationsResponse {
+    pub conversations: Vec<ConversationSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSearchHit {
+    #[serde(flatten)]
+    pub conversation: ConversationSummary,
+    pub snippet: String,
+    pub match_count: u32,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ConversationLocator {
+    pub identity: String,
+    pub agent_id: Option<String>,
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for ConversationLocator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConversationLocator")
+            .field("identity", &self.identity)
+            .field("agent_id", &self.agent_id)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDetail {
+    pub phone: String,
+    pub meta: ConversationMeta,
+    pub messages: Vec<ConversationMessage>,
+    pub agent: Option<ConversationAgent>,
+    pub blocked: bool,
+    pub takeover: Option<ConversationTakeover>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMeta {
+    pub contact_name: Option<String>,
+    pub contact_email: Option<String>,
+    pub agent_name: String,
+    pub agent_id: Option<String>,
+    pub message_count: u32,
+    pub first_seen: Option<String>,
+    pub last_seen: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConversationAgent {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessage {
+    pub id: String,
+    pub direction: MessageDirection,
+    pub content: String,
+    pub created_at: String,
+    pub trace_id: Option<String>,
+    pub trace_duration_ms: Option<u64>,
+    pub trace_status: Option<String>,
+    pub trace_model: Option<String>,
+    pub trace_tokens_in: Option<u64>,
+    pub trace_tokens_out: Option<u64>,
+    pub trace_total_steps: Option<u32>,
+    pub trace_error: Option<String>,
+    #[serde(default)]
+    pub internal: bool,
+    pub staff_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTakeover {
+    pub started_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationTextInput {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BlockConversationResponse {
+    pub blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct TakeoverResponse {
+    pub takeover: Option<ConversationTakeover>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearConversationResponse {
+    pub ok: bool,
+    pub cleared_messages: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SendConversationMessageResponse {
+    pub ok: bool,
+    pub takeover: ConversationTakeover,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerConversationResponse {
+    pub reply: String,
+    pub trace_id: String,
+}
+
 impl AgentSummary {
     pub fn status(&self) -> AgentStatus {
         if !self.active {
@@ -425,5 +609,89 @@ mod tests {
         assert_eq!(config.agent.max_steps, 25);
         assert_eq!(config.agent.skill_ids, ["skill-1"]);
         assert!(config.agent.features.browser);
+    }
+
+    #[test]
+    fn conversation_payloads_preserve_agent_ownership_and_internal_messages() {
+        let conversations: ConversationsResponse = serde_json::from_value(serde_json::json!({
+            "conversations": [{
+                "phone": "tg:123",
+                "contactName": "Example Contact",
+                "agentName": "Orchid",
+                "agentId": "agent-1",
+                "apiKey": "secret-key",
+                "lastMessage": "Latest message",
+                "lastMessageAt": "2026-08-28T12:00:00Z",
+                "lastDirection": "inbound",
+                "messageCount": 4,
+                "isActive": true,
+                "hasErrors": false
+            }]
+        }))
+        .unwrap();
+        let locator = conversations.conversations[0].locator();
+        assert_eq!(locator.identity, "tg:123");
+        assert_eq!(locator.agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(locator.api_key, None);
+        assert!(!format!("{:?}", conversations.conversations[0]).contains("secret-key"));
+
+        let detail: ConversationDetail = serde_json::from_value(serde_json::json!({
+            "phone": "tg:123",
+            "meta": {
+                "contactName": "Example Contact",
+                "contactEmail": null,
+                "agentName": "Orchid",
+                "agentId": "agent-1",
+                "apiKey": "secret-key",
+                "messageCount": 2,
+                "firstSeen": "2026-08-28T11:00:00Z",
+                "lastSeen": "2026-08-28T12:00:00Z"
+            },
+            "messages": [{
+                "id": "message-1",
+                "direction": "inbound",
+                "content": "Try this",
+                "createdAt": "2026-08-28T11:00:00Z",
+                "traceId": null,
+                "traceDurationMs": null,
+                "traceStatus": null,
+                "traceModel": null,
+                "traceTokensIn": null,
+                "traceTokensOut": null,
+                "traceTotalSteps": null,
+                "traceError": null,
+                "internal": true,
+                "staffName": "Operator"
+            }],
+            "spans": {},
+            "agent": { "id": "agent-1", "name": "Orchid" },
+            "blocked": false,
+            "takeover": {
+                "startedAt": "2026-08-28T11:30:00Z",
+                "expiresAt": "2026-08-28T12:30:00Z"
+            }
+        }))
+        .unwrap();
+        assert!(detail.messages[0].internal);
+        assert_eq!(detail.takeover.unwrap().expires_at, "2026-08-28T12:30:00Z");
+
+        let agentless: ConversationSummary = serde_json::from_value(serde_json::json!({
+            "phone": "foo@example.com",
+            "contactName": null,
+            "agentName": "API key",
+            "agentId": null,
+            "apiKey": "agentless-secret",
+            "lastMessage": "Latest message",
+            "lastMessageAt": "2026-08-28T12:00:00Z",
+            "lastDirection": "outbound",
+            "messageCount": 1,
+            "isActive": false,
+            "hasErrors": false
+        }))
+        .unwrap();
+        let locator = agentless.locator();
+        assert_eq!(locator.api_key.as_deref(), Some("agentless-secret"));
+        assert!(!format!("{agentless:?}").contains("agentless-secret"));
+        assert!(!format!("{locator:?}").contains("agentless-secret"));
     }
 }

@@ -2,10 +2,15 @@ use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use keiki_model::{
-    AgentConfig, AgentInput, AgentSummary, AgentTemplateSummary, CreateAgentFromTemplate,
-    CreateAgentResponse,
+    AgentConfig, AgentInput, AgentSummary, AgentTemplateSummary, BlockConversationResponse,
+    ClearConversationResponse, ConversationDetail, ConversationLocator, ConversationSearchHit,
+    ConversationSummary, ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse,
+    SendConversationMessageResponse, SteerConversationResponse, TakeoverResponse,
 };
-use keiki_model::{AgentEditResponse, AgentTemplatesResponse, AgentsResponse};
+use keiki_model::{
+    AgentEditResponse, AgentTemplatesResponse, AgentsResponse, ConversationTextInput,
+    ConversationsResponse,
+};
 use rand::Rng as _;
 use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -41,6 +46,27 @@ pub struct TokenSet {
 pub struct StoredCredentials {
     pub client_id: String,
     pub refresh_token: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationAction {
+    Block,
+    History,
+    Takeover,
+    Messages,
+    Steer,
+}
+
+impl ConversationAction {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::History => "history",
+            Self::Takeover => "takeover",
+            Self::Messages => "messages",
+            Self::Steer => "steer",
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -304,6 +330,235 @@ impl Client {
             .send_json(self.agent_config_authenticated_request(access_token, agent_id)?)
             .await?;
         Ok(response.agent)
+    }
+
+    pub fn list_conversations_authenticated_request(
+        &self,
+        access_token: &str,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .get(self.endpoint("/api/webapp/conversations"))
+            .bearer_auth(access_token)
+    }
+
+    pub async fn list_conversations(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<ConversationSummary>, Error> {
+        let response: ConversationsResponse = self
+            .send_json(self.list_conversations_authenticated_request(access_token))
+            .await?;
+        Ok(response.conversations)
+    }
+
+    pub fn search_conversations_authenticated_request(
+        &self,
+        access_token: &str,
+        query: &str,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/conversations"))?;
+        endpoint.query_pairs_mut().append_pair("q", query);
+        Ok(self.http.get(endpoint).bearer_auth(access_token))
+    }
+
+    pub async fn search_conversations(
+        &self,
+        access_token: &str,
+        query: &str,
+    ) -> Result<Vec<ConversationSearchHit>, Error> {
+        #[derive(Deserialize)]
+        struct SearchResponse {
+            conversations: Vec<ConversationSearchHit>,
+        }
+
+        let response: SearchResponse = self
+            .send_json(self.search_conversations_authenticated_request(access_token, query)?)
+            .await?;
+        Ok(response.conversations)
+    }
+
+    pub fn conversation_authenticated_request(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        Ok(self
+            .http
+            .get(self.conversation_endpoint(locator, None)?)
+            .bearer_auth(access_token))
+    }
+
+    pub async fn conversation(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<ConversationDetail, Error> {
+        self.send_json(self.conversation_authenticated_request(access_token, locator)?)
+            .await
+    }
+
+    pub fn conversation_action_authenticated_request(
+        &self,
+        method: reqwest::Method,
+        access_token: &str,
+        locator: &ConversationLocator,
+        action: ConversationAction,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        Ok(self
+            .http
+            .request(method, self.conversation_endpoint(locator, Some(action))?)
+            .bearer_auth(access_token))
+    }
+
+    pub async fn set_conversation_blocked(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        blocked: bool,
+    ) -> Result<BlockConversationResponse, Error> {
+        let method = if blocked {
+            reqwest::Method::POST
+        } else {
+            reqwest::Method::DELETE
+        };
+        self.send_json(self.conversation_action_authenticated_request(
+            method,
+            access_token,
+            locator,
+            ConversationAction::Block,
+        )?)
+        .await
+    }
+
+    pub async fn start_conversation_takeover(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<ConversationTakeover, Error> {
+        let response: TakeoverResponse = self
+            .send_json(self.conversation_action_authenticated_request(
+                reqwest::Method::POST,
+                access_token,
+                locator,
+                ConversationAction::Takeover,
+            )?)
+            .await?;
+        response.takeover.ok_or(Error::InvalidContract)
+    }
+
+    pub async fn end_conversation_takeover(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<(), Error> {
+        let response: TakeoverResponse = self
+            .send_json(self.conversation_action_authenticated_request(
+                reqwest::Method::DELETE,
+                access_token,
+                locator,
+                ConversationAction::Takeover,
+            )?)
+            .await?;
+        if response.takeover.is_some() {
+            return Err(Error::InvalidContract);
+        }
+        Ok(())
+    }
+
+    pub async fn clear_conversation_history(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<ClearConversationResponse, Error> {
+        self.send_json(self.conversation_action_authenticated_request(
+            reqwest::Method::DELETE,
+            access_token,
+            locator,
+            ConversationAction::History,
+        )?)
+        .await
+    }
+
+    pub async fn send_conversation_message(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        text: String,
+    ) -> Result<SendConversationMessageResponse, Error> {
+        self.send_json(self.send_conversation_message_authenticated_request(
+            access_token,
+            locator,
+            text,
+        )?)
+        .await
+    }
+
+    pub fn send_conversation_message_authenticated_request(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        text: String,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        Ok(self
+            .conversation_action_authenticated_request(
+                reqwest::Method::POST,
+                access_token,
+                locator,
+                ConversationAction::Messages,
+            )?
+            .json(&ConversationTextInput { text }))
+    }
+
+    pub async fn steer_conversation(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        text: String,
+    ) -> Result<SteerConversationResponse, Error> {
+        self.send_json(self.steer_conversation_authenticated_request(
+            access_token,
+            locator,
+            text,
+        )?)
+        .await
+    }
+
+    pub fn steer_conversation_authenticated_request(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        text: String,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        Ok(self
+            .conversation_action_authenticated_request(
+                reqwest::Method::POST,
+                access_token,
+                locator,
+                ConversationAction::Steer,
+            )?
+            .json(&ConversationTextInput { text }))
+    }
+
+    fn conversation_endpoint(
+        &self,
+        locator: &ConversationLocator,
+        action: Option<ConversationAction>,
+    ) -> Result<Url, Error> {
+        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/conversations"))?;
+        let mut segments = endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::InvalidContract)?;
+        segments.push(&locator.identity);
+        if let Some(action) = action {
+            segments.push(action.path());
+        }
+        drop(segments);
+        if let Some(agent_id) = locator.agent_id.as_deref() {
+            endpoint.query_pairs_mut().append_pair("agentId", agent_id);
+        } else if let Some(api_key) = locator.api_key.as_deref() {
+            endpoint.query_pairs_mut().append_pair("apiKey", api_key);
+        }
+        Ok(endpoint)
     }
 
     fn exchange_code_request(
@@ -893,6 +1148,99 @@ mod tests {
         assert_eq!(
             edit.url().as_str(),
             "https://keiki.example/api/webapp/agents/agent%2Fwith%20space/edit"
+        );
+    }
+
+    #[test]
+    fn conversation_requests_encode_identity_and_pin_the_owner() {
+        let client = Client::new("https://keiki.example");
+        let locator = ConversationLocator {
+            identity: "tg:user/name@example.com".into(),
+            agent_id: Some("agent/id".into()),
+            api_key: Some("ignored-key".into()),
+        };
+
+        let detail = client
+            .conversation_authenticated_request("access-token", &locator)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            detail.url().as_str(),
+            "https://keiki.example/api/webapp/conversations/tg:user%2Fname@example.com?agentId=agent%2Fid"
+        );
+
+        let takeover = client
+            .conversation_action_authenticated_request(
+                reqwest::Method::POST,
+                "access-token",
+                &locator,
+                ConversationAction::Takeover,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            takeover.url().as_str(),
+            "https://keiki.example/api/webapp/conversations/tg:user%2Fname@example.com/takeover?agentId=agent%2Fid"
+        );
+
+        let agentless = ConversationLocator {
+            identity: "foo@example.com".into(),
+            agent_id: None,
+            api_key: Some("key/with space".into()),
+        };
+        let agentless_detail = client
+            .conversation_authenticated_request("access-token", &agentless)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            agentless_detail.url().as_str(),
+            "https://keiki.example/api/webapp/conversations/foo@example.com?apiKey=key%2Fwith+space"
+        );
+
+        let search = client
+            .search_conversations_authenticated_request("access-token", "refund / duplicate")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            search.url().as_str(),
+            "https://keiki.example/api/webapp/conversations?q=refund+%2F+duplicate"
+        );
+
+        let message = client
+            .send_conversation_message_authenticated_request(
+                "access-token",
+                &locator,
+                "Operator reply".into(),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(message.method(), reqwest::Method::POST);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                message.body().unwrap().as_bytes().unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({ "text": "Operator reply" })
+        );
+
+        let steer = client
+            .steer_conversation_authenticated_request(
+                "access-token",
+                &locator,
+                "Draft a response".into(),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(steer.body().unwrap().as_bytes().unwrap())
+                .unwrap(),
+            serde_json::json!({ "text": "Draft a response" })
         );
     }
 }
