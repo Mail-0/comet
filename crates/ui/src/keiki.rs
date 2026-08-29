@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use gpui::{App, Context, Entity, Task, TaskExt};
-use keiki_api::{AuthorizationFlow, Client, OAUTH_REDIRECT_URI, StoredCredentials, TokenSet};
+use gpui::{App, AsyncApp, Context, Entity, Task, TaskExt, WeakEntity};
+use keiki_api::{AuthorizationFlow, Client, StoredCredentials, TokenSet};
 use keiki_model::{ConversationDetail, ConversationLocator, ConversationMessage, MessageDirection};
 use zeron_doc::parts::MessagePart;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
@@ -538,42 +538,41 @@ pub fn spawn_transcript_watch(cx: &mut Context<AppState>, chat_id: String) -> Ta
     })
 }
 
-pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<AppState>) {
-    let Some(flow) = state.keiki_flow.take() else {
-        return;
-    };
-    let Some(client) = state.keiki_client.clone() else {
-        return;
-    };
-    let callback = callback.to_string();
-    cx.spawn(async move |this, cx| {
-        let result = async {
-            let code = flow.authorization_code(&callback)?;
-            let exchange_flow = flow.clone();
-            let exchange_client = client.clone();
-            let exchange = cx.update(|cx| {
-                gpui_tokio::Tokio::spawn(cx, async move {
-                    exchange_client.exchange_code(&exchange_flow, &code).await
-                })
-            });
-            let tokens = exchange
-                .await
-                .map_err(|error| request_task_error("authorization-code exchange", error))??;
-            let credentials = flow.stored_credentials(&tokens);
-            let payload = serde_json::to_vec(&credentials)
-                .map_err(|error| keiki_api::Error::Local(error.to_string()))?;
-            let write = this.update(cx, |_, cx| {
-                cx.write_credentials(CREDENTIAL_KEY, "OAuth", &payload)
-            });
-            write
-                .map_err(|error| request_task_error("credential write setup", error))?
-                .await
-                .map_err(|error| request_task_error("credential write", error))?;
-            Ok::<_, keiki_api::Error>((tokens, credentials))
-        }
-        .await;
-        let success = result.is_ok();
-        this.update(cx, |state, cx| match result {
+async fn complete_callback(
+    state: WeakEntity<AppState>,
+    flow: AuthorizationFlow,
+    client: Client,
+    callback: String,
+    cx: &mut AsyncApp,
+) {
+    let result = async {
+        let code = flow.authorization_code(&callback)?;
+        let exchange_flow = flow.clone();
+        let exchange_client = client.clone();
+        let exchange = cx.update(|cx| {
+            gpui_tokio::Tokio::spawn(cx, async move {
+                exchange_client.exchange_code(&exchange_flow, &code).await
+            })
+        });
+        let tokens = exchange
+            .await
+            .map_err(|error| request_task_error("authorization-code exchange", error))??;
+        let credentials = flow.stored_credentials(&tokens);
+        let payload = serde_json::to_vec(&credentials)
+            .map_err(|error| keiki_api::Error::Local(error.to_string()))?;
+        let write = state.update(cx, |_, cx| {
+            cx.write_credentials(CREDENTIAL_KEY, "OAuth", &payload)
+        });
+        write
+            .map_err(|error| request_task_error("credential write setup", error))?
+            .await
+            .map_err(|error| request_task_error("credential write", error))?;
+        Ok::<_, keiki_api::Error>((tokens, credentials))
+    }
+    .await;
+    let success = result.is_ok();
+    state
+        .update(cx, |state, cx| match result {
             Ok((tokens, credentials)) => {
                 state.keiki_token = Some(tokens);
                 state.keiki_credentials = Some(credentials);
@@ -589,25 +588,45 @@ pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<Ap
             }
         })
         .ok();
-        if success {
-            poll(this.clone(), cx).await;
-        }
+    if success {
+        poll(state, cx).await;
+    }
+}
+
+pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<AppState>) {
+    let Some(flow) = state.keiki_flow.take() else {
+        return;
+    };
+    let Some(client) = state.keiki_client.clone() else {
+        return;
+    };
+    let state = cx.entity().downgrade();
+    let callback = callback.to_string();
+    cx.spawn(async move |_, cx| {
+        complete_callback(state, flow, client, callback, cx).await;
     })
     .detach();
 }
 
-pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) -> Task<()> {
+pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) {
     state.update(cx, |state, cx| {
         state.keiki_status = SessionStatus::Loading;
         state.keiki_error = None;
+        state.keiki_flow = None;
         cx.notify();
     });
-    cx.spawn(async move |this, cx| {
-        let client = state.read_with(cx, |state, _| state.keiki_client.clone());
+    let task_state = state.clone();
+    let task = cx.spawn(async move |this, cx| {
+        let client = task_state.read_with(cx, |state, _| state.keiki_client.clone());
         let Some(client) = client else {
             return;
         };
         let result = async {
+            let listener_task =
+                cx.update(|cx| gpui_tokio::Tokio::spawn(cx, keiki_api::bind_loopback_listener()));
+            let (listener, redirect_uri) = listener_task
+                .await
+                .map_err(|error| request_task_error("OAuth loopback listener", error))??;
             let discovery_client = client.clone();
             let discovery = cx.update(|cx| {
                 gpui_tokio::Tokio::spawn(cx, async move { discovery_client.discover_oauth().await })
@@ -616,36 +635,75 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
                 .await
                 .map_err(|error| request_task_error("OAuth discovery", error))??;
             let registration_client = client.clone();
+            let registration_redirect_uri = redirect_uri.clone();
             let registration = cx.update(|cx| {
                 gpui_tokio::Tokio::spawn(cx, async move {
                     registration_client
-                        .register_client(OAUTH_REDIRECT_URI)
+                        .register_client(&registration_redirect_uri)
                         .await
                 })
             });
             let client_id = registration
                 .await
                 .map_err(|error| request_task_error("OAuth client registration", error))??;
-            let flow = AuthorizationFlow::new(client_id, OAUTH_REDIRECT_URI.to_string());
+            let flow = AuthorizationFlow::new(client_id, redirect_uri.clone());
             let url = client.authorization_url(&flow)?;
-            state.update(cx, |state, _| state.keiki_flow = Some(flow));
-            Ok::<_, keiki_api::Error>(url)
+            task_state.update(cx, |state, _| state.keiki_flow = Some(flow));
+            let callback_task = cx.update(|cx| {
+                gpui_tokio::Tokio::spawn(
+                    cx,
+                    keiki_api::wait_for_loopback_callback(listener, redirect_uri),
+                )
+            });
+            Ok::<_, keiki_api::Error>((url, callback_task))
         }
         .await;
-        this.update(cx, |shell, cx| match result {
-            Ok(url) => cx.open_url(url.as_str()),
+        let (url, callback_task) = match result {
+            Ok(result) => result,
             Err(error) => {
-                state.update(cx, |state, cx| {
+                this.update(cx, |shell, cx| {
+                    task_state.update(cx, |state, cx| {
+                        state.keiki_status = SessionStatus::Error;
+                        state.keiki_error = Some(error.to_string());
+                        cx.notify();
+                    });
+                    shell.set_sidebar_notice(format!("Keiki sign in failed: {error}"));
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
+        };
+        this.update(cx, |_, cx| cx.open_url(url.as_str())).ok();
+        let callback = match callback_task
+            .await
+            .map_err(|error| request_task_error("OAuth loopback callback", error))
+        {
+            Ok(Ok(callback)) => callback,
+            Ok(Err(error)) => {
+                task_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
                     cx.notify();
                 });
-                shell.set_sidebar_notice(format!("Keiki sign in failed: {error}"));
-                cx.notify();
+                return;
             }
-        })
-        .ok();
-    })
+            Err(error) => {
+                task_state.update(cx, |state, cx| {
+                    state.keiki_status = SessionStatus::Error;
+                    state.keiki_error = Some(error.to_string());
+                    cx.notify();
+                });
+                return;
+            }
+        };
+        let flow = task_state.update(cx, |state, _| state.keiki_flow.take());
+        let Some(flow) = flow else {
+            return;
+        };
+        complete_callback(task_state.downgrade(), flow, client, callback, cx).await;
+    });
+    state.update(cx, |state, _| state.keiki_task = Some(task));
 }
 
 pub fn sign_out(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) -> Task<()> {

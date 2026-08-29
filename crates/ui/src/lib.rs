@@ -153,7 +153,13 @@ pub fn run_app(config: UiConfig) {
         terminal::panel::init(cx);
         app_menus::init(cx);
         cx.register_url_scheme("zeron").detach();
-        cx.register_url_scheme("keiki").detach();
+        cx.spawn(
+            async move |cx| match cx.update(|cx| cx.register_url_scheme("keiki")).await {
+                Ok(()) => {}
+                Err(error) => tracing::warn!(%error, "Keiki URL scheme registration failed"),
+            },
+        )
+        .detach();
 
         let state = cx.new(|_| state::AppState::new());
         let url_state = state.clone();

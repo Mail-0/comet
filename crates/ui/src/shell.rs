@@ -3093,7 +3093,7 @@ impl Shell {
     }
 
     fn start_keiki_sign_in(&mut self, cx: &mut Context<Self>) {
-        crate::keiki::begin_sign_in(self.state.clone(), cx).detach();
+        crate::keiki::begin_sign_in(self.state.clone(), cx);
     }
 
     // ---- org gate ----

@@ -15,9 +15,15 @@ use rand::Rng as _;
 use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::TcpListener,
+};
 use url::{Url, form_urlencoded};
 
 pub const OAUTH_REDIRECT_URI: &str = "keiki://oauth/callback";
+const LOOPBACK_CALLBACK_PATH: &str = "/oauth/callback";
+const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -116,6 +122,95 @@ impl Error {
             }
         )
     }
+}
+
+pub async fn bind_loopback_listener() -> Result<(TcpListener, String), Error> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| Error::Local(format!("bind Keiki OAuth loopback listener: {error}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| Error::Local(format!("read Keiki OAuth loopback address: {error}")))?
+        .port();
+    Ok((listener, loopback_redirect_uri(port)))
+}
+
+pub async fn wait_for_loopback_callback(
+    listener: TcpListener,
+    redirect_uri: String,
+) -> Result<String, Error> {
+    tokio::time::timeout(LOOPBACK_TIMEOUT, async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.map_err(|error| {
+                Error::Local(format!("accept Keiki OAuth loopback connection: {error}"))
+            })?;
+            let request_line = {
+                let mut reader = BufReader::new(&mut stream);
+                let mut request_line = Vec::new();
+                let bytes = reader.read_until(b'\n', &mut request_line).await.map_err(|error| {
+                    Error::Local(format!("read Keiki OAuth loopback request: {error}"))
+                })?;
+                if bytes > 8 * 1024 {
+                    return Err(Error::Local(
+                        "Keiki OAuth loopback request line is too long".to_string(),
+                    ));
+                }
+                String::from_utf8(request_line).map_err(|error| {
+                    Error::Local(format!("decode Keiki OAuth loopback request: {error}"))
+                })?
+            };
+            let Some(callback) = callback_url_from_request_line(&request_line, &redirect_uri)?
+            else {
+                continue;
+            };
+            let body = "You can close this tab and return to Keiki";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.map_err(|error| {
+                Error::Local(format!("write Keiki OAuth loopback response: {error}"))
+            })?;
+            return Ok(callback);
+        }
+    })
+    .await
+    .map_err(|_| Error::Local("timed out waiting for the Keiki OAuth callback".to_string()))?
+}
+
+fn callback_url_from_request_line(
+    request_line: &str,
+    redirect_uri: &str,
+) -> Result<Option<String>, Error> {
+    let mut parts = request_line.split_ascii_whitespace();
+    let method = parts.next().ok_or_else(|| {
+        Error::Local("Keiki OAuth request line is missing its method".to_string())
+    })?;
+    let target = parts.next().ok_or_else(|| {
+        Error::Local("Keiki OAuth request line is missing its target".to_string())
+    })?;
+    if method != "GET" {
+        return Ok(None);
+    }
+    let target_url = Url::parse(&format!("http://127.0.0.1{target}"))
+        .map_err(|error| Error::Local(format!("parse Keiki OAuth request target: {error}")))?;
+    if target_url.path() != LOOPBACK_CALLBACK_PATH {
+        return Ok(None);
+    }
+    let Some(query) = target_url.query() else {
+        return Ok(None);
+    };
+    let has_callback_parameter =
+        form_urlencoded::parse(query.as_bytes()).any(|(name, _)| name == "code" || name == "error");
+    if !has_callback_parameter {
+        return Ok(None);
+    }
+    Ok(Some(format!("{redirect_uri}?{query}")))
+}
+
+fn loopback_redirect_uri(port: u16) -> String {
+    format!("http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}")
 }
 
 impl Client {
@@ -982,6 +1077,60 @@ mod tests {
     const REDIRECT_URI: &str = "keiki://oauth/callback";
     const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    #[test]
+    fn loopback_redirect_uri_uses_callback_path() {
+        let redirect_uri = loopback_redirect_uri(8976);
+
+        assert_eq!(redirect_uri, "http://127.0.0.1:8976/oauth/callback");
+    }
+
+    #[test]
+    fn loopback_request_line_extracts_callback_query() {
+        let callback = callback_url_from_request_line(
+            "GET /oauth/callback?code=code-123&state=state-123 HTTP/1.1\r\n",
+            "http://127.0.0.1:8976/oauth/callback",
+        )
+        .unwrap();
+
+        assert_eq!(
+            callback.as_deref(),
+            Some("http://127.0.0.1:8976/oauth/callback?code=code-123&state=state-123")
+        );
+    }
+
+    #[test]
+    fn loopback_request_line_ignores_unrelated_paths() {
+        let callback = callback_url_from_request_line(
+            "GET /favicon.ico HTTP/1.1\r\n",
+            "http://127.0.0.1:8976/oauth/callback",
+        )
+        .unwrap();
+
+        assert_eq!(callback, None);
+    }
+
+    #[test]
+    fn loopback_error_callback_is_rejected_as_authorization_error() {
+        let callback = callback_url_from_request_line(
+            "GET /oauth/callback?error=access_denied&state=state-123 HTTP/1.1\r\n",
+            "http://127.0.0.1:8976/oauth/callback",
+        )
+        .unwrap()
+        .unwrap();
+        let flow = AuthorizationFlow::from_parts(
+            CLIENT_ID.into(),
+            "http://127.0.0.1:8976/oauth/callback".into(),
+            VERIFIER.into(),
+            CHALLENGE.into(),
+            "state-123".into(),
+        );
+
+        assert!(matches!(
+            flow.authorization_code(&callback),
+            Err(Error::AuthorizationRejected(error)) if error == "access_denied"
+        ));
+    }
 
     #[test]
     fn endpoint_joining_normalizes_the_base_url() {
