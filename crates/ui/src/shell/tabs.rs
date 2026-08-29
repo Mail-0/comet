@@ -153,6 +153,11 @@ impl Shell {
                 None => (SharedString::from(""), None, None, true),
             }
         };
+        let conversation_status = if on_canvas {
+            None
+        } else {
+            self.state.read(cx).keiki_conversation().cloned()
+        };
 
         // The new-session `+` renders in the WINDOW-CONTROL CLUSTER whenever a
         // session is selected (`render_titlebar_cluster`) — this row budgets
@@ -327,6 +332,52 @@ impl Shell {
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_muted.opacity(0.5))
                                     .child(target),
+                            )
+                        })
+                        .when_some(conversation_status, |el, conversation| {
+                            let takeover = conversation.takeover.as_ref().and_then(|takeover| {
+                                crate::keiki::parse_timestamp(&takeover.expires_at).map(|expires| {
+                                    let seconds =
+                                        (expires - chrono::Utc::now()).num_seconds().max(0);
+                                    let remaining = if seconds < 60 {
+                                        format!("{seconds}s")
+                                    } else {
+                                        format!("{}m", seconds / 60)
+                                    };
+                                    format!("Taken over · {remaining} remaining")
+                                })
+                            });
+                            el.when_some(takeover, |el, label| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.warning)
+                                        .child(SharedString::from(label)),
+                                )
+                            })
+                            .when(conversation.blocked, |el| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.danger)
+                                        .child(SharedString::from("Blocked")),
+                                )
+                            })
+                            .when_some(
+                                conversation.error.clone(),
+                                |el, error| {
+                                    el.child(
+                                        div()
+                                            .flex_none()
+                                            .max_w(px(280.0))
+                                            .truncate()
+                                            .text_size(crate::typography::ui_rems(11.0))
+                                            .text_color(theme.danger_muted)
+                                            .child(SharedString::from(error)),
+                                    )
+                                },
                             )
                         }),
                 )

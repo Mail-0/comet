@@ -4699,7 +4699,12 @@ impl Composer {
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         if let Some(selected_chat) = state.selected_chat.as_deref() {
-            return crate::keiki::is_keiki_chat(selected_chat);
+            if crate::keiki::is_keiki_chat(selected_chat) {
+                return state
+                    .keiki_conversation()
+                    .is_none_or(|conversation| !crate::keiki::takeover_live(conversation));
+            }
+            return false;
         }
         // New-chat canvas: needs a project AND a runnable agent. The
         // no-agents check only fires once the catalog is loaded — offline
@@ -4730,6 +4735,18 @@ impl Composer {
         let text = self.input.read(cx).text().trim().to_string();
         let no_content =
             !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
+        if self
+            .state
+            .read(cx)
+            .selected_chat
+            .as_deref()
+            .is_some_and(crate::keiki::is_keiki_chat)
+        {
+            if !no_content && !self.send_blocked(cx) {
+                crate::keiki::send(self.state.clone(), text, cx.entity(), cx);
+            }
+            return;
+        }
         match self.button_mode(cx) {
             SendButtonMode::Stop => self.interrupt(cx),
             _ if no_content => {}
@@ -4737,6 +4754,33 @@ impl Composer {
             SendButtonMode::Send => self.send(text, false, cx),
             SendButtonMode::Steer => self.send(text, true, cx),
         }
+    }
+
+    fn steer_keiki(&mut self, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).text().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        crate::keiki::steer(self.state.clone(), text, cx);
+    }
+
+    fn dismiss_keiki_draft(&mut self, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            if let Some(conversation) = state.keiki_conversation.as_mut() {
+                conversation.steer_reply = None;
+                cx.notify();
+            }
+        });
+    }
+
+    fn insert_keiki_draft(&mut self, draft: String, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.set_text(draft, cx));
+        self.dismiss_keiki_draft(cx);
+    }
+
+    pub(crate) fn clear_after_keiki_send(&mut self, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.set_text("", cx));
+        cx.notify();
     }
 
     /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
@@ -5765,6 +5809,39 @@ impl Composer {
             }
         }
     }
+
+    fn render_keiki_steer_button(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::of(cx);
+        let has_text = !self.input.read(cx).text().trim().is_empty();
+        let pending = self
+            .state
+            .read(cx)
+            .keiki_conversation()
+            .is_some_and(|conversation| {
+                conversation.pending == Some(crate::keiki::KeikiConversationPending::Steer)
+            });
+        div()
+            .id("composer-steer")
+            .h(px(28.0))
+            .px(px(10.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border_1()
+            .border_color(theme.border)
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text_muted)
+            .when(!has_text || pending, |el| el.opacity(0.35))
+            .when(has_text && !pending, |el| {
+                el.cursor_pointer()
+                    .hover(|s| s.opacity(0.85))
+                    .on_click(cx.listener(|this, _, _, cx| this.steer_keiki(cx)))
+            })
+            .child("Steer")
+            .into_any_element()
+    }
 }
 
 /// Focus lands on the prompt input (window-level focus fallbacks — e.g. after
@@ -5778,6 +5855,18 @@ impl Focusable for Composer {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        let keiki_draft = self
+            .state
+            .read(cx)
+            .keiki_conversation()
+            .and_then(|conversation| conversation.steer_reply.clone());
+        let keiki_reply_blocked = self
+            .state
+            .read(cx)
+            .selected_chat
+            .as_deref()
+            .is_some_and(crate::keiki::is_keiki_chat)
+            && self.send_blocked(cx);
         let wizard_active = self.wizard.is_some();
         if self.mention.token.is_some()
             && (wizard_active || !self.input.focus_handle(cx).is_focused(window))
@@ -6021,6 +6110,60 @@ impl Render for Composer {
                         .child(div().min_w_0().truncate().child(notice)),
                 ))
             });
+        let container = container
+            .when(keiki_reply_blocked, |el| {
+                el.child(
+                    div()
+                        .id("keiki-takeover-hint")
+                        .mx(px(8.0))
+                        .mt(px(6.0))
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .text_color(theme.text_muted)
+                        .child("Take over this conversation to reply"),
+                )
+            })
+            .when_some(keiki_draft, |el, draft| {
+                let insert = draft.clone();
+                let actions = div()
+                    .mt(px(8.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        crate::popover::btn_ghost(&theme, "Dismiss", "keiki-draft-dismiss")
+                            .id("keiki-draft-dismiss")
+                            .on_click(cx.listener(|this, _, _, cx| this.dismiss_keiki_draft(cx))),
+                    )
+                    .child(
+                        crate::popover::btn_primary(&theme, "Edit and send")
+                            .id("keiki-draft-insert")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.insert_keiki_draft(insert.clone(), cx)
+                            })),
+                    );
+                el.child(
+                    div()
+                        .id("keiki-steer-preview")
+                        .mx(px(4.0))
+                        .mt(px(6.0))
+                        .rounded(px(12.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.input_glass_bg())
+                        .px(px(12.0))
+                        .py(px(10.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text)
+                        .child(
+                            div()
+                                .text_color(theme.text_muted)
+                                .child("What the agent would say (draft — not sent)"),
+                        )
+                        .child(div().mt(px(5.0)).child(SharedString::from(draft)))
+                        .child(actions),
+                )
+            });
 
         // Turn-boundary steering notice: for agents without mid-turn
         // injection (Grok over ACP today), a "steer" is queued and applies
@@ -6082,6 +6225,12 @@ impl Render for Composer {
         self.last_rendered_height = pill_height;
 
         let send_button = self.render_send_button(mode, cx);
+        let is_keiki = self
+            .state
+            .read(cx)
+            .selected_chat
+            .as_deref()
+            .is_some_and(crate::keiki::is_keiki_chat);
         // Attach button — opens the native image picker (the original's hidden
         // `<input type=file accept="image/*" multiple>`); paste/drop also feed
         // the same strip. The parent action cluster owns the spacing: adding a
@@ -6197,6 +6346,11 @@ impl Render for Composer {
                                 .child(self.pickers.clone())
                                 .child(attach),
                         )
+                        .child(if is_keiki {
+                            self.render_keiki_steer_button(cx)
+                        } else {
+                            gpui::Empty.into_any_element()
+                        })
                         .child(send_button),
                 )
         } else {
@@ -6258,6 +6412,11 @@ impl Render for Composer {
                                         .child(self.pickers.clone())
                                         .child(attach),
                                 )
+                                .child(if is_keiki {
+                                    self.render_keiki_steer_button(cx)
+                                } else {
+                                    gpui::Empty.into_any_element()
+                                })
                                 .child(send_button),
                         ),
                 )

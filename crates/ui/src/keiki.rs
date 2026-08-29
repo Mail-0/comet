@@ -1,11 +1,14 @@
 //! Keiki cloud integration layered onto the existing Zeron state and views.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use chrono::{DateTime, Utc};
 use gpui::{App, AsyncApp, Context, Entity, Task, TaskExt, WeakEntity};
 use keiki_api::{AuthorizationFlow, Client, StoredCredentials, TokenSet};
-use keiki_model::{ConversationDetail, ConversationLocator, ConversationMessage, MessageDirection};
+use keiki_model::{
+    ConversationDetail, ConversationLocator, ConversationMessage, ConversationTakeover,
+    MessageDirection,
+};
 use zeron_doc::parts::MessagePart;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
 use zeron_proto::{Chat, Device, Space};
@@ -24,6 +27,46 @@ pub enum SessionStatus {
     Loading,
     SignedIn,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeikiConversationPending {
+    Takeover,
+    HandBack,
+    Block,
+    Send,
+    Steer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeikiConversation {
+    pub chat_id: String,
+    pub blocked: bool,
+    pub takeover: Option<ConversationTakeover>,
+    pub pending: Option<KeikiConversationPending>,
+    pub error: Option<String>,
+    pub steer_reply: Option<String>,
+}
+
+impl KeikiConversation {
+    pub fn new(chat_id: String) -> Self {
+        Self {
+            chat_id,
+            blocked: false,
+            takeover: None,
+            pending: None,
+            error: None,
+            steer_reply: None,
+        }
+    }
+}
+
+pub fn takeover_live(conversation: &KeikiConversation) -> bool {
+    conversation
+        .takeover
+        .as_ref()
+        .and_then(|takeover| parse_timestamp(&takeover.expires_at))
+        .is_some_and(|expires| expires > Utc::now())
 }
 
 pub fn default_api_url() -> String {
@@ -158,6 +201,410 @@ fn timestamp_or_now(value: &str, field: &'static str, object: &'static str) -> D
 fn request_task_error(operation: &'static str, error: impl std::fmt::Display) -> keiki_api::Error {
     tracing::error!(operation, error = %error, "Keiki request task failed");
     keiki_api::Error::TaskFailed(format!("{operation}: {error}"))
+}
+
+pub(crate) async fn authorized<T, F, Fut>(
+    entity: &WeakEntity<AppState>,
+    client: Client,
+    token: TokenSet,
+    credentials: StoredCredentials,
+    operation: &'static str,
+    make_request: F,
+    cx: &mut AsyncApp,
+) -> Result<T, keiki_api::Error>
+where
+    T: Send + 'static,
+    F: Fn(Client, String) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<T, keiki_api::Error>> + Send + 'static,
+{
+    let access_token = token.access_token().to_string();
+    let request = make_request.clone();
+    let initial_client = client.clone();
+    let request_task = cx.update(|cx| {
+        gpui_tokio::Tokio::spawn(
+            cx,
+            async move { request(initial_client, access_token).await },
+        )
+    });
+    let result = request_task
+        .await
+        .map_err(|error| request_task_error(operation, error))?;
+    let Err(error) = result else {
+        return result;
+    };
+    if !error.is_authentication_failure() {
+        return Err(error);
+    }
+
+    let refresh_client = client.clone();
+    let refresh_credentials = credentials.clone();
+    let refresh_task = cx.update(|cx| {
+        gpui_tokio::Tokio::spawn(cx, async move {
+            refresh_client.refresh_token(&refresh_credentials).await
+        })
+    });
+    let refreshed = refresh_task
+        .await
+        .map_err(|error| request_task_error("Keiki token refresh", error))??;
+    let refreshed_credentials = refreshed.stored_credentials(credentials.client_id.clone());
+    persist_credentials(&credentials.client_id, &refreshed, entity, cx)
+        .await
+        .map_err(keiki_api::Error::Local)?;
+    entity
+        .update(cx, |state, _| {
+            state.keiki_token = Some(refreshed.clone());
+            state.keiki_credentials = Some(refreshed_credentials);
+        })
+        .map_err(|error| request_task_error("Keiki token state update", error))?;
+
+    let retry_client = client;
+    let retry_token = refreshed.access_token().to_string();
+    let retry = make_request(retry_client, retry_token);
+    cx.update(|cx| gpui_tokio::Tokio::spawn(cx, retry))
+        .await
+        .map_err(|error| request_task_error(operation, error))?
+}
+
+fn conversation_error(error: &keiki_api::Error) -> String {
+    match error {
+        keiki_api::Error::Api { message, .. } => message.clone(),
+        _ => error.to_string(),
+    }
+}
+
+fn set_conversation_error(
+    state: &Entity<AppState>,
+    chat_id: &str,
+    message: String,
+    cx: &mut AsyncApp,
+) {
+    state.update(cx, |state, cx| {
+        if let Some(conversation) = state.keiki_conversation.as_mut()
+            && conversation.chat_id == chat_id
+            && state.selected_chat.as_deref() == Some(chat_id)
+        {
+            conversation.pending = None;
+            conversation.error = Some(message);
+            cx.notify();
+        }
+    });
+}
+
+fn selected_conversation(
+    state: &Entity<AppState>,
+    cx: &gpui::App,
+) -> Option<(String, Client, TokenSet, StoredCredentials)> {
+    let state = state.read(cx);
+    let conversation = state.keiki_conversation()?;
+    Some((
+        conversation.chat_id.clone(),
+        state.keiki_client.clone()?,
+        state.keiki_token.clone()?,
+        state.keiki_credentials.clone()?,
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum ConversationAction {
+    Takeover,
+    HandBack,
+    Block,
+    Unblock,
+    Send,
+    Steer,
+}
+
+fn spawn_conversation_action<R: 'static>(
+    state: Entity<AppState>,
+    chat_id: String,
+    action: ConversationAction,
+    text: Option<String>,
+    composer: Option<Entity<crate::composer::Composer>>,
+    cx: &mut Context<R>,
+) {
+    let pending = match action {
+        ConversationAction::Takeover => KeikiConversationPending::Takeover,
+        ConversationAction::HandBack => KeikiConversationPending::HandBack,
+        ConversationAction::Block | ConversationAction::Unblock => KeikiConversationPending::Block,
+        ConversationAction::Send => KeikiConversationPending::Send,
+        ConversationAction::Steer => KeikiConversationPending::Steer,
+    };
+    let started = state.update(cx, |state, cx| {
+        let started = state.set_keiki_pending(&chat_id, pending);
+        if started {
+            cx.notify();
+        }
+        started
+    });
+    if !started {
+        return;
+    }
+    let task_state = state.clone();
+    cx.spawn(async move |_, cx| {
+        let context = task_state.update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        });
+        let Some((client, token, credentials)) = context else {
+            set_conversation_error(
+                &task_state,
+                &chat_id,
+                "Keiki credentials are unavailable".to_string(),
+                cx,
+            );
+            return;
+        };
+        let Some(locator) = conversation_locator(&chat_id) else {
+            set_conversation_error(
+                &task_state,
+                &chat_id,
+                "The selected Keiki conversation is invalid".to_string(),
+                cx,
+            );
+            return;
+        };
+        let request_locator = locator.clone();
+        let request_text = text.unwrap_or_default();
+        let result = match action {
+            ConversationAction::Takeover => authorized(
+                &task_state.downgrade(),
+                client,
+                token,
+                credentials,
+                "Keiki takeover",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    async move {
+                        client
+                            .start_conversation_takeover(&access_token, &locator)
+                            .await
+                    }
+                },
+                cx,
+            )
+            .await
+            .map(|takeover| ActionResult::Takeover(takeover)),
+            ConversationAction::HandBack => authorized(
+                &task_state.downgrade(),
+                client,
+                token,
+                credentials,
+                "Keiki hand back",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    async move {
+                        client
+                            .end_conversation_takeover(&access_token, &locator)
+                            .await
+                    }
+                },
+                cx,
+            )
+            .await
+            .map(|()| ActionResult::HandBack),
+            ConversationAction::Block | ConversationAction::Unblock => {
+                let blocked = matches!(action, ConversationAction::Block);
+                authorized(
+                    &task_state.downgrade(),
+                    client,
+                    token,
+                    credentials,
+                    "Keiki block update",
+                    move |client, access_token| {
+                        let locator = request_locator.clone();
+                        async move {
+                            client
+                                .set_conversation_blocked(&access_token, &locator, blocked)
+                                .await
+                        }
+                    },
+                    cx,
+                )
+                .await
+                .map(|response| ActionResult::Blocked(response.blocked))
+            }
+            ConversationAction::Send => {
+                let refresh_client = client.clone();
+                let refresh_token = token.clone();
+                let refresh_credentials = credentials.clone();
+                let sent = authorized(
+                    &task_state.downgrade(),
+                    client,
+                    token,
+                    credentials,
+                    "Keiki message send",
+                    move |client, access_token| {
+                        let locator = request_locator.clone();
+                        let text = request_text.clone();
+                        async move {
+                            client
+                                .send_conversation_message(&access_token, &locator, text)
+                                .await
+                        }
+                    },
+                    cx,
+                )
+                .await;
+                match sent {
+                    Ok(response) => {
+                        let fetch_locator = locator.clone();
+                        let detail = authorized(
+                            &task_state.downgrade(),
+                            refresh_client,
+                            refresh_token,
+                            refresh_credentials,
+                            "Keiki transcript refresh",
+                            move |client, access_token| {
+                                let locator = fetch_locator.clone();
+                                async move { client.conversation(&access_token, &locator).await }
+                            },
+                            cx,
+                        )
+                        .await
+                        .ok();
+                        Ok(ActionResult::Sent { response, detail })
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            ConversationAction::Steer => authorized(
+                &task_state.downgrade(),
+                client,
+                token,
+                credentials,
+                "Keiki steer",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    let text = request_text.clone();
+                    async move {
+                        client
+                            .steer_conversation(&access_token, &locator, text)
+                            .await
+                    }
+                },
+                cx,
+            )
+            .await
+            .map(|response| ActionResult::Steered(response.reply)),
+        };
+        task_state.update(cx, |state, cx| {
+            let Some(conversation) = state.keiki_conversation.as_mut() else {
+                return;
+            };
+            if conversation.chat_id != chat_id
+                || state.selected_chat.as_deref() != Some(chat_id.as_str())
+            {
+                return;
+            }
+            conversation.pending = None;
+            match result {
+                Ok(ActionResult::Takeover(takeover)) => conversation.takeover = Some(takeover),
+                Ok(ActionResult::HandBack) => conversation.takeover = None,
+                Ok(ActionResult::Blocked(blocked)) => conversation.blocked = blocked,
+                Ok(ActionResult::Sent { response, detail }) => {
+                    conversation.takeover = Some(response.takeover);
+                    if let Some(detail) = detail {
+                        if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                            state.apply_transcript(map_transcript(&detail));
+                        }
+                    }
+                    if let Some(composer) = composer {
+                        composer.update(cx, |composer, cx| {
+                            composer.clear_after_keiki_send(cx);
+                        });
+                    }
+                }
+                Ok(ActionResult::Steered(reply)) => conversation.steer_reply = Some(reply),
+                Err(error) => {
+                    if matches!(
+                        error,
+                        keiki_api::Error::Api { status, .. } if status.as_u16() == 409
+                    ) && matches!(action, ConversationAction::Send)
+                    {
+                        conversation.takeover = None;
+                    }
+                    conversation.error = Some(conversation_error(&error));
+                }
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+enum ActionResult {
+    Takeover(ConversationTakeover),
+    HandBack,
+    Blocked(bool),
+    Sent {
+        response: keiki_api::SendConversationMessageResponse,
+        detail: Option<ConversationDetail>,
+    },
+    Steered(String),
+}
+
+pub fn take_over<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::Takeover, None, None, cx);
+}
+
+pub fn hand_back<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::HandBack, None, None, cx);
+}
+
+pub fn block<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::Block, None, None, cx);
+}
+
+pub fn unblock<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::Unblock, None, None, cx);
+}
+
+pub fn send<R: 'static>(
+    state: Entity<AppState>,
+    text: String,
+    composer: Entity<crate::composer::Composer>,
+    cx: &mut Context<R>,
+) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(
+        state,
+        chat_id,
+        ConversationAction::Send,
+        Some(text),
+        Some(composer),
+        cx,
+    );
+}
+
+pub fn steer<R: 'static>(state: Entity<AppState>, text: String, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(
+        state,
+        chat_id,
+        ConversationAction::Steer,
+        Some(text),
+        None,
+        cx,
+    );
 }
 
 pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry> {
@@ -497,80 +944,43 @@ pub fn spawn_transcript_watch(cx: &mut Context<AppState>, chat_id: String) -> Ta
         let Some((client, token, credentials)) = context else {
             return;
         };
-        let access_token = token.access_token().to_string();
-        let conversation_client = client.clone();
-        let conversation_locator = locator.clone();
-        let conversation_task = cx.update(|cx| {
-            gpui_tokio::Tokio::spawn(cx, async move {
-                conversation_client
-                    .conversation(&access_token, &conversation_locator)
-                    .await
-            })
-        });
-        let detail = match conversation_task.await {
-            Ok(Ok(detail)) => Some(detail),
-            Ok(Err(error)) if error.is_authentication_failure() => {
-                let refresh_client = client.clone();
-                let refresh_credentials = credentials.clone();
-                let refresh_task = cx.update(|cx| {
-                    gpui_tokio::Tokio::spawn(cx, async move {
-                        refresh_client.refresh_token(&refresh_credentials).await
-                    })
-                });
-                match refresh_task.await {
-                    Ok(Ok(refreshed)) => {
-                        let access_token = refreshed.access_token().to_string();
-                        let retry_client = client.clone();
-                        let retry_locator = locator.clone();
-                        let retry_task = cx.update(|cx| {
-                            gpui_tokio::Tokio::spawn(cx, async move {
-                                retry_client
-                                    .conversation(&access_token, &retry_locator)
-                                    .await
-                            })
-                        });
-                        if let Ok(Ok(detail)) = retry_task.await {
-                            if let Err(error) =
-                                persist_credentials(&credentials.client_id, &refreshed, &this, cx)
-                                    .await
-                            {
-                                tracing::warn!(%error, "Keiki credential persistence failed");
-                            }
-                            this.update(cx, |state, _| state.keiki_token = Some(refreshed))
-                                .ok();
-                            Some(detail)
-                        } else {
-                            tracing::warn!(%chat_id, "Keiki transcript retry failed");
-                            None
-                        }
+        let request_locator = locator.clone();
+        match authorized(
+            &this,
+            client,
+            token,
+            credentials,
+            "Keiki transcript fetch",
+            move |client, access_token| {
+                let locator = request_locator.clone();
+                async move { client.conversation(&access_token, &locator).await }
+            },
+            cx,
+        )
+        .await
+        {
+            Ok(detail) => {
+                this.update(cx, |state, cx| {
+                    if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                        state.set_keiki_conversation_detail(&chat_id, &detail);
+                        state.apply_transcript(map_transcript(&detail));
+                        cx.notify();
                     }
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, %chat_id, "Keiki transcript refresh failed");
-                        None
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, %chat_id, "Keiki transcript refresh task failed");
-                        None
-                    }
-                }
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(%error, %chat_id, "Keiki transcript fetch failed");
-                None
+                })
+                .ok();
             }
             Err(error) => {
-                tracing::warn!(%error, %chat_id, "Keiki transcript fetch task failed");
-                None
+                tracing::warn!(%error, %chat_id, "Keiki transcript fetch failed");
+                this.update(cx, |state, cx| {
+                    if let Some(conversation) = state.keiki_conversation.as_mut()
+                        && conversation.chat_id == chat_id
+                    {
+                        conversation.error = Some(error.to_string());
+                        cx.notify();
+                    }
+                })
+                .ok();
             }
-        };
-        if let Some(detail) = detail {
-            this.update(cx, |state, cx| {
-                if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                    state.apply_transcript(map_transcript(&detail));
-                    cx.notify();
-                }
-            })
-            .ok();
         }
     })
 }

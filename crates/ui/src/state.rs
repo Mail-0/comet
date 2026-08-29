@@ -39,7 +39,9 @@ use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_cl
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
 };
-use crate::keiki::SessionStatus as KeikiSessionStatus;
+use crate::keiki::{
+    KeikiConversation, KeikiConversationPending, SessionStatus as KeikiSessionStatus,
+};
 
 // ---------------------------------------------------------------------------
 // Engine handle
@@ -654,6 +656,7 @@ pub struct AppState {
     pub(crate) keiki_status: KeikiSessionStatus,
     pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
+    pub(crate) keiki_conversation: Option<KeikiConversation>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -709,6 +712,7 @@ impl AppState {
             keiki_status: KeikiSessionStatus::SignedOut,
             keiki_error: None,
             keiki_task: None,
+            keiki_conversation: None,
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -784,6 +788,7 @@ impl AppState {
         if let Some(selected) = &self.selected_chat
             && !self.chats.iter().any(|c| &c.id == selected)
         {
+            self.keiki_conversation = None;
             // Selected chat vanished (deleted elsewhere): drop selection + transcript.
             self.selected_chat = None;
             self.transcript.clear();
@@ -944,6 +949,7 @@ impl AppState {
         if let Some(selected) = &self.selected_chat
             && !self.chats.iter().any(|chat| &chat.id == selected)
         {
+            self.keiki_conversation = None;
             self.selected_chat = None;
             self.transcript.clear();
             self.transcript_replayed = false;
@@ -975,6 +981,7 @@ impl AppState {
 
         self.chats
             .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        self.keiki_conversation = None;
         if selected_keiki_chat {
             self.selected_chat = None;
             self.transcript.clear();
@@ -1446,6 +1453,54 @@ impl AppState {
         self.chats.iter().find(|c| c.id == id)
     }
 
+    pub fn keiki_conversation(&self) -> Option<&KeikiConversation> {
+        self.keiki_conversation.as_ref().filter(|conversation| {
+            self.selected_chat.as_deref() == Some(conversation.chat_id.as_str())
+        })
+    }
+
+    pub(crate) fn set_keiki_conversation_detail(
+        &mut self,
+        chat_id: &str,
+        detail: &keiki_model::ConversationDetail,
+    ) {
+        if self.selected_chat.as_deref() != Some(chat_id) {
+            return;
+        }
+        let conversation = self
+            .keiki_conversation
+            .get_or_insert_with(|| KeikiConversation::new(chat_id.to_string()));
+        if conversation.chat_id != chat_id {
+            return;
+        }
+        conversation.blocked = detail.blocked;
+        conversation.takeover = detail.takeover.clone();
+        conversation.pending = None;
+        conversation.error = None;
+    }
+
+    pub(crate) fn replace_keiki_conversation(&mut self, chat_id: Option<&str>) {
+        self.keiki_conversation = chat_id
+            .filter(|id| crate::keiki::is_keiki_chat(id))
+            .map(|id| KeikiConversation::new(id.to_string()));
+    }
+
+    pub(crate) fn set_keiki_pending(
+        &mut self,
+        chat_id: &str,
+        pending: KeikiConversationPending,
+    ) -> bool {
+        let Some(conversation) = self.keiki_conversation.as_mut() else {
+            return false;
+        };
+        if conversation.chat_id != chat_id || self.selected_chat.as_deref() != Some(chat_id) {
+            return false;
+        }
+        conversation.pending = Some(pending);
+        conversation.error = None;
+        true
+    }
+
     /// The chat the Archive session shortcut acts on: the selected one, unless
     /// it is already archived. The shortcut archives and never unarchives, so
     /// an archived chat is left alone. Pure.
@@ -1489,6 +1544,7 @@ impl AppState {
         self.no_project = false;
         self.selected_device = None;
         self.selected_chat = None;
+        self.keiki_conversation = None;
         self.auto_selected = false;
         self.chats_synced = false;
         self.spaces_synced = false;
@@ -1710,6 +1766,7 @@ impl AppState {
             return;
         }
         self.selected_chat = chat_id.clone();
+        self.replace_keiki_conversation(chat_id.as_deref());
         self.auto_selected = true;
         self.transcript.clear();
         self.transcript_replayed = false;
@@ -3258,6 +3315,9 @@ mod tests {
         state.selected_device = Some(crate::keiki::DEVICE_ID.into());
         state.selected_space = Some("keiki-agent:agent".into());
         state.selected_chat = Some("engine-chat".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:agent:+1555".into(),
+        ));
         state.transcript = vec![user_entry("engine-entry")];
         state.transcript_replayed = true;
 
@@ -3269,6 +3329,7 @@ mod tests {
         assert_eq!(state.selected_space.as_deref(), Some("engine-space"));
         assert_eq!(state.selected_device, None);
         assert_eq!(state.selected_chat.as_deref(), Some("engine-chat"));
+        assert!(state.keiki_conversation.is_none());
         assert_eq!(state.transcript, vec![user_entry("engine-entry")]);
         assert!(state.transcript_replayed);
         assert!(state.spaces_synced);
@@ -3276,11 +3337,15 @@ mod tests {
 
         state.chats.push(chat("keiki-conv:agent:+1666", 3, None));
         state.selected_chat = Some("keiki-conv:agent:+1666".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:agent:+1666".into(),
+        ));
         state.transcript = vec![user_entry("keiki-entry")];
         state.transcript_replayed = true;
         state.clear_keiki_rows();
 
         assert_eq!(state.selected_chat, None);
+        assert!(state.keiki_conversation.is_none());
         assert!(state.transcript.is_empty());
         assert!(!state.transcript_replayed);
         assert!(
@@ -3289,6 +3354,41 @@ mod tests {
                 .iter()
                 .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
         );
+    }
+
+    #[test]
+    fn keiki_conversation_pending_state_is_scoped_to_selection() {
+        let mut state = AppState::new();
+        state.selected_chat = Some("keiki-conv:agent:+1555".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:agent:+1555".into(),
+        ));
+
+        assert!(state.set_keiki_pending(
+            "keiki-conv:agent:+1555",
+            crate::keiki::KeikiConversationPending::Takeover
+        ));
+        assert_eq!(
+            state
+                .keiki_conversation
+                .as_ref()
+                .and_then(|conversation| conversation.pending),
+            Some(crate::keiki::KeikiConversationPending::Takeover)
+        );
+        assert!(!state.set_keiki_pending(
+            "keiki-conv:agent:+1666",
+            crate::keiki::KeikiConversationPending::Block
+        ));
+        state.replace_keiki_conversation(Some("keiki-conv:agent:+1666"));
+        assert_eq!(
+            state
+                .keiki_conversation
+                .as_ref()
+                .map(|conversation| conversation.chat_id.as_str()),
+            Some("keiki-conv:agent:+1666")
+        );
+        state.replace_keiki_conversation(Some("engine-chat"));
+        assert!(state.keiki_conversation.is_none());
     }
 
     #[test]
