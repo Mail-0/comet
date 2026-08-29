@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    /// Open a Zeron conversation URL.
+    /// Open a Keiki conversation URL.
     #[arg(value_name = "URL")]
     open_url: Option<String>,
 }
@@ -270,7 +270,7 @@ async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
     let client = zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
         .await
         .map_err(|e| {
-            anyhow::anyhow!("no engine listening on 127.0.0.1:{ipc_port} ({e}) — is zeron running?")
+            anyhow::anyhow!("no engine listening on 127.0.0.1:{ipc_port} ({e}) — is Keiki running?")
         })?;
     let status = client
         .call(zeron_rpc::methods::SYNC_STATUS, serde_json::json!({}))

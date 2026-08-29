@@ -438,7 +438,7 @@ impl Shell {
         // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
         // to the card's key handler.
         let search =
-            cx.new(|cx| ComposerInput::with_context("Search projects…", "PaletteSearch", cx));
+            cx.new(|cx| ComposerInput::with_context("Search agents…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 if let Some(menu) = this.spaces_menu.open_mut() {
@@ -625,7 +625,7 @@ impl Shell {
             "Last updated",
             "Created",
             "Branch",
-            "Pull request",
+            "Conversation",
             "Harness",
         ];
         let icons = [
@@ -734,7 +734,7 @@ impl Shell {
                         Some((tag.into(), offline)),
                     )
                 }
-                None => (SharedString::from("All projects"), None),
+                None => (SharedString::from("All agents"), None),
             }
         };
         let open = self.spaces_menu.is_open();
@@ -947,7 +947,7 @@ impl Shell {
             rows.iter()
                 .map(|row| match row {
                     SpacesMenuRow::All => {
-                        (row.clone(), SharedString::from("All projects"), None, false)
+                        (row.clone(), SharedString::from("All agents"), None, false)
                     }
                     SpacesMenuRow::Space(id) => match state.space_row(id) {
                         Some(space) => {
@@ -962,7 +962,7 @@ impl Shell {
                         None => (row.clone(), SharedString::from("?"), None, false),
                     },
                     SpacesMenuRow::AddSpace => {
-                        (row.clone(), SharedString::from("New project…"), None, false)
+                        (row.clone(), SharedString::from("New agent…"), None, false)
                     }
                 })
                 .collect()
@@ -2870,7 +2870,7 @@ impl Shell {
             .space_row(&space_id)
             .map(|s| s.display_name().to_string())
             .unwrap_or_default();
-        let input = cx.new(|cx| ComposerInput::new("Project name", cx));
+        let input = cx.new(|cx| ComposerInput::new("Agent name", cx));
         input.update(cx, |input, cx| input.set_text(current, cx));
         let events = cx.subscribe(&input, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
@@ -2978,7 +2978,7 @@ impl Shell {
                         cx.notify();
                     }
                 }))
-                .child(popover::dialog_title(&theme, "Rename project"))
+                .child(popover::dialog_title(&theme, "Rename agent"))
                 .child(
                     div()
                         .mt(px(12.0))
@@ -3018,7 +3018,7 @@ impl Shell {
                 (
                     space
                         .map(|s| s.display_name().to_string())
-                        .unwrap_or_else(|| "this project".into()),
+                        .unwrap_or_else(|| "this agent".into()),
                     space
                         .and_then(|s| state.device_name(&s.device_id))
                         .unwrap_or("its device")
@@ -3036,7 +3036,7 @@ impl Shell {
                 )
             };
             let card = popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Remove project?"))
+                .child(popover::dialog_title(&theme, "Remove agent?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, copy)))
                 .child(
                     div()

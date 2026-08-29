@@ -1463,7 +1463,7 @@ impl AppearancePage {
                             .mt(px(1.0))
                             .flex_none(),
                     )
-                    .child("Zeron finds light and dark variants automatically."),
+                    .child("Keiki finds light and dark variants automatically."),
             );
         }
 
@@ -2250,7 +2250,7 @@ impl Render for AppearancePage {
                     .child(
                         widgets::page_subtitle(
                             &theme,
-                            "Choose how Zeron looks. These settings stay on this device.",
+                            "Choose how Keiki looks. These settings stay on this device.",
                         )
                         .max_w(px(512.0))
                         .line_height(px(20.0)),

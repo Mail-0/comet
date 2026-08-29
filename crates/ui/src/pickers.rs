@@ -927,7 +927,7 @@ impl Pickers {
             PickerKind::Space => {
                 let handle = self.search.read(cx).focus_handle(cx);
                 self.search.update(cx, |input, cx| {
-                    input.set_placeholder("Search projects…", cx);
+                    input.set_placeholder("Search agents…", cx);
                 });
                 window.focus(&handle, cx);
             }
@@ -1931,9 +1931,9 @@ impl Pickers {
             // Distinguish "the filter ate everything" from "this device has
             // no projects yet" — the scoped list makes the latter common.
             let empty: &str = if self.search.read(cx).text().is_empty() {
-                "No projects on this device."
+                "No agents on this device."
             } else {
-                "No projects match."
+                "No agents match."
             };
             div()
                 .p(px(Theme::SPACE_SM))
@@ -1985,7 +1985,7 @@ impl Pickers {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .child(SharedString::from("New project…")),
+                    .child(SharedString::from("New agent…")),
             );
         div()
             .flex()
@@ -2330,7 +2330,7 @@ impl Pickers {
             let project_label: SharedString = state
                 .selected_space_row()
                 .map(|s| s.display_name().to_string())
-                .unwrap_or_else(|| "No project".to_string())
+                .unwrap_or_else(|| "No agent".to_string())
                 .into();
             (device_label, project_label, offline)
         };
@@ -2731,7 +2731,7 @@ impl Pickers {
                 .p(px(Theme::SPACE_SM))
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from("No project selected"))
+                .child(SharedString::from("No agent selected"))
                 .into_any_element();
         }
         let rows = self.filtered_ref_rows(cx);

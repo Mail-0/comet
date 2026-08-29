@@ -13,7 +13,7 @@ pub fn builtin_registry() -> &'static ThemeRegistry {
     REGISTRY.get_or_init(|| ThemeRegistry {
         families: vec![
             family("keiki", "Keiki", vec![keiki_light(), keiki_dark()]),
-            family("zeron", "Zeron", vec![zeron_light(), zeron_dark()]),
+            family("zeron", "Comet", vec![zeron_light(), zeron_dark()]),
             family(
                 "vscode-default",
                 "VS Code Default",
@@ -241,7 +241,7 @@ fn zeron_dark() -> ThemeVariant {
     variant(Seeds {
         id: "zeron-dark",
         family_id: "zeron",
-        name: "Zeron Dark",
+        name: "Comet Dark",
         appearance: Appearance::Dark,
         treatment: SurfaceTreatment::Frosted,
         background: "#060606",
@@ -343,7 +343,7 @@ fn zeron_light() -> ThemeVariant {
     variant(Seeds {
         id: "zeron-light",
         family_id: "zeron",
-        name: "Zeron Light",
+        name: "Comet Light",
         appearance: Appearance::Light,
         treatment: SurfaceTreatment::Frosted,
         background: "#ffffff",

@@ -13,12 +13,12 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
     let current = current_version();
     if !version_newer(&manifest.version, current) {
         println!(
-            "zeron {current} is up to date (latest: {}).",
+            "Keiki {current} is up to date (latest: {}).",
             manifest.version
         );
         return Ok(());
     }
-    println!("zeron {current} → {} available", manifest.version);
+    println!("Keiki {current} → {} available", manifest.version);
     if check_only {
         std::process::exit(1);
     }
@@ -54,7 +54,7 @@ pub async fn update(edge_url: &str, check_only: bool) -> anyhow::Result<()> {
                 .unwrap_or_else(super::dirs_data_dir);
             let staged = zeron_update::stage_mac_app(edge_url, &manifest, &data_dir).await?;
             zeron_update::apply_mac_app(&staged, &bundle)?;
-            println!("updated {} — relaunch Zeron to finish.", bundle.display());
+            println!("updated {} — relaunch Keiki to finish.", bundle.display());
             Ok(())
         }
         InstallKind::Unmanaged => {

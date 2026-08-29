@@ -876,11 +876,11 @@ fn local_work_phrase(chats: usize, spaces: usize) -> Option<String> {
     match (chats, spaces) {
         (0, 0) => None,
         (c, 0) => Some(format!("the {}", plural(c, "session"))),
-        (0, s) => Some(format!("the {}", plural(s, "project"))),
+        (0, s) => Some(format!("the {}", plural(s, "agent"))),
         (c, s) => Some(format!(
             "the {} and {}",
             plural(c, "session"),
-            plural(s, "project")
+            plural(s, "agent")
         )),
     }
 }
@@ -1289,7 +1289,7 @@ impl Shell {
             Some("signin") => Some(GatePhase::SignIn),
             Some("org") => Some(GatePhase::OrgGate),
             Some("failed") => Some(GatePhase::Failed(
-                "Could not reach the zeron engine on port 27901".into(),
+                "Could not reach the Keiki engine on port 27901".into(),
             )),
             _ => None,
         };
@@ -2298,7 +2298,7 @@ impl Shell {
         };
         if let Some(link) = link {
             cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.sidebar_notice = Some("Zeron conversation link copied".into());
+            self.sidebar_notice = Some("Conversation link copied".into());
         } else {
             self.sidebar_notice = Some("Conversation link is not ready yet".into());
         }
@@ -3043,7 +3043,7 @@ impl Shell {
                     Ok(_) => cx.quit(),
                     Err(err) => {
                         shell.runtime_change_error = Some(format!(
-                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Zeron."
+                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Keiki."
                         ).into());
                         cx.notify();
                     }
@@ -4593,6 +4593,8 @@ impl Shell {
     ) -> AnyElement {
         let open = self.user_menu.is_open();
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
+        let keiki_status = self.state.read(cx).keiki_status;
+        let keiki_error = self.state.read(cx).keiki_error.clone();
         // Bottom-of-sidebar identity: avatar circle + scope/account label and
         // its secondary status line.
         let initial: SharedString = user_line
@@ -4759,7 +4761,7 @@ impl Shell {
                     menu.child(row).child(popover::menu_separator())
                 })
                 .when(
-                    self.state.read(cx).keiki_status == crate::keiki::SessionStatus::SignedIn,
+                    keiki_status == crate::keiki::SessionStatus::SignedIn,
                     |menu| {
                         menu.child(
                             popover::menu_row(theme, false, "user-menu-keiki-signout")
@@ -4776,6 +4778,42 @@ impl Shell {
                                 .child(SharedString::from("Sign out of Keiki")),
                         )
                         .child(popover::menu_separator())
+                    },
+                )
+                .when(
+                    keiki_status != crate::keiki::SessionStatus::SignedIn,
+                    |menu| {
+                        let loading = keiki_status == crate::keiki::SessionStatus::Loading;
+                        let row = popover::menu_row(theme, false, "user-menu-keiki-signin")
+                            .id("user-menu-keiki-signin")
+                            .when(!loading, |row| {
+                                row.on_click(cx.listener(|this, _, _, cx| {
+                                    this.start_keiki_sign_in(cx);
+                                }))
+                            })
+                            .when(loading, |row| row.opacity(0.6))
+                            .child(
+                                icon(icons::GLOBAL)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from(if loading {
+                                "Opening Keiki…"
+                            } else {
+                                "Sign in to Keiki"
+                            }));
+                        menu.child(row)
+                            .when_some(keiki_error.clone(), |menu, error| {
+                                menu.child(
+                                    div()
+                                        .px(px(8.0))
+                                        .pb(px(4.0))
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.danger)
+                                        .child(error),
+                                )
+                            })
+                            .child(popover::menu_separator())
                     },
                 )
                 .child(
@@ -4821,7 +4859,7 @@ impl Shell {
         } else if remote_engine {
             "Stop daemon and quit"
         } else {
-            "Quit Zeron"
+            "Quit Keiki"
         };
 
         if self.sync_flow == SyncFlow::Enabling && needs_org {
@@ -4846,7 +4884,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Finish signing in in your browser. Zeron will keep using this local workspace until you quit and reopen.",
+                        "Finish signing in in your browser. Keiki will keep using this local workspace until you quit and reopen.",
                     )),
                 )
                 .child(
@@ -4890,14 +4928,14 @@ impl Shell {
                     )
                     .into(),
                     (Some(email), None) => format!(
-                        "You're signed in as {email}. Zeron can switch to your synced workspace now."
+                        "You're signed in as {email}. Keiki can switch to your synced workspace now."
                     )
                     .into(),
                     (None, Some(phrase)) => format!(
                         "Bring {phrase} from this device into your synced workspace, or start it fresh."
                     )
                     .into(),
-                    (None, None) => "Zeron can switch to your synced workspace now.".into(),
+                    (None, None) => "Keiki can switch to your synced workspace now.".into(),
                 };
                 let mut actions = div()
                     .mt(px(16.0))
@@ -5086,9 +5124,9 @@ impl Shell {
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
                         if remote_engine {
-                            "Zeron is using a background daemon. Stop it and quit Zeron, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Keiki is using a background daemon. Stop it and quit Keiki, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         } else {
-                            "Quit and reopen Zeron to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
+                            "Quit and reopen Keiki to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
                         },
                     )),
                 )
@@ -5133,7 +5171,7 @@ impl Shell {
                 .child(
                     div().mt(px(6.0)).child(popover::dialog_body(
                         &theme,
-                        "Zeron will remove your credentials, close the synced workspace, and continue in local mode.",
+                        "Keiki will remove your credentials, close the synced workspace, and continue in local mode.",
                     )),
                 )
                 .child(
@@ -5307,7 +5345,7 @@ impl Shell {
                                     .size(px(16.0))
                                     .text_color(theme.text_muted),
                             )
-                            .child(SharedString::from("Zeron conversation link")),
+                            .child(SharedString::from("Conversation link")),
                     )
                     .when_some(harness_link, |menu, link| {
                         menu.child(
@@ -5585,7 +5623,7 @@ impl Shell {
                                 .text_size(crate::typography::ui_rems(16.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)
-                                .child(SharedString::from("Add a project to get started")),
+                                .child(SharedString::from("Add an agent to get started")),
                         )
                         .child(
                             div()
@@ -5593,11 +5631,11 @@ impl Shell {
                                 .text_size(crate::typography::ui_rems(13.0))
                                 .text_color(theme.text_muted.opacity(0.7))
                                 .child(SharedString::from(
-                                    "A project is a folder on one of your devices.",
+                                    "An agent is a folder on one of your devices.",
                                 )),
                         )
                         .child(
-                            popover::btn_primary(&theme_owned, "Add a project")
+                            popover::btn_primary(&theme_owned, "Add an agent")
                                 .id("onboarding-add-space")
                                 .mt(px(20.0))
                                 .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx))),
@@ -6210,7 +6248,7 @@ impl Shell {
                     .line_height(px(19.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(
-                        "Zeron removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
+                        "Keiki removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
                     )),
             )
             .when_some(self.runtime_change_error.clone(), |card, error| {
@@ -6709,8 +6747,8 @@ impl Shell {
                         .child(SharedString::from("Retry")),
                 )
                 .into_any_element(),
-            // Login card (zeron App.tsx Gate): centered card on the grid —
-            // logo, "Log in to Zeron", copy, full-width white Log in button.
+            // Login card (Keiki Gate): centered card on the grid —
+            // logo, "Sign in to Keiki", copy, full-width Keiki button.
             _ => div()
                 .w(px(360.0))
                 .px(px(32.0))
@@ -6736,7 +6774,7 @@ impl Shell {
                         .text_size(crate::typography::ui_rems(18.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.text)
-                        .child(SharedString::from("Log in to Zeron")),
+                        .child(SharedString::from("Sign in to Keiki")),
                 )
                 .child(
                     div()
@@ -6746,12 +6784,12 @@ impl Shell {
                         .line_height(px(19.0))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(
-                            "This opens your browser to finish logging in — you'll come right back.",
+                            "This opens Keiki in your browser to finish signing in — you'll come right back.",
                         )),
                 )
                 .child(
                     div()
-                        .id("sign-in")
+                        .id("keiki-sign-in")
                         .w_full()
                         .h(px(36.0))
                         .flex()
@@ -6764,23 +6802,6 @@ impl Shell {
                         .text_color(theme.on_solid)
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.9))
-                        .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
-                        .child(SharedString::from("Log in")),
-                )
-                .child(
-                    div()
-                        .id("keiki-sign-in")
-                        .mt(px(10.0))
-                        .w_full()
-                        .h(px(36.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(6.0))
-                        .bg(theme.text)
-                        .text_size(crate::typography::ui_rems(14.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme.on_solid)
                         .when(!keiki_loading, |button| {
                             button
                                 .cursor_pointer()
@@ -6794,6 +6815,26 @@ impl Shell {
                         } else {
                             "Sign in to Keiki"
                         })),
+                )
+                .child(
+                    div()
+                        .id("sign-in")
+                        .mt(px(10.0))
+                        .w_full()
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .text_size(crate::typography::ui_rems(14.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_color(theme.text)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.glass_hover()))
+                        .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
+                        .child(SharedString::from("Sign in with a workspace account")),
                 )
                 .when_some(keiki_error, |card, error| {
                     card.child(
@@ -6928,11 +6969,11 @@ impl Shell {
         // then existing memberships and the account escape hatch.
         let blurb: SharedString = match email {
             Some(email) => format!(
-                "Zeron is organized around workspaces — create one for yourself or your team. Signed in as {email}."
+                "Keiki is organized around workspaces — create one for yourself or your team. Signed in as {email}."
             )
             .into(),
             None => {
-                "Zeron is organized around workspaces — create one for yourself or your team."
+                "Keiki is organized around workspaces — create one for yourself or your team."
                     .into()
             }
         };
@@ -8095,12 +8136,12 @@ mod tests {
         assert_eq!(local_work_phrase(2, 0).as_deref(), Some("the 2 sessions"));
         assert_eq!(
             local_work_phrase(0, 1).as_deref(),
-            Some("the 1 project"),
-            "a projects-only profile must be offered the import, not a bare switch"
+            Some("the 1 agent"),
+            "an agents-only profile must be offered the import, not a bare switch"
         );
         assert_eq!(
             local_work_phrase(1, 2).as_deref(),
-            Some("the 1 session and 2 projects")
+            Some("the 1 session and 2 agents")
         );
     }
 

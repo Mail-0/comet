@@ -4451,7 +4451,7 @@ impl Render for Changes {
                 } else if message.contains("unknown method") {
                     (
                         SharedString::from(
-                            "This chat's device is running an older Zeron — update it to view branch and turn diffs",
+                            "This chat's device is running an older Keiki — update it to view branch and turn diffs",
                         ),
                         false,
                     )
