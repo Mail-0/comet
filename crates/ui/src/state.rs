@@ -3581,8 +3581,8 @@ mod tests {
     fn project_labels_from_cwd() {
         assert_eq!(project_label(Some("/home/w/dev/zeron")), "zeron");
         assert_eq!(project_label(Some("/home/w/dev/zeron/")), "zeron");
-        assert_eq!(project_label(None), "No project");
-        assert_eq!(project_label(Some("   ")), "No project");
+        assert_eq!(project_label(None), "No agent");
+        assert_eq!(project_label(Some("   ")), "No agent");
         assert_eq!(project_label(Some("/")), "/");
     }
 
@@ -3598,7 +3598,7 @@ mod tests {
         let groups = group_chats(chats.iter());
         let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
         // Groups ordered by their most recent chat; rows keep order.
-        assert_eq!(labels, ["zeron", "zed", "No project"]);
+        assert_eq!(labels, ["zeron", "zed", "No agent"]);
         let zeron_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(zeron_ids, ["a", "c"]);
         assert!(group_chats(std::iter::empty()).is_empty());

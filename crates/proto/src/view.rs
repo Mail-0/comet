@@ -287,16 +287,27 @@ pub struct ChatGroup<'a> {
     pub chats: Vec<&'a Chat>,
 }
 
-/// Project label for a chat: the basename of its cwd, or "No project".
+/// Project label for a chat: the basename of its cwd, or "No agent".
 pub fn project_label(cwd: Option<&str>) -> String {
     let Some(cwd) = cwd.map(str::trim).filter(|c| !c.is_empty()) else {
-        return "No project".to_string();
+        return "No agent".to_string();
     };
     std::path::Path::new(cwd.trim_end_matches(['/', '\\']))
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| cwd.to_string())
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::project_label;
+
+    #[test]
+    fn missing_chat_cwd_uses_the_agent_label() {
+        assert_eq!(project_label(None), "No agent");
+        assert_eq!(project_label(Some("   ")), "No agent");
+    }
 }
 
 /// Group chats by project label, preserving the incoming (recency) order both

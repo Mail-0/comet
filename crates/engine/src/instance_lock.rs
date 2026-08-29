@@ -60,7 +60,7 @@ impl InstanceLock {
                         let holder = std::fs::read_to_string(&path).unwrap_or_default();
                         let holder = holder.trim();
                         return Err(EngineError::Other(format!(
-                            "another zeron engine is already running on {} (pid {}); \
+                            "another Keiki engine is already running on {} (pid {}); \
                              stop it or use a different data dir (ZERON_DATA_DIR)",
                             data_dir.display(),
                             if holder.is_empty() { "unknown" } else { holder },

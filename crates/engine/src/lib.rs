@@ -948,7 +948,7 @@ pub async fn terminal_sign_in(auth: &Auth) -> Result<(), EngineError> {
                 }
                 if stdin_reader.is_none() {
                     let url = auth.start_headless_sign_in();
-                    println!("Sign in to Zeron:\n\n  {url}\n");
+                    println!("Sign in to Keiki:\n\n  {url}\n");
                     println!("Then paste the code shown in the browser here and press enter.");
                     let auth = auth.clone();
                     stdin_reader = Some(tokio::spawn(async move {
@@ -1005,7 +1005,7 @@ async fn run_org_onboarding(auth: Auth) {
         Ok(orgs) => orgs,
         Err(err) => {
             println!(
-                "Could not list workspaces ({err}) — create or select one from the Zeron UI to continue."
+                "Could not list workspaces ({err}) — create or select one from the Keiki UI to continue."
             );
             return;
         }
