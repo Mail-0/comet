@@ -45,7 +45,7 @@ pub fn blurb(harness: HarnessId) -> &'static str {
         HarnessId::Hermes => "Nous Research's Hermes Agent (hermes CLI).",
         HarnessId::Pi => "The pi coding agent (pi CLI).",
         HarnessId::Opencode => "SST's opencode agent (opencode CLI).",
-        HarnessId::Copilot => "Dashboard Copilot, driven through the Comet service.",
+        HarnessId::Copilot => "Keiki's Copilot, driven through the dashboard service.",
         HarnessId::Mock => "Scripted test harness.",
     }
 }

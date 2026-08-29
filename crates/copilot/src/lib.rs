@@ -731,6 +731,8 @@ pub struct ResumePayload {
 pub struct ResumeEntry {
     pub interrupt_id: String,
     pub status: ResumeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -754,6 +756,7 @@ impl ResumePayload {
             resume: vec![ResumeEntry {
                 interrupt_id: interrupt_id.into(),
                 status,
+                payload: None,
             }],
         }
     }

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Serialize;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -110,13 +111,7 @@ struct ChatRequest {
     parent_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resume: Option<Vec<ResumeEntry>>,
-    messages: Vec<ChatMessage>,
-}
-
-#[derive(Debug, Serialize)]
-struct ChatMessage {
-    role: &'static str,
-    content: String,
+    messages: Vec<Value>,
 }
 
 fn chat_request(
@@ -124,18 +119,57 @@ fn chat_request(
     run_id: &str,
     parent_run_id: Option<String>,
     resume: Option<ResumePayload>,
-    prompt: String,
+    messages: Vec<Value>,
 ) -> ChatRequest {
     ChatRequest {
         thread_id: thread_id.to_owned(),
         run_id: run_id.to_owned(),
         parent_run_id,
         resume: resume.map(|payload| payload.resume),
-        messages: vec![ChatMessage {
-            role: "user",
-            content: prompt,
-        }],
+        messages,
     }
+}
+
+async fn chat_request_with_history(
+    client: &Client,
+    credentials: &Arc<dyn CopilotCredentialSource>,
+    thread_id: &str,
+    run_id: &str,
+    parent_run_id: Option<String>,
+    resume: Option<ResumePayload>,
+    prompt: Option<String>,
+) -> Result<ChatRequest, String> {
+    let current = credentials
+        .snapshot()
+        .ok_or_else(|| "Copilot credentials are unavailable".to_owned())?;
+    let mut messages = match client.get_thread(&current, thread_id).await {
+        Ok(thread) => thread
+            .messages
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "Copilot thread history was not an array".to_owned())?,
+        Err(CopilotError::Api { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+            Vec::new()
+        }
+        Err(CopilotError::Unauthorized) => {
+            return Err("Copilot authorization expired".into());
+        }
+        Err(error) => {
+            return Err(format!("Copilot thread history failed: {error}"));
+        }
+    };
+    if let Some(prompt) = prompt {
+        messages.push(json!({ "role": "user", "content": prompt }));
+    } else if messages.is_empty() {
+        return Err("Copilot cannot resume an empty thread".into());
+    }
+    Ok(chat_request(
+        thread_id,
+        run_id,
+        parent_run_id,
+        resume,
+        messages,
+    ))
 }
 
 async fn run_copilot(
@@ -166,13 +200,24 @@ async fn run_copilot(
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let mut pending_steers = VecDeque::new();
-    let mut next_body = chat_request(
+    let mut steering_closed = false;
+    let mut next_body = match chat_request_with_history(
+        &client,
+        &credentials,
         &thread_id,
         &Uuid::new_v4().to_string(),
         None,
         None,
-        request.prompt,
-    );
+        Some(request.prompt),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(error) => {
+            send_done_error(&event_tx, &error).await;
+            return;
+        }
+    };
 
     'session: loop {
         let Some(current) = credentials.snapshot() else {
@@ -211,7 +256,15 @@ async fn run_copilot(
                             send_done_interrupted(&event_tx).await;
                             break 'session;
                         }
-                        steer = steering.recv() => steer,
+                        steer = steering.recv(), if !steering_closed => {
+                            match steer {
+                                Some(steer) => Some(steer),
+                                None => {
+                                    steering_closed = true;
+                                    None
+                                }
+                            }
+                        }
                     }
                 };
                 let Some(steer) = steer else {
@@ -228,7 +281,23 @@ async fn run_copilot(
                 {
                     break 'session;
                 }
-                next_body = chat_request(&thread_id, &next, None, None, steer.prompt);
+                next_body = match chat_request_with_history(
+                    &client,
+                    &credentials,
+                    &thread_id,
+                    &next,
+                    None,
+                    None,
+                    Some(steer.prompt),
+                )
+                .await
+                {
+                    Ok(body) => body,
+                    Err(error) => {
+                        send_done_error(&event_tx, &error).await;
+                        break 'session;
+                    }
+                };
             }
             ConsumeResult::Interrupt { run_id, interrupts } => {
                 let resume = await_interrupts(request_input.clone(), interrupts, &interrupt).await;
@@ -237,13 +306,23 @@ async fn run_copilot(
                     break 'session;
                 };
                 pending_steers.clear();
-                next_body = chat_request(
+                next_body = match chat_request_with_history(
+                    &client,
+                    &credentials,
                     &thread_id,
                     &Uuid::new_v4().to_string(),
                     Some(run_id),
                     Some(resume),
-                    "Continue with the response.".into(),
-                );
+                    None,
+                )
+                .await
+                {
+                    Ok(body) => body,
+                    Err(error) => {
+                        send_done_error(&event_tx, &error).await;
+                        break 'session;
+                    }
+                };
             }
             ConsumeResult::Stopped => break 'session,
         }
@@ -271,6 +350,7 @@ async fn consume_response(
     let mut decoder = SseDecoder::new();
     let mut mapper = TurnMapper::new();
     let mut run_id = String::new();
+    let mut steering_closed = false;
     let mut body = response.bytes_stream();
     loop {
         tokio::select! {
@@ -281,21 +361,20 @@ async fn consume_response(
                 send_done_interrupted(event_tx).await;
                 return ConsumeResult::Stopped;
             }
-            steer = steering.recv() => {
-                if let Some(steer) = steer {
-                    pending_steers.push_back(steer);
+            steer = steering.recv(), if !steering_closed => {
+                match steer {
+                    Some(steer) => pending_steers.push_back(steer),
+                    None => steering_closed = true,
                 }
             }
             chunk = body.next() => {
                 let Some(chunk) = chunk else {
-                    if let Ok(Some(frame)) = decoder.finish() {
-                        if let Ok(event) = frame.ag_ui_event() {
-                            if let Some(result) = handle_event(
-                                event, &mut mapper, &mut run_id, event_tx
-                            ).await {
-                                return result;
-                            }
-                        }
+                    if let Ok(Some(frame)) = decoder.finish()
+                        && let Ok(event) = frame.ag_ui_event()
+                        && let Some(result) =
+                            handle_event(event, &mut mapper, &mut run_id, event_tx).await
+                    {
+                        return result;
                     }
                     send_done_error(event_tx, "Copilot stream ended without completion").await;
                     return ConsumeResult::Stopped;
@@ -402,21 +481,30 @@ async fn await_interrupts(
     let resume = interrupts
         .into_iter()
         .map(|interrupt| {
-            let status = answers
+            let answer = answers
                 .iter()
                 .find(|answer| answer.question_id == interrupt.id)
-                .and_then(|answer| answer.labels.first())
-                .filter(|label| {
-                    !matches!(
-                        label.to_ascii_lowercase().as_str(),
-                        "decline" | "cancel" | "cancelled" | "reject" | "no"
-                    )
-                })
-                .map(|_| ResumeStatus::Resolved)
-                .unwrap_or(ResumeStatus::Cancelled);
+                .and_then(|answer| answer.labels.first());
+            let (status, payload) = match answer.map(|label| label.to_ascii_lowercase()) {
+                Some(label)
+                    if matches!(label.as_str(), "approve" | "approved" | "yes" | "allow") =>
+                {
+                    (ResumeStatus::Resolved, Some(json!({ "approved": true })))
+                }
+                Some(label)
+                    if matches!(
+                        label.as_str(),
+                        "decline" | "declined" | "reject" | "rejected" | "no"
+                    ) =>
+                {
+                    (ResumeStatus::Resolved, Some(json!({ "approved": false })))
+                }
+                _ => (ResumeStatus::Cancelled, None),
+            };
             ResumeEntry {
                 interrupt_id: interrupt.id,
                 status,
+                payload,
             }
         })
         .collect();
