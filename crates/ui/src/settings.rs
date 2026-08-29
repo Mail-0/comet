@@ -203,6 +203,9 @@ pub struct UiSettings {
     /// group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_keiki_conversations: Vec<String>,
+    /// Device-local Copilot chat id, restored across launches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copilot_chat_id: Option<String>,
     /// Optional harness branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_harness: bool,
@@ -279,6 +282,7 @@ impl Default for UiSettings {
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
             pinned_keiki_conversations: Vec::new(),
+            copilot_chat_id: Some("copilot-chat".into()),
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
@@ -776,6 +780,7 @@ mod tests {
             sidebar_organization: SidebarOrganization::ByDevice,
             sidebar_sort: SidebarSort::Created,
             pinned_keiki_conversations: vec![],
+            copilot_chat_id: None,
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,

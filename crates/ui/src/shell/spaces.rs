@@ -1114,17 +1114,29 @@ impl Shell {
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
         let filter = self.settings.space_filter.clone();
         let state = self.state.read(cx);
+        let copilot_id = self.settings.copilot_chat_id.as_deref();
         let mut chats: Vec<zeron_proto::Chat> = state
             .sidebar_chats(Utc::now(), filter.as_deref())
             .into_iter()
             .map(|(_, chat)| chat.clone())
+            .filter(|chat| Some(chat.id.as_str()) != copilot_id)
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
+        let mut order = Vec::new();
+        if let Some(id) = copilot_id
+            && state
+                .chats
+                .iter()
+                .any(|chat| chat.id == id && !chat.archived)
+        {
+            order.push(id.to_string());
+        }
         if !matches!(
             self.settings.sidebar_organization,
             SidebarOrganization::ByDevice | SidebarOrganization::ByAgent
         ) {
-            return chats.into_iter().map(|chat| chat.id).collect();
+            order.extend(chats.into_iter().map(|chat| chat.id));
+            return order;
         }
         let mut groups: Vec<(Option<(String, String)>, Vec<zeron_proto::Chat>)> = Vec::new();
         for chat in chats {
@@ -1150,11 +1162,13 @@ impl Shell {
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
             promote_local_device_group(&mut groups, state.local_device_id.as_deref());
         }
-        groups
-            .into_iter()
-            .flat_map(|(_, rows)| rows)
-            .map(|chat| chat.id)
-            .collect()
+        order.extend(
+            groups
+                .into_iter()
+                .flat_map(|(_, rows)| rows)
+                .map(|chat| chat.id),
+        );
+        order
     }
 
     /// The sidebar's Sessions list: every session (idle included) of the
@@ -1167,11 +1181,13 @@ impl Shell {
     ) -> Vec<(String, f32, AnyElement)> {
         let now = Utc::now();
         let filter = self.settings.space_filter.clone();
+        let copilot_id = self.settings.copilot_chat_id.clone();
         let mut rows: Vec<ActiveChatRow> = {
             let state = self.state.read(cx);
             let mut chats: Vec<_> = state
                 .sidebar_chats(now, filter.as_deref())
                 .into_iter()
+                .filter(|(_, chat)| copilot_id.as_deref() != Some(chat.id.as_str()))
                 .map(|(status, chat)| (status, chat.clone()))
                 .collect();
             chats.sort_by(|left, right| {
@@ -1264,6 +1280,47 @@ impl Shell {
         // chip always names the key that opens its row.
         let mut slot = 0usize;
         let mut rendered = Vec::new();
+        let copilot_available = self.state.read(cx).keiki_token.is_some();
+        let copilot_chat = {
+            let state = self.state.read(cx);
+            copilot_id.as_deref().and_then(|id| {
+                state
+                    .sidebar_chats(now, None)
+                    .into_iter()
+                    .find(|(_, chat)| chat.id == id)
+                    .map(|(status, chat)| (status, chat.clone()))
+            })
+        };
+        let copilot_row = if copilot_available {
+            if let Some((status, chat)) = copilot_chat {
+                let is_selected = selected.as_deref() == Some(chat.id.as_str());
+                let element = self.render_chat_row(
+                    chat.id.clone(),
+                    "Copilot".into(),
+                    format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
+                    "~".into(),
+                    None,
+                    None,
+                    Some(zeron_proto::HarnessId::Copilot),
+                    status,
+                    is_selected,
+                    false,
+                    None,
+                    theme,
+                    cx,
+                );
+                (
+                    format!("c:{}", chat.id),
+                    super::chat_row_height(false, false),
+                    element,
+                )
+            } else {
+                self.render_unavailable_copilot_row(copilot_available, theme, cx)
+            }
+        } else {
+            self.render_unavailable_copilot_row(false, theme, cx)
+        };
+        rendered.push(copilot_row);
         for (group, rows) in groups {
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for row in rows {
@@ -1383,6 +1440,50 @@ impl Shell {
             rendered.push((format!("g:{collapse_key}"), height, element));
         }
         rendered
+    }
+
+    fn render_unavailable_copilot_row(
+        &self,
+        available: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> (String, f32, AnyElement) {
+        let row = div()
+            .id("copilot-sidebar-row")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .rounded(px(8.0))
+            .px(px(Theme::SPACE_SM))
+            .py(px(6.0))
+            .text_color(if available {
+                theme.text.opacity(0.8)
+            } else {
+                theme.text_muted.opacity(0.45)
+            })
+            .when(available, |el| el.cursor_pointer())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open_copilot_chat(cx);
+            }))
+            .child(
+                icon(icons::BOT)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(theme.text_muted.opacity(if available { 0.8 } else { 0.4 })),
+            )
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child("Copilot"),
+            )
+            .into_any_element();
+        (
+            "copilot".to_string(),
+            super::chat_row_height(false, false),
+            row,
+        )
     }
 
     /// The sidebar's archived shelf — a direct port of t3code's settled

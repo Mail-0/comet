@@ -13,6 +13,7 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
 use zeron_doc::parts::MessagePart;
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
 use zeron_proto::{Chat, Device, Space};
+use zeron_rpc::methods;
 
 use crate::state::AppState;
 
@@ -272,8 +273,11 @@ async fn refresh_keiki_token(
     cx: &mut AsyncApp,
 ) -> Result<TokenSet, keiki_api::Error> {
     let client_id = credentials.client_id.clone();
+    let refresh_client = client.clone();
     let refresh_task = cx.update(|cx| {
-        gpui_tokio::Tokio::spawn(cx, async move { client.refresh_token(&credentials).await })
+        gpui_tokio::Tokio::spawn(cx, async move {
+            refresh_client.refresh_token(&credentials).await
+        })
     });
     let refreshed = match refresh_task.await {
         Ok(Ok(tokens)) => tokens,
@@ -305,7 +309,37 @@ async fn refresh_keiki_token(
             state.keiki_credentials = Some(refreshed_credentials);
         })
         .map_err(|error| request_task_error("Keiki token state update", error))?;
+    sync_copilot_credentials(entity, &client, &refreshed, cx).await;
     Ok(refreshed)
+}
+
+pub(crate) async fn sync_copilot_credentials(
+    entity: &WeakEntity<AppState>,
+    client: &Client,
+    token: &TokenSet,
+    cx: &mut AsyncApp,
+) -> bool {
+    let engine = entity
+        .update(cx, |state, _| state.engine().cloned())
+        .ok()
+        .flatten();
+    let Some(engine) = engine else {
+        return false;
+    };
+    let params = serde_json::json!({
+        "baseUrl": client.base_url(),
+        "accessToken": token.access_token(),
+    });
+    if let Err(error) = engine
+        .client()
+        .call(methods::SET_COPILOT_CREDENTIALS, params)
+        .await
+    {
+        tracing::warn!(%error, "Copilot credential sync failed");
+        false
+    } else {
+        true
+    }
 }
 
 fn conversation_error(error: &keiki_api::Error) -> String {
@@ -780,11 +814,12 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                 }
                 boot_state.update(cx, |state, cx| {
                     state.keiki_credentials = Some(credentials);
-                    state.keiki_token = Some(tokens);
+                    state.keiki_token = Some(tokens.clone());
                     state.keiki_status = SessionStatus::SignedIn;
                     state.keiki_error = None;
                     cx.notify();
                 });
+                sync_copilot_credentials(&boot_state.downgrade(), &client, &tokens, cx).await;
                 poll(boot_state.downgrade(), cx).await;
             }
             Ok(Err(error)) if error.is_invalid_refresh_token() => {
@@ -1112,6 +1147,9 @@ async fn complete_callback(
     }
     .await;
     let success = result.is_ok();
+    if let Ok((tokens, _)) = &result {
+        sync_copilot_credentials(&state, &client, tokens, cx).await;
+    }
     state
         .update(cx, |state, cx| match result {
             Ok((tokens, credentials)) => {

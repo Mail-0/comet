@@ -769,6 +769,7 @@ pub struct TurnMapper {
     tool_calls: HashMap<String, PendingToolCall>,
     last_tool_call_id: Option<String>,
     interrupts: Vec<Interrupt>,
+    thread_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -784,13 +785,17 @@ impl TurnMapper {
 
     pub fn handle(&mut self, event: AgUiEvent) -> Vec<AgentEvent> {
         match event {
-            AgUiEvent::RunStarted { run_id, .. } => {
+            AgUiEvent::RunStarted {
+                thread_id,
+                run_id: _,
+            } => {
+                self.thread_id = Some(thread_id.clone());
                 vec![AgentEvent::SessionStarted {
                     harness: HarnessId::Copilot,
                     model: "copilot".into(),
                     tools: Vec::new(),
                     cwd: String::new(),
-                    session_id: run_id,
+                    session_id: thread_id,
                     assistant_message_id: String::new(),
                 }]
             }
@@ -915,26 +920,26 @@ impl TurnMapper {
                 events
             }
             AgUiEvent::RunFinished {
-                run_id,
                 outcome: Some(RunOutcome::Success),
                 result,
+                ..
             } => {
                 let mut events = self.flush_tool_calls();
                 events.push(AgentEvent::Done {
                     status: DoneStatus::Completed,
                     result: result.map(compact_json),
                     error: None,
-                    session_id: Some(run_id),
+                    session_id: self.thread_id.clone(),
                 });
                 events
             }
-            AgUiEvent::RunFinished { run_id, result, .. } => {
+            AgUiEvent::RunFinished { result, .. } => {
                 let mut events = self.flush_tool_calls();
                 events.push(AgentEvent::Done {
                     status: DoneStatus::Completed,
                     result: result.map(compact_json),
                     error: None,
-                    session_id: Some(run_id),
+                    session_id: self.thread_id.clone(),
                 });
                 events
             }
@@ -944,7 +949,7 @@ impl TurnMapper {
                     status: DoneStatus::Errored,
                     result: None,
                     error: Some(message),
-                    session_id: None,
+                    session_id: self.thread_id.clone(),
                 });
                 events
             }
@@ -1048,8 +1053,9 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
             event,
             AgentEvent::Done {
                 status: DoneStatus::Completed,
+                session_id: Some(session_id),
                 ..
-            }
+            } if session_id == "t"
         )));
     }
 
@@ -1091,15 +1097,22 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
 
     #[test]
     fn missing_finish_outcome_completes_the_run() {
-        let event = AgUiEvent::from_json(r#"{"type":"RUN_FINISHED","runId":"r"}"#).unwrap();
+        let started =
+            AgUiEvent::from_json(r#"{"type":"RUN_STARTED","threadId":"thread","runId":"r"}"#)
+                .unwrap();
+        let finished = AgUiEvent::from_json(r#"{"type":"RUN_FINISHED","runId":"r"}"#).unwrap();
         let mut mapper = TurnMapper::new();
+        assert!(matches!(
+            mapper.handle(started).as_slice(),
+            [AgentEvent::SessionStarted { session_id, .. }] if session_id == "thread"
+        ));
         assert_eq!(
-            mapper.handle(event),
+            mapper.handle(finished),
             vec![AgentEvent::Done {
                 status: DoneStatus::Completed,
                 result: None,
                 error: None,
-                session_id: Some("r".into()),
+                session_id: Some("thread".into()),
             }]
         );
     }
@@ -1107,6 +1120,7 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
     #[test]
     fn chunked_tool_calls_inherit_ids_and_flush_at_completion() {
         let events = events_from_chunks(&[
+            b"data: {\"type\":\"RUN_STARTED\",\"threadId\":\"t\",\"runId\":\"r\"}\n\n",
             b"data: {\"type\":\"TOOL_CALL_CHUNK\",\"toolCallName\":\"search\",\"delta\":\"{\\\"query\\\":\\\"hel\"}\n\n",
             b"data: {\"type\":\"TOOL_CALL_CHUNK\",\"delta\":\"lo\\\"}\"}\n\n",
             b"data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\"}\n\n",
@@ -1119,6 +1133,14 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
         assert_eq!(
             mapped,
             vec![
+                AgentEvent::SessionStarted {
+                    harness: HarnessId::Copilot,
+                    model: "copilot".into(),
+                    tools: Vec::new(),
+                    cwd: String::new(),
+                    session_id: "t".into(),
+                    assistant_message_id: String::new(),
+                },
                 AgentEvent::ToolCall {
                     id: "search".into(),
                     call: ToolCall::Unknown {
@@ -1130,7 +1152,7 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
                     status: DoneStatus::Completed,
                     result: None,
                     error: None,
-                    session_id: Some("r".into()),
+                    session_id: Some("t".into()),
                 },
             ]
         );
@@ -1161,15 +1183,23 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
     #[test]
     fn run_error_emits_failed_done() {
         let event =
-            AgUiEvent::from_json(r#"{"type":"RUN_ERROR","message":"model failed"}"#).unwrap();
+            AgUiEvent::from_json(r#"{"type":"RUN_STARTED","threadId":"thread","runId":"run"}"#)
+                .unwrap();
         let mut mapper = TurnMapper::new();
+        let started = mapper.handle(event);
+        assert!(matches!(
+            started.as_slice(),
+            [AgentEvent::SessionStarted { .. }]
+        ));
+        let event =
+            AgUiEvent::from_json(r#"{"type":"RUN_ERROR","message":"model failed"}"#).unwrap();
         assert_eq!(
             mapper.handle(event),
             vec![AgentEvent::Done {
                 status: DoneStatus::Errored,
                 result: None,
                 error: Some("model failed".into()),
-                session_id: None,
+                session_id: Some("thread".into()),
             }]
         );
     }

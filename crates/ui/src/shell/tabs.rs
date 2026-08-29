@@ -72,10 +72,22 @@ impl Shell {
             if !state.chats_synced || state.selected_chat.is_some() || state.auto_selected {
                 return;
             }
-            state
-                .overview_chats(Utc::now())
-                .first()
-                .map(|(_, c)| c.id.clone())
+            self.settings
+                .copilot_chat_id
+                .as_deref()
+                .and_then(|id| {
+                    state
+                        .chats
+                        .iter()
+                        .find(|chat| chat.id == id && !chat.archived)
+                        .map(|chat| chat.id.clone())
+                })
+                .or_else(|| {
+                    state
+                        .overview_chats(Utc::now())
+                        .first()
+                        .map(|(_, c)| c.id.clone())
+                })
         };
         if let Some(first) = first {
             self.state
@@ -89,6 +101,83 @@ impl Shell {
         self.state
             .update(cx, |s, cx| s.select_chat(Some(chat_id), cx));
         cx.notify();
+    }
+
+    /// Open the device-local Copilot session, minting its project-less chat
+    /// through the same workspace `CreateChat` mutation used by the composer.
+    pub(super) fn open_copilot_chat(&mut self, cx: &mut Context<Self>) {
+        let (has_credentials, saved_id, existing_id, engine, device_id) = {
+            let state = self.state.read(cx);
+            (
+                state.keiki_token.is_some(),
+                self.settings
+                    .copilot_chat_id
+                    .clone()
+                    .filter(|id| !state.chats.iter().any(|chat| &chat.id == id)),
+                self.settings.copilot_chat_id.as_deref().and_then(|id| {
+                    state
+                        .chats
+                        .iter()
+                        .find(|chat| chat.id == id && !chat.archived)
+                        .map(|chat| chat.id.clone())
+                }),
+                state.engine().cloned(),
+                state
+                    .local_device_id
+                    .clone()
+                    .unwrap_or_else(|| "local".to_string()),
+            )
+        };
+        if !has_credentials {
+            self.set_sidebar_notice("Sign in to Keiki to use Copilot");
+            cx.notify();
+            return;
+        }
+        if let Some(chat_id) = existing_id {
+            self.open_chat(chat_id, cx);
+            return;
+        }
+        let Some(engine) = engine else {
+            self.set_sidebar_notice("Engine not connected");
+            cx.notify();
+            return;
+        };
+        let chat_id = saved_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.settings.copilot_chat_id = Some(chat_id.clone());
+        settings::update(SavePolicy::Immediate, cx, |current| {
+            current.copilot_chat_id = Some(chat_id.clone());
+        });
+        self.route = Route::Chat;
+        self.mutate_task = Some(cx.spawn(async move |this, cx| {
+            let config = zeron_proto::ChatConfig {
+                harness: zeron_proto::HarnessId::Copilot,
+                model: Some("copilot".into()),
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            };
+            let params = serde_json::json!({
+                "op": "createChat",
+                "chatId": chat_id,
+                "deviceId": device_id,
+                "cwd": "~",
+                "config": config,
+            });
+            let result = engine.client().call(methods::MUTATE, params).await;
+            this.update(cx, |shell, cx| {
+                match result {
+                    Ok(_) => shell.open_chat(
+                        shell.settings.copilot_chat_id.clone().unwrap_or_default(),
+                        cx,
+                    ),
+                    Err(error) => {
+                        shell.set_sidebar_notice(format!("Couldn't open Copilot: {error}"))
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// `+` in the titlebar: open the new-session canvas. A set sidebar filter

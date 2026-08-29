@@ -1107,6 +1107,8 @@ pub struct Shell {
     user_menu: popover::Popup<()>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
+    /// Access token last synchronized into the device-local Copilot holder.
+    copilot_synced_token: Option<String>,
     /// Local lifecycle of an in-app update (macOS bundle swap) — the engine's
     /// UpdateStatus stream says WHETHER one exists; this says how far the
     /// download/stage of it has come in this process.
@@ -1388,6 +1390,7 @@ impl Shell {
             sound_prev: std::collections::HashMap::new(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            copilot_synced_token: None,
             update_flow: UpdateFlow::Idle,
             update_task: None,
             update_dismissed: None,
@@ -1467,6 +1470,41 @@ impl Shell {
             state.workspace_scope == Some(WorkspaceScope::Synced)
                 && matches!(state.auth, Some(AuthState::SignedOut))
         };
+        let copilot_sync = {
+            let current = state.read(cx);
+            if current.keiki_token.is_none() {
+                self.copilot_synced_token = None;
+                None
+            } else {
+                match (
+                    current.keiki_token.as_ref(),
+                    current.keiki_client.clone(),
+                    current.engine(),
+                ) {
+                    (Some(token), Some(client), Some(_)) => {
+                        let access_token = token.access_token().to_string();
+                        if self.copilot_synced_token.as_deref() == Some(access_token.as_str()) {
+                            None
+                        } else {
+                            Some((client, token.clone(), access_token))
+                        }
+                    }
+                    _ => None,
+                }
+            }
+        };
+        if let Some((client, token, access_token)) = copilot_sync {
+            let state = state.downgrade();
+            cx.spawn(async move |this, cx| {
+                if crate::keiki::sync_copilot_credentials(&state, &client, &token, cx).await {
+                    this.update(cx, |shell, _| {
+                        shell.copilot_synced_token = Some(access_token);
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+        }
         // AuthStatus is shared by every viewport. Whichever viewport owns the
         // embedded runtime drains it; remote viewports request daemon shutdown
         // and all of them independently reattach to the new local runtime.
