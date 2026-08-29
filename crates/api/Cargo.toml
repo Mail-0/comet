@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+keiki-model.workspace = true
 base64.workspace = true
 rand.workspace = true
 reqwest.workspace = true

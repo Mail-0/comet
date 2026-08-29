@@ -7,4 +7,6 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
-chrono.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

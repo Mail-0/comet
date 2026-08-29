@@ -3084,6 +3084,7 @@ name = "keiki-api"
 version = "0.2.29"
 dependencies = [
  "base64",
+ "keiki-model",
  "rand 0.9.5",
  "reqwest",
  "serde",
@@ -3097,8 +3098,8 @@ dependencies = [
 name = "keiki-model"
 version = "0.2.29"
 dependencies = [
- "chrono",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

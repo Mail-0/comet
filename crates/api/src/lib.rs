@@ -1,6 +1,11 @@
 use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+pub use keiki_model::{
+    AgentConfig, AgentInput, AgentSummary, AgentTemplateSummary, CreateAgentFromTemplate,
+    CreateAgentResponse,
+};
+use keiki_model::{AgentEditResponse, AgentTemplatesResponse, AgentsResponse};
 use rand::Rng as _;
 use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -60,6 +65,16 @@ impl Error {
             self,
             Self::Api {
                 status: StatusCode::BAD_REQUEST,
+                ..
+            }
+        )
+    }
+
+    pub fn is_authentication_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Api {
+                status: StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN,
                 ..
             }
         )
@@ -198,6 +213,97 @@ impl Client {
 
     pub fn list_agents_authenticated_request(&self, access_token: &str) -> reqwest::RequestBuilder {
         self.list_agents_request().bearer_auth(access_token)
+    }
+
+    pub async fn list_agents(&self, access_token: &str) -> Result<Vec<AgentSummary>, Error> {
+        let response: AgentsResponse = self
+            .send_json(self.list_agents_authenticated_request(access_token))
+            .await?;
+        Ok(response.agents)
+    }
+
+    pub fn list_agent_templates_authenticated_request(
+        &self,
+        access_token: &str,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .get(self.endpoint("/api/webapp/agent-templates"))
+            .bearer_auth(access_token)
+    }
+
+    pub async fn list_agent_templates(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<AgentTemplateSummary>, Error> {
+        let response: AgentTemplatesResponse = self
+            .send_json(self.list_agent_templates_authenticated_request(access_token))
+            .await?;
+        Ok(response.templates)
+    }
+
+    pub fn create_agent_from_template_request(
+        &self,
+        access_token: &str,
+        input: &CreateAgentFromTemplate,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .post(self.endpoint("/api/webapp/agents"))
+            .bearer_auth(access_token)
+            .json(input)
+    }
+
+    pub async fn create_agent_from_template(
+        &self,
+        access_token: &str,
+        input: &CreateAgentFromTemplate,
+    ) -> Result<CreateAgentResponse, Error> {
+        self.send_json(self.create_agent_from_template_request(access_token, input))
+            .await
+    }
+
+    pub fn create_agent_request(
+        &self,
+        access_token: &str,
+        input: &AgentInput,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .post(self.endpoint("/api/webapp/agents"))
+            .bearer_auth(access_token)
+            .json(input)
+    }
+
+    pub async fn create_agent(
+        &self,
+        access_token: &str,
+        input: &AgentInput,
+    ) -> Result<CreateAgentResponse, Error> {
+        self.send_json(self.create_agent_request(access_token, input))
+            .await
+    }
+
+    pub fn agent_config_authenticated_request(
+        &self,
+        access_token: &str,
+        agent_id: &str,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/agents"))?;
+        let mut segments = endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::InvalidContract)?;
+        segments.push(agent_id).push("edit");
+        drop(segments);
+        Ok(self.http.get(endpoint).bearer_auth(access_token))
+    }
+
+    pub async fn agent_config(
+        &self,
+        access_token: &str,
+        agent_id: &str,
+    ) -> Result<AgentConfig, Error> {
+        let response: AgentEditResponse = self
+            .send_json(self.agent_config_authenticated_request(access_token, agent_id)?)
+            .await?;
+        Ok(response.agent)
     }
 
     fn exchange_code_request(
@@ -688,6 +794,105 @@ mod tests {
         assert_eq!(
             request.headers()[reqwest::header::AUTHORIZATION],
             "Bearer access-token"
+        );
+    }
+
+    #[test]
+    fn agent_requests_use_the_webapp_contract() {
+        let client = Client::new("https://keiki.example");
+        let templates = client
+            .list_agent_templates_authenticated_request("access-token")
+            .build()
+            .unwrap();
+        assert_eq!(
+            templates.url().as_str(),
+            "https://keiki.example/api/webapp/agent-templates"
+        );
+        assert_eq!(
+            templates.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer access-token"
+        );
+
+        let create = client
+            .create_agent_from_template_request(
+                "access-token",
+                &CreateAgentFromTemplate {
+                    template: "orchid".into(),
+                    name: Some("My Orchid".into()),
+                    line_number: Some("+15551234567".into()),
+                },
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            create.url().as_str(),
+            "https://keiki.example/api/webapp/agents"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(create.body().unwrap().as_bytes().unwrap())
+                .unwrap(),
+            serde_json::json!({
+                "template": "orchid",
+                "name": "My Orchid",
+                "lineNumber": "+15551234567"
+            })
+        );
+
+        let builder = client
+            .create_agent_request(
+                "access-token",
+                &AgentInput {
+                    name: "Custom".into(),
+                    model: "google/gemini-3.5-flash".into(),
+                    system_prompt: "Be helpful".into(),
+                    max_steps: 25,
+                    history_limit: 50,
+                    reasoning_effort: keiki_model::ReasoningEffort::Medium,
+                    line_number: None,
+                    harness: keiki_model::AgentHarness::Flue,
+                    features: keiki_model::AgentFeatures {
+                        memory: true,
+                        steering: true,
+                        media: false,
+                        browser: true,
+                        scrape: true,
+                        sandbox: true,
+                        mcp: true,
+                        escalation: false,
+                        loops: true,
+                        guards: true,
+                        wallet: false,
+                    },
+                    escalation_routes: keiki_model::EscalationRoutes::default(),
+                    skill_ids: vec!["skill-1".into()],
+                    sandbox_script_ids: vec!["script-1".into()],
+                    sandbox_env_secrets: vec!["DATABASE_URL".into()],
+                    storage_mode: Some(keiki_model::StorageMode::Managed),
+                },
+            )
+            .build()
+            .unwrap();
+        let builder_body = serde_json::from_slice::<serde_json::Value>(
+            builder.body().unwrap().as_bytes().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(builder_body["systemPrompt"], "Be helpful");
+        assert_eq!(builder_body["reasoningEffort"], "medium");
+        assert_eq!(builder_body["storageMode"], "managed");
+        assert_eq!(builder_body["skillIds"], serde_json::json!(["skill-1"]));
+        assert_eq!(
+            builder_body["sandboxEnvSecrets"],
+            serde_json::json!(["DATABASE_URL"])
+        );
+
+        let edit = client
+            .agent_config_authenticated_request("access-token", "agent/with space")
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            edit.url().as_str(),
+            "https://keiki.example/api/webapp/agents/agent%2Fwith%20space/edit"
         );
     }
 }

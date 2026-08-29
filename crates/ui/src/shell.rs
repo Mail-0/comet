@@ -8,8 +8,11 @@ use gpui::{
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task, Window,
     WindowControlArea, div, prelude::FluentBuilder as _, px,
 };
-use keiki_api::{AuthorizationFlow, Client, OAUTH_REDIRECT_URI, StoredCredentials, TokenSet};
-use keiki_model::{AgentStatus, AgentSummary, sort_agents};
+use keiki_api::{
+    AgentConfig, AuthorizationFlow, Client, CreateAgentFromTemplate, OAUTH_REDIRECT_URI,
+    StoredCredentials, TokenSet,
+};
+use keiki_model::{AgentStatus, AgentSummary, AgentTemplateSummary, sort_agents};
 
 use crate::app_menus;
 use crate::icons::{self, icon};
@@ -22,7 +25,18 @@ pub struct Shell {
     auth: AuthState,
     stored_credentials: Option<StoredCredentials>,
     agents: Vec<AgentSummary>,
+    agent_error: Option<String>,
+    agents_loading: bool,
+    templates: Vec<AgentTemplateSummary>,
+    template_error: Option<String>,
+    templates_loading: bool,
+    creator_open: bool,
+    creating_template_id: Option<String>,
+    creation_notice: Option<String>,
     selected_agent_id: Option<String>,
+    selected_agent_config: Option<AgentConfig>,
+    agent_config_error: Option<String>,
+    agent_config_loading: bool,
     focus_handle: FocusHandle,
     _open_url_task: Task<()>,
 }
@@ -65,7 +79,18 @@ impl Shell {
             auth: AuthState::Restoring,
             stored_credentials: None,
             agents: Vec::new(),
+            agent_error: None,
+            agents_loading: false,
+            templates: Vec::new(),
+            template_error: None,
+            templates_loading: false,
+            creator_open: false,
+            creating_template_id: None,
+            creation_notice: None,
             selected_agent_id: None,
+            selected_agent_config: None,
+            agent_config_error: None,
+            agent_config_loading: false,
             focus_handle,
             _open_url_task: open_url_task,
         };
@@ -111,15 +136,22 @@ impl Shell {
                     let _ = this.update(cx, |this, cx| {
                         this.stored_credentials = Some(rotated);
                         this.auth = AuthState::SignedIn(tokens);
+                        this.load_agents(cx);
                         cx.notify();
                     });
                 }
                 Err(error) if error.is_invalid_refresh_token() => {
-                    let _ = cx.update(|cx| cx.delete_credentials(CREDENTIALS_KEY)).await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.auth = AuthState::SignedOut;
-                        this.stored_credentials = None;
-                        cx.notify();
+                    let deletion = cx.update(|cx| cx.delete_credentials(CREDENTIALS_KEY)).await;
+                    let _ = this.update(cx, |this, cx| match deletion {
+                        Ok(()) => {
+                            this.auth = AuthState::SignedOut;
+                            this.stored_credentials = None;
+                            cx.notify();
+                        }
+                        Err(error) => {
+                            this.auth = AuthState::Error(error.to_string());
+                            cx.notify();
+                        }
                     });
                 }
                 Err(error) => {
@@ -192,6 +224,7 @@ impl Shell {
                 Ok((tokens, stored)) => {
                     this.stored_credentials = Some(stored);
                     this.auth = AuthState::SignedIn(tokens);
+                    this.load_agents(cx);
                     cx.notify();
                 }
                 Err(error) => {
@@ -209,15 +242,34 @@ impl Shell {
         self.auth = AuthState::Starting;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            if let Some(credentials) = credentials {
-                let _ = client.revoke_token(&credentials.refresh_token).await;
-            }
+            let revocation_error = if let Some(credentials) = credentials {
+                client
+                    .revoke_token(&credentials.refresh_token)
+                    .await
+                    .err()
+                    .map(|error| error.to_string())
+            } else {
+                None
+            };
             let deletion = cx.update(|cx| cx.delete_credentials(CREDENTIALS_KEY)).await;
             let _ = this.update(cx, |this, cx| match deletion {
                 Ok(()) => {
-                    this.auth = AuthState::SignedOut;
+                    this.auth = revocation_error.map_or(AuthState::SignedOut, |error| {
+                        AuthState::Error(format!(
+                            "Signed out locally, but Keiki could not revoke the session: {error}"
+                        ))
+                    });
                     this.agents.clear();
+                    this.agent_error = None;
+                    this.templates.clear();
+                    this.template_error = None;
+                    this.creator_open = false;
+                    this.creating_template_id = None;
+                    this.creation_notice = None;
                     this.selected_agent_id = None;
+                    this.selected_agent_config = None;
+                    this.agent_config_error = None;
+                    this.agent_config_loading = false;
                     cx.notify();
                 }
                 Err(error) => {
@@ -229,9 +281,204 @@ impl Shell {
         .detach();
     }
 
-    fn select_agent(&mut self, agent_id: String, cx: &mut Context<Self>) {
-        self.selected_agent_id = Some(agent_id);
+    fn load_agents(&mut self, cx: &mut Context<Self>) {
+        let AuthState::SignedIn(tokens) = &self.auth else {
+            return;
+        };
+        let access_token = tokens.access_token().to_owned();
+        let client = self.client.clone();
+        self.agents_loading = true;
+        self.agent_error = None;
         cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = client.list_agents(&access_token).await;
+            let _ = this.update(cx, |this, cx| {
+                this.agents_loading = false;
+                match result {
+                    Ok(agents) => {
+                        let selection_exists =
+                            this.selected_agent_id.as_ref().is_some_and(|selected| {
+                                agents.iter().any(|agent| &agent.id == selected)
+                            });
+                        if !selection_exists {
+                            this.selected_agent_id = agents.first().map(|agent| agent.id.clone());
+                        }
+                        this.agents = agents;
+                        if let Some(selected) = this.selected_agent_id.clone() {
+                            this.load_agent_config(selected, cx);
+                        } else {
+                            this.selected_agent_config = None;
+                            this.agent_config_error = None;
+                            this.agent_config_loading = false;
+                        }
+                    }
+                    Err(error) if error.is_authentication_failure() => {
+                        this.forget_session(cx);
+                    }
+                    Err(error) => {
+                        this.agent_error = Some(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn forget_session(&mut self, cx: &mut Context<Self>) {
+        let deletion = cx.delete_credentials(CREDENTIALS_KEY);
+        self.auth = AuthState::SignedOut;
+        self.stored_credentials = None;
+        self.agents.clear();
+        self.templates.clear();
+        self.selected_agent_id = None;
+        self.selected_agent_config = None;
+        self.agent_config_error = None;
+        self.agent_config_loading = false;
+        self.creator_open = false;
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = deletion.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.auth = AuthState::Error(error.to_string());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn open_agent_creator(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.auth, AuthState::SignedIn(_)) {
+            return;
+        }
+        self.creator_open = true;
+        self.creation_notice = None;
+        if self.templates.is_empty() {
+            self.load_agent_templates(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn close_agent_creator(&mut self, cx: &mut Context<Self>) {
+        self.creator_open = false;
+        self.template_error = None;
+        cx.notify();
+    }
+
+    fn load_agent_templates(&mut self, cx: &mut Context<Self>) {
+        let AuthState::SignedIn(tokens) = &self.auth else {
+            return;
+        };
+        let access_token = tokens.access_token().to_owned();
+        let client = self.client.clone();
+        self.templates_loading = true;
+        self.template_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = client.list_agent_templates(&access_token).await;
+            let _ = this.update(cx, |this, cx| {
+                this.templates_loading = false;
+                match result {
+                    Ok(templates) => this.templates = templates,
+                    Err(error) if error.is_authentication_failure() => {
+                        this.forget_session(cx);
+                    }
+                    Err(error) => this.template_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn create_agent_from_template(&mut self, template_id: String, cx: &mut Context<Self>) {
+        let AuthState::SignedIn(tokens) = &self.auth else {
+            return;
+        };
+        if self.creating_template_id.is_some() {
+            return;
+        }
+        let access_token = tokens.access_token().to_owned();
+        let client = self.client.clone();
+        self.creating_template_id = Some(template_id.clone());
+        self.template_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = client
+                .create_agent_from_template(
+                    &access_token,
+                    &CreateAgentFromTemplate {
+                        template: template_id,
+                        name: None,
+                        line_number: None,
+                    },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.creating_template_id = None;
+                match result {
+                    Ok(created) => {
+                        this.selected_agent_id = Some(created.id);
+                        this.creator_open = false;
+                        this.creation_notice = (!created.missing_secrets.is_empty()).then(|| {
+                            format!(
+                                "Setup needed: add {} in Keiki Settings → Secrets.",
+                                created
+                                    .missing_secrets
+                                    .iter()
+                                    .map(|secret| secret.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        });
+                        this.load_agents(cx);
+                    }
+                    Err(error) if error.is_authentication_failure() => {
+                        this.forget_session(cx);
+                    }
+                    Err(error) => this.template_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn select_agent(&mut self, agent_id: String, cx: &mut Context<Self>) {
+        self.selected_agent_id = Some(agent_id.clone());
+        self.creation_notice = None;
+        self.load_agent_config(agent_id, cx);
+    }
+
+    fn load_agent_config(&mut self, agent_id: String, cx: &mut Context<Self>) {
+        let AuthState::SignedIn(tokens) = &self.auth else {
+            return;
+        };
+        let access_token = tokens.access_token().to_owned();
+        let client = self.client.clone();
+        self.selected_agent_config = None;
+        self.agent_config_error = None;
+        self.agent_config_loading = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = client.agent_config(&access_token, &agent_id).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.selected_agent_id.as_deref() != Some(agent_id.as_str()) {
+                    return;
+                }
+                this.agent_config_loading = false;
+                match result {
+                    Ok(config) => this.selected_agent_config = Some(config),
+                    Err(error) if error.is_authentication_failure() => {
+                        this.forget_session(cx);
+                    }
+                    Err(error) => this.agent_config_error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn render_sidebar(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -258,7 +505,7 @@ impl Shell {
                     div()
                         .size(px(8.0))
                         .rounded_full()
-                        .bg(status_color(agent.status, theme)),
+                        .bg(status_color(agent.status(), theme)),
                 )
                 .child(
                     div()
@@ -313,6 +560,7 @@ impl Shell {
                     )
                     .child(
                         div()
+                            .id("create-agent")
                             .size(px(26.0))
                             .flex()
                             .items_center()
@@ -321,6 +569,9 @@ impl Shell {
                             .border_1()
                             .border_color(theme.border)
                             .text_color(theme.text_muted)
+                            .cursor_pointer()
+                            .hover(|button| button.bg(theme.glass_hover()))
+                            .on_click(cx.listener(|this, _, _, cx| this.open_agent_creator(cx)))
                             .child(
                                 icon(icons::PLUS)
                                     .size(px(14.0))
@@ -334,7 +585,7 @@ impl Shell {
                     .min_h_0()
                     .px(px(8.0))
                     .children(agent_rows)
-                    .when(self.agents.is_empty(), |list| {
+                    .when(self.agents_loading, |list| {
                         list.child(
                             div()
                                 .px(px(8.0))
@@ -342,9 +593,36 @@ impl Shell {
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .line_height(px(18.0))
                                 .text_color(theme.text_muted)
-                                .child("Agent sync is not connected yet."),
+                                .child("Loading agents…"),
                         )
-                    }),
+                    })
+                    .when_some(self.agent_error.as_ref(), |list, error| {
+                        list.child(
+                            div()
+                                .px(px(8.0))
+                                .py(px(12.0))
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .line_height(px(18.0))
+                                .text_color(theme.danger)
+                                .child(SharedString::from(error.clone())),
+                        )
+                    })
+                    .when(
+                        self.agents.is_empty()
+                            && !self.agents_loading
+                            && self.agent_error.is_none(),
+                        |list| {
+                            list.child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(12.0))
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .line_height(px(18.0))
+                                    .text_color(theme.text_muted)
+                                    .child("No agents yet. Create one from a Keiki template."),
+                            )
+                        },
+                    ),
             )
             .when_some(
                 match &self.auth {
@@ -390,6 +668,9 @@ impl Shell {
         if !matches!(self.auth, AuthState::SignedIn(_)) {
             return self.render_auth(theme, cx);
         }
+        if self.creator_open {
+            return self.render_agent_creator(theme, cx);
+        }
         let title = self
             .selected_agent_id
             .as_ref()
@@ -426,46 +707,250 @@ impl Shell {
                     .justify_center()
                     .child(
                         div()
-                            .w(px(360.0))
+                            .w(px(460.0))
                             .flex()
                             .flex_col()
-                            .items_center()
-                            .text_center()
-                            .child(
-                                div()
-                                    .size(px(48.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(14.0))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .bg(theme.surface_card)
-                                    .child(
-                                        icon(icons::CHAT_ROUND_LINE)
-                                            .size(px(22.0))
-                                            .text_color(theme.text_muted),
-                                    ),
+                            .when_some(self.creation_notice.as_ref(), |content, notice| {
+                                content.child(
+                                    div()
+                                        .mb(px(16.0))
+                                        .px(px(12.0))
+                                        .py(px(10.0))
+                                        .rounded(px(8.0))
+                                        .border_1()
+                                        .border_color(theme.accent)
+                                        .text_size(crate::typography::ui_rems(12.0))
+                                        .line_height(px(18.0))
+                                        .text_color(theme.text)
+                                        .child(SharedString::from(notice.clone())),
+                                )
+                            })
+                            .when(self.agent_config_loading, |content| {
+                                content.child(
+                                    div()
+                                        .text_center()
+                                        .text_size(crate::typography::ui_rems(13.0))
+                                        .text_color(theme.text_muted)
+                                        .child("Loading agent configuration…"),
+                                )
+                            })
+                            .when_some(self.agent_config_error.as_ref(), |content, error| {
+                                content.child(
+                                    div()
+                                        .text_center()
+                                        .text_size(crate::typography::ui_rems(13.0))
+                                        .line_height(px(19.0))
+                                        .text_color(theme.danger)
+                                        .child(SharedString::from(error.clone())),
+                                )
+                            })
+                            .when_some(self.selected_agent_config.as_ref(), |content, config| {
+                                content.child(
+                                    div()
+                                        .w_full()
+                                        .p(px(16.0))
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(10.0))
+                                        .rounded(px(12.0))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .bg(theme.surface_card)
+                                        .child(
+                                            div()
+                                                .text_size(crate::typography::ui_rems(14.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(theme.text)
+                                                .child("Agent configuration"),
+                                        )
+                                        .child(metadata_row(
+                                            "Model",
+                                            config.model.clone(),
+                                            theme,
+                                        ))
+                                        .child(metadata_row(
+                                            "Runtime",
+                                            config.runtime.as_str().into(),
+                                            theme,
+                                        ))
+                                        .child(metadata_row(
+                                            "Line",
+                                            config
+                                                .line_number
+                                                .clone()
+                                                .unwrap_or_else(|| "Not assigned".into()),
+                                            theme,
+                                        ))
+                                        .child(metadata_row(
+                                            "Harness",
+                                            config.harness.as_str().into(),
+                                            theme,
+                                        ))
+                                        .child(metadata_row(
+                                            "Limits",
+                                            format!(
+                                                "{} steps · {} history",
+                                                config.max_steps, config.history_limit
+                                            ),
+                                            theme,
+                                        ))
+                                        .child(metadata_row(
+                                            "Features",
+                                            format!(
+                                                "{} enabled",
+                                                config.features.enabled_count()
+                                            ),
+                                            theme,
+                                        )),
+                                )
+                            })
+                            .when(
+                                self.selected_agent_id.is_none() && !self.agents_loading,
+                                |content| content.child(empty_agent_state(theme)),
                             )
-                            .child(
-                                div()
-                                    .mt(px(16.0))
-                                    .text_size(crate::typography::ui_rems(15.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.text)
-                                    .child("No conversation selected"),
-                            )
-                            .child(
-                                div()
-                                    .mt(px(6.0))
-                                    .text_size(crate::typography::ui_rems(13.0))
-                                    .line_height(px(19.0))
-                                    .text_color(theme.text_muted)
-                                    .child(
-                                        "Connect your Keiki account to load agents and start live conversations.",
-                                    ),
-                            ),
+                            .when_some(self.selected_agent_config.as_ref(), |content, _| {
+                                content.child(
+                                    div()
+                                        .mt(px(14.0))
+                                        .text_center()
+                                        .text_size(crate::typography::ui_rems(12.0))
+                                        .text_color(theme.text_muted)
+                                        .child("Conversations and live messaging are the next milestone."),
+                                )
+                            }),
                     ),
+            )
+            .into_any_element()
+    }
+
+    fn render_agent_creator(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let template_rows = self.templates.iter().map(|template| {
+            let template_id = template.id.clone();
+            let creating = self.creating_template_id.as_deref() == Some(template.id.as_str());
+            div()
+                .id(SharedString::from(format!("template-{}", template.id)))
+                .w_full()
+                .px(px(14.0))
+                .py(px(12.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface_card)
+                .cursor_pointer()
+                .hover(|card| card.border_color(theme.accent))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.create_agent_from_template(template_id.clone(), cx);
+                }))
+                .child(
+                    div()
+                        .w(px(34.0))
+                        .text_size(crate::typography::ui_rems(22.0))
+                        .child(SharedString::from(template.emoji.clone())),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(13.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text)
+                                .child(SharedString::from(template.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .line_height(px(16.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(template.blurb.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(10.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(template.model.clone())),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(crate::typography::ui_rems(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.accent)
+                        .child(if creating { "Creating…" } else { "Create" }),
+                )
+        });
+
+        div()
+            .flex_1()
+            .h_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .bg(theme.bg)
+            .child(
+                div()
+                    .h(px(44.0))
+                    .px(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .window_control_area(WindowControlArea::Drag)
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child("Create an agent"),
+                    )
+                    .child(
+                        div()
+                            .id("close-agent-creator")
+                            .cursor_pointer()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .hover(|button| button.text_color(theme.text))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_agent_creator(cx)))
+                            .child("Close"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("agent-templates")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(24.0))
+                    .py(px(20.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .when(self.templates_loading, |content| {
+                        content.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child("Loading Keiki templates…"),
+                        )
+                    })
+                    .when_some(self.template_error.as_ref(), |content, error| {
+                        content.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .line_height(px(18.0))
+                                .text_color(theme.danger)
+                                .child(SharedString::from(error.clone())),
+                        )
+                    })
+                    .children(template_rows),
             )
             .into_any_element()
     }
@@ -600,11 +1085,72 @@ async fn write_credentials(
     Ok(())
 }
 
+fn metadata_row(label: &'static str, value: String, theme: &Theme) -> impl IntoElement {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text_muted)
+                .child(label),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text)
+                .child(SharedString::from(value)),
+        )
+}
+
+fn empty_agent_state(theme: &Theme) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .text_center()
+        .child(
+            div()
+                .size(px(48.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(14.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface_card)
+                .child(
+                    icon(icons::CHAT_ROUND_LINE)
+                        .size(px(22.0))
+                        .text_color(theme.text_muted),
+                ),
+        )
+        .child(
+            div()
+                .mt(px(16.0))
+                .text_size(crate::typography::ui_rems(15.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child("No agents yet"),
+        )
+        .child(
+            div()
+                .mt(px(6.0))
+                .text_size(crate::typography::ui_rems(13.0))
+                .line_height(px(19.0))
+                .text_color(theme.text_muted)
+                .child("Create an agent from a Keiki template to get started."),
+        )
+}
+
 fn status_color(status: AgentStatus, theme: &Theme) -> gpui::Hsla {
     match status {
         AgentStatus::NeedsAttention => theme.danger,
         AgentStatus::Running => theme.accent,
-        AgentStatus::Idle => theme.text_muted,
         AgentStatus::Offline => theme.border,
     }
 }
