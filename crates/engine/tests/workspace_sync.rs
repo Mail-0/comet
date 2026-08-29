@@ -102,8 +102,8 @@ fn registry() -> Arc<HarnessRegistry> {
         step_delay: Duration::from_millis(60),
     }));
     registry.register(Arc::new(ScriptedHarness {
-        id: HarnessId::Cursor,
-        text: "From cursor",
+        id: HarnessId::Copilot,
+        text: "From Copilot",
         step_delay: Duration::from_millis(10),
     }));
     Arc::new(registry)
@@ -113,7 +113,15 @@ fn registry() -> Arc<HarnessRegistry> {
 fn assemble(dir: &std::path::Path, device_id: &str) -> EngineCore {
     std::fs::create_dir_all(dir).expect("create data dir");
     std::fs::write(dir.join("device-id"), device_id).expect("write device id");
-    EngineCore::assemble(dir, registry(), HarnessId::Mock, None).expect("engine core assembles")
+    let registry = registry();
+    let core = EngineCore::assemble(dir, registry.clone(), HarnessId::Mock, None)
+        .expect("engine core assembles");
+    registry.register(Arc::new(ScriptedHarness {
+        id: HarnessId::Copilot,
+        text: "From Copilot",
+        step_delay: Duration::from_millis(10),
+    }));
+    core
 }
 
 /// The in-process room: an in-memory registry server speaking the DO's JSON
@@ -444,7 +452,7 @@ async fn claimed_chat_row_records_the_run_harness() {
     let core = assemble(dir.path(), "dev-a");
 
     let request = RunRequest {
-        harness: Some(HarnessId::Cursor),
+        harness: Some(HarnessId::Copilot),
         ..run_request("go do it")
     };
     queue_run_with(&core, "chat-glyph", "cmd-glyph-1", "m-1", request);
@@ -455,7 +463,7 @@ async fn claimed_chat_row_records_the_run_harness() {
                 .ok()
                 .flatten()
                 .and_then(|c| c.config)
-                .is_some_and(|c| c.harness == HarnessId::Cursor)
+                .is_some_and(|c| c.harness == HarnessId::Copilot)
         },
         "claimed row carries the dispatched harness",
     )
@@ -512,7 +520,7 @@ async fn chat_config_selects_the_run_harness() {
             Some("space-cfg"),
             None,
             Some(ChatConfig {
-                harness: HarnessId::Cursor,
+                harness: HarnessId::Copilot,
                 model: None,
                 reasoning: None,
                 model_options: Default::default(),
@@ -523,13 +531,13 @@ async fn chat_config_selects_the_run_harness() {
         .expect("create configured chat");
     queue_run(&a, "chat-cfg", "cmd-cfg-1", "m-1");
 
-    // The configured harness (Cursor, "From cursor") ran — not the default Mock.
+    // The configured harness (Copilot, "From Copilot") ran — not the default Mock.
     let handle = a.doc_host.open("chat-cfg").expect("open chat");
     wait_for(
         || {
             handle.doc().read_entries().unwrap_or_default().iter().any(|e| {
                 e.parts.iter().any(
-                    |p| matches!(p, zeron_doc::MessagePart::Text { text, .. } if text == "From cursor"),
+                    |p| matches!(p, zeron_doc::MessagePart::Text { text, .. } if text == "From Copilot"),
                 )
             })
         },

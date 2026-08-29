@@ -646,9 +646,9 @@ async fn retry_reissues_a_swallowed_send() {
     .await;
     wait_for(
         || {
-            entries_now(&core)
-                .iter()
-                .any(|e| e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete))
+            entries_now(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
         },
         "re-issued send runs to completion",
     )
@@ -1678,131 +1678,6 @@ async fn attachment_upload_then_run_threads_refs_and_paths() {
         .expect("ReadAttachmentChunk");
     assert_eq!(chunk["mimeType"], "image/png");
     assert_eq!(chunk["name"], "e2e-att-red.png");
-}
-
-/// Real-CLI proof of the image pipeline: upload a tiny solid-red PNG through
-/// the chunked RPC path, run claude (haiku) with the staged path on
-/// `attachments` + the refs in the prompt, and check the reply names the
-/// color — it can only know it by SEEING the inline image block (the sandbox
-/// prompt forbids opening the file). Ignored by default: needs an installed,
-/// authenticated `claude` CLI and spends real tokens.
-/// Run with: `cargo test -p zeron-engine --test e2e -- --ignored`
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires installed+authenticated claude CLI; spends tokens"]
-async fn real_claude_sees_uploaded_image_inline() {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    let cwd = tmp.path().join("project");
-    std::fs::create_dir_all(&cwd).unwrap();
-
-    let core = EngineCore::assemble(
-        &dir,
-        Arc::new(zeron_engine::default_registry()),
-        HarnessId::ClaudeCode,
-        None,
-    )
-    .expect("engine core assembles");
-    // Pre-title the chat so the auto-titler doesn't spend a second model call.
-    core.workspace
-        .create_chat(CHAT, None, Some(&core.device_id), None, Some("/tmp".into()))
-        .expect("create chat row");
-    core.workspace
-        .rename_chat(CHAT, "Pre-titled")
-        .expect("rename chat");
-
-    // 8×8 solid-red PNG, uploaded exactly as the composer does.
-    const RED_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAB+GTG2wAAJP0GeGuMDBnAAAAAElFTkSuQmCC";
-    let client = zeron_rpc::memory_client(core.rpc_service());
-    client
-        .call(
-            zeron_rpc::methods::UPLOAD_CHUNK,
-            serde_json::json!({ "uploadId": "real-img", "seq": 0, "data": RED_PNG_B64 }),
-        )
-        .await
-        .expect("UploadChunk");
-    let committed = client
-        .call(
-            zeron_rpc::methods::UPLOAD_COMMIT,
-            serde_json::json!({ "uploadId": "real-img", "fileName": "swatch.png" }),
-        )
-        .await
-        .expect("UploadCommit");
-    let path = committed["path"].as_str().expect("path").to_string();
-    assert_eq!(
-        std::fs::read(&path).expect("committed file"),
-        b64.decode(RED_PNG_B64).unwrap()
-    );
-
-    let prompt = format!(
-        "Without running any tools or opening any files, answer from the attached image alone: \
-         what solid color is this image? Reply with exactly one lowercase word.\n\n\
-         Attached images (local files — open them to view):\n- {path}"
-    );
-    let request = RunRequest {
-        prompt,
-        harness: None,
-        model: Some("haiku".into()),
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: cwd.to_string_lossy().to_string(),
-        sandbox: SandboxLevel::WorkspaceWrite,
-        auto_approve: false,
-        attachments: vec![path],
-        resume: None,
-        worktree: None,
-    };
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request,
-                message_id: "msg-img-1".into(),
-            },
-        )
-        .expect("queue real image run");
-    wait_for_within_secs(
-        || {
-            entries_now(&core).iter().any(|e| {
-                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
-            })
-        },
-        "real claude image turn",
-        120,
-    )
-    .await;
-
-    let reply: String = entries(&core)
-        .iter()
-        .filter(|e| e.role == MessageRole::Assistant)
-        .flat_map(|e| e.parts.iter())
-        .filter_map(|p| match p {
-            MessagePart::Text { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    assert!(
-        reply.contains("red"),
-        "claude should name the image's color; got: {reply:?}"
-    );
-    core.shutdown().await;
-}
-
-async fn wait_for_within_secs<F>(mut predicate: F, what: &str, secs: u64)
-where
-    F: FnMut() -> bool,
-{
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    while !predicate() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 // ---------------------------------------------------------------------------

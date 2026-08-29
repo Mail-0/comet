@@ -27,11 +27,6 @@
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
 //!   `CloseTerminal`. M5 is single-user local: per-user owner checks land with
 //!   real multi-account auth in M6.
-//! - Agent accounts (§3.7): `ListAgentAccounts {forceUsage?}` →
-//!   `AgentAccountsSnapshot`, `ActivateAgentAccount`/`ForgetAgentAccount`
-//!   `{harness, accountId}` → snapshot, `StartAgentLogin {harness}` →
-//!   `{loginId, url, mode}`, `CompleteAgentLogin {loginId, code}` → snapshot,
-//!   `PollAgentLogin {loginId}`, `CancelAgentLogin {loginId}`.
 //! - Uploads (§3.7): `UploadChunk {uploadId, data, seq?}`,
 //!   `UploadCommit {uploadId, fileName}` → `{path}`,
 //!   `ReadAttachmentChunk {path, offset}` → `{name, mimeType, data, nextOffset,
@@ -60,7 +55,6 @@ use zeron_doc::{MessagePart, SessionCommandPayload};
 use zeron_proto::{ChatConfig, EngineInfo, HarnessId, ToolCall, WorkspaceScope};
 use zeron_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
 
-use crate::agent_accounts::AgentAccounts;
 use crate::auth::Auth;
 use crate::change_requests::CheckoutChangeRequests;
 use crate::diff_sync::CheckoutDiffSync;
@@ -85,13 +79,6 @@ struct ChatParams {
 #[serde(rename_all = "camelCase")]
 struct ListModelsParams {
     harness: HarnessId,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetHarnessEnabledParams {
-    harness: HarnessId,
-    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,39 +227,6 @@ struct ResizeTerminalParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ListAgentAccountsParams {
-    #[serde(default)]
-    force_usage: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentAccountParams {
-    harness: HarnessId,
-    account_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StartAgentLoginParams {
-    harness: HarnessId,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LoginIdParams {
-    login_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CompleteAgentLoginParams {
-    login_id: String,
-    code: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct UploadChunkParams {
     upload_id: String,
     /// Base64 payload chunk.
@@ -409,7 +363,6 @@ pub struct EngineRpc {
     change_requests: CheckoutChangeRequests,
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
-    agent_accounts: AgentAccounts,
     auth: Option<Auth>,
     copilot_credentials: Option<crate::CopilotCredentialHolder>,
     links: Option<std::sync::Arc<LinkCache>>,
@@ -430,7 +383,6 @@ impl EngineRpc {
         change_requests: CheckoutChangeRequests,
         diff_sync: CheckoutDiffSync,
         uploads: Uploads,
-        agent_accounts: AgentAccounts,
         workspace_scope: WorkspaceScope,
     ) -> Self {
         let engine_info = EngineInfo {
@@ -447,7 +399,6 @@ impl EngineRpc {
             change_requests,
             diff_sync,
             uploads,
-            agent_accounts,
             auth: None,
             copilot_credentials: None,
             links: None,
@@ -909,7 +860,6 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::LIST_HARNESSES
-            | methods::SET_HARNESS_ENABLED
             | methods::LIST_MODELS
             | methods::LIST_COMMANDS
             | methods::QUEUE_COMMAND
@@ -940,15 +890,6 @@ fn forwardable(method: &str) -> bool {
             | methods::WRITE_TERMINAL
             | methods::RESIZE_TERMINAL
             | methods::CLOSE_TERMINAL
-            // Agent accounts are per-device CLI logins (the device switcher
-            // retargets which device's logins are shown).
-            | methods::LIST_AGENT_ACCOUNTS
-            | methods::ACTIVATE_AGENT_ACCOUNT
-            | methods::FORGET_AGENT_ACCOUNT
-            | methods::START_AGENT_LOGIN
-            | methods::COMPLETE_AGENT_LOGIN
-            | methods::POLL_AGENT_LOGIN
-            | methods::CANCEL_AGENT_LOGIN
             // Uploads/attachments target the chat's host device (the agent reads
             // the committed file from that device's disk).
             | methods::UPLOAD_CHUNK
@@ -1158,15 +1099,6 @@ impl RpcService for EngineRpc {
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
-            methods::SET_HARNESS_ENABLED => {
-                let p: SetHarnessEnabledParams = parse_params(params)?;
-                self.registry
-                    .set_enabled(p.harness, p.enabled)
-                    .map_err(RpcError::Failed)?;
-                // Fresh catalog in the reply: the page repaints from it in one
-                // round trip, and a refused/raced toggle self-corrects.
-                RpcReply::value(&self.registry.descriptors())
-            }
             methods::SET_COPILOT_CREDENTIALS => {
                 let p: SetCopilotCredentialsParams = parse_params(params)?;
                 let holder = self
@@ -1192,12 +1124,8 @@ impl RpcService for EngineRpc {
                 RpcReply::value(&models)
             }
             methods::LIST_COMMANDS => {
-                // Same shape as ListModels: forces a lazy resolve, then the
-                // harness's own (cached) discovery — ACP agents advertise
-                // availableCommands, claude answers the initialize control
-                // request, codex lists skills; only harnesses whose wire has
-                // no listing (cursor, mock) fall through to the trait's
-                // empty default.
+                // Same shape as ListModels: force a resolve, then ask the
+                // harness for its advertised commands.
                 let p: ListModelsParams = parse_params(params)?;
                 let harness = self
                     .registry
@@ -1831,65 +1759,6 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
-            methods::LIST_AGENT_ACCOUNTS => {
-                let p: ListAgentAccountsParams = parse_params(params)?;
-                let snapshot = self
-                    .agent_accounts
-                    .list(p.force_usage.unwrap_or(false))
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&snapshot)
-            }
-            methods::ACTIVATE_AGENT_ACCOUNT => {
-                let p: AgentAccountParams = parse_params(params)?;
-                let snapshot = self
-                    .agent_accounts
-                    .activate(p.harness, &p.account_id)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&snapshot)
-            }
-            methods::FORGET_AGENT_ACCOUNT => {
-                let p: AgentAccountParams = parse_params(params)?;
-                let snapshot = self
-                    .agent_accounts
-                    .forget(p.harness, &p.account_id)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&snapshot)
-            }
-            methods::START_AGENT_LOGIN => {
-                let p: StartAgentLoginParams = parse_params(params)?;
-                let start = self
-                    .agent_accounts
-                    .start_login(p.harness)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&start)
-            }
-            methods::COMPLETE_AGENT_LOGIN => {
-                let p: CompleteAgentLoginParams = parse_params(params)?;
-                let snapshot = self
-                    .agent_accounts
-                    .complete_login(&p.login_id, &p.code)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&snapshot)
-            }
-            methods::POLL_AGENT_LOGIN => {
-                let p: LoginIdParams = parse_params(params)?;
-                let poll = self
-                    .agent_accounts
-                    .poll_login(&p.login_id)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&poll)
-            }
-            methods::CANCEL_AGENT_LOGIN => {
-                let p: LoginIdParams = parse_params(params)?;
-                self.agent_accounts.cancel_login(&p.login_id);
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
             methods::UPLOAD_CHUNK => {
                 let p: UploadChunkParams = parse_params(params)?;
                 self.uploads
@@ -1942,21 +1811,6 @@ impl RpcService for EngineRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The UI's Switch/Forget calls send `{id, accountId, harness}` (+ optional
-    /// `targetDeviceId`); the extra fields must be tolerated, `accountId` wins.
-    #[test]
-    fn agent_account_params_accept_ui_shape() {
-        let p: AgentAccountParams = parse_params(serde_json::json!({
-            "id": "acct-1",
-            "accountId": "acct-1",
-            "harness": "claude-code",
-            "targetDeviceId": "dev-2",
-        }))
-        .expect("ui param shape");
-        assert_eq!(p.account_id, "acct-1");
-        assert_eq!(p.harness, HarnessId::ClaudeCode);
-    }
 
     #[test]
     fn local_device_is_not_forwardable() {

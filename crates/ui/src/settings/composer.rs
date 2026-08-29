@@ -159,22 +159,18 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let mut defaults = ComposerDefaults {
-            harness: Some(HarnessId::ClaudeCode),
+            harness: Some(HarnessId::Copilot),
             reasoning: Some(ReasoningLevel::XHigh),
             ..Default::default()
         };
-        defaults.remember_model(
-            HarnessId::ClaudeCode,
-            "claude-fable-5".into(),
-            "Fable 5".into(),
-        );
-        defaults.remember_model(HarnessId::Codex, "gpt-5.2-codex".into(), "GPT-5.2".into());
+        defaults.remember_model(HarnessId::Copilot, "copilot".into(), "Copilot".into());
+        defaults.remember_model(HarnessId::Mock, "mock-1".into(), "Mock 1".into());
         defaults.save(dir.path()).unwrap();
         let loaded = ComposerDefaults::load(dir.path());
         assert_eq!(loaded, defaults);
         assert_eq!(
-            loaded.model_for(HarnessId::ClaudeCode).map(|m| &*m.label),
-            Some("Fable 5")
+            loaded.model_for(HarnessId::Copilot).map(|m| &*m.label),
+            Some("Copilot")
         );
     }
 
@@ -196,29 +192,29 @@ mod tests {
     fn favorites_toggle_and_persist() {
         let dir = tempfile::tempdir().unwrap();
         let mut defaults = ComposerDefaults::default();
-        assert!(defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        assert!(defaults.toggle_favorite(HarnessId::Codex, "gpt-5.2-codex"));
-        assert!(defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
+        assert!(defaults.toggle_favorite(HarnessId::Copilot, "copilot"));
+        assert!(defaults.toggle_favorite(HarnessId::Mock, "mock-1"));
+        assert!(defaults.is_favorite(HarnessId::Copilot, "copilot"));
         // Same id under a different harness is a distinct star.
-        assert!(!defaults.is_favorite(HarnessId::Codex, "claude-opus-5"));
+        assert!(!defaults.is_favorite(HarnessId::Mock, "copilot"));
         defaults.save(dir.path()).unwrap();
         assert_eq!(ComposerDefaults::load(dir.path()), defaults);
         // Untoggle removes, preserving the other's order.
-        assert!(!defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        assert!(!defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
-        assert!(defaults.is_favorite(HarnessId::Codex, "gpt-5.2-codex"));
+        assert!(!defaults.toggle_favorite(HarnessId::Copilot, "copilot"));
+        assert!(!defaults.is_favorite(HarnessId::Copilot, "copilot"));
+        assert!(defaults.is_favorite(HarnessId::Mock, "mock-1"));
     }
 
     #[test]
     fn remember_model_updates_harness_and_row() {
         let mut defaults = ComposerDefaults::default();
-        defaults.remember_model(HarnessId::Codex, "m1".into(), "One".into());
-        defaults.remember_model(HarnessId::Codex, "m2".into(), "Two".into());
-        assert_eq!(defaults.harness, Some(HarnessId::Codex));
+        defaults.remember_model(HarnessId::Copilot, "m1".into(), "One".into());
+        defaults.remember_model(HarnessId::Copilot, "m2".into(), "Two".into());
+        assert_eq!(defaults.harness, Some(HarnessId::Copilot));
         assert_eq!(
-            defaults.model_for(HarnessId::Codex).map(|m| &*m.id),
+            defaults.model_for(HarnessId::Copilot).map(|m| &*m.id),
             Some("m2")
         );
-        assert!(defaults.model_for(HarnessId::ClaudeCode).is_none());
+        assert!(defaults.model_for(HarnessId::Mock).is_none());
     }
 }

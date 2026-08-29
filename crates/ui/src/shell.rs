@@ -35,11 +35,9 @@ use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
 use crate::popover::{self, Loadable};
 use crate::rail;
-use crate::settings::accounts::AccountsPage;
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
 use crate::settings::devices::DevicesPage;
-use crate::settings::harnesses::HarnessesPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
@@ -353,10 +351,6 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Devices,
-    /// Which harnesses the composer offers (enable/disable toggles).
-    Harnesses,
-    /// Per-provider CLI accounts (login, usage) — labeled "Accounts".
-    Agents,
     Appearance,
     Notifications,
     Shortcuts,
@@ -364,10 +358,8 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] = [
+    pub const ALL: [SettingsSection; 5] = [
         SettingsSection::Devices,
-        SettingsSection::Harnesses,
-        SettingsSection::Agents,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
         SettingsSection::Shortcuts,
@@ -379,8 +371,6 @@ impl SettingsSection {
     pub fn label(self) -> &'static str {
         match self {
             SettingsSection::Devices => "Devices",
-            SettingsSection::Harnesses => "Agents",
-            SettingsSection::Agents => "Accounts",
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Notifications => "Notifications",
             SettingsSection::Shortcuts => "Shortcuts",
@@ -1068,8 +1058,6 @@ pub struct Shell {
     appearance_page: Option<Entity<AppearancePage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
-    accounts_page: Option<Entity<AccountsPage>>,
-    harnesses_page: Option<Entity<HarnessesPage>>,
     shortcuts_sub: Option<Subscription>,
     notifications_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
@@ -1303,8 +1291,6 @@ impl Shell {
             Some("settings") | Some("settings/devices") => {
                 Route::Settings(SettingsSection::Devices)
             }
-            Some("settings/agents") => Route::Settings(SettingsSection::Agents),
-            Some("settings/harnesses") => Route::Settings(SettingsSection::Harnesses),
             Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
@@ -1369,8 +1355,6 @@ impl Shell {
             appearance_page: None,
             notifications_page: None,
             shortcuts_page: None,
-            accounts_page: None,
-            harnesses_page: None,
             shortcuts_sub: None,
             notifications_sub: None,
             chat_menu: popover::Popup::default(),
@@ -2425,22 +2409,6 @@ impl Shell {
         cx.notify();
     }
 
-    fn copy_harness_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
-        let link = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == chat_id)
-            .and_then(crate::links::harness_conversation_link);
-        if let Some(link) = link {
-            cx.write_to_clipboard(ClipboardItem::new_string(link.url));
-            self.sidebar_notice = Some(format!("{} copied", link.label).into());
-        }
-        self.close_chat_menu(cx);
-        cx.notify();
-    }
-
     fn copy_harness_session_id(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let id = self
             .state
@@ -2458,11 +2426,6 @@ impl Shell {
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
-        // Recreate per visit: the page's ListHarnesses load re-probes which
-        // CLIs are installed, so installing one shows up on the next open.
-        if section == SettingsSection::Harnesses {
-            self.harnesses_page = None;
-        }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_user_menu(cx);
@@ -2520,26 +2483,6 @@ impl Shell {
                     self.devices_page = Some(cx.new(|cx| DevicesPage::new(state, cx)));
                 }
                 match &self.devices_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Harnesses => {
-                if self.harnesses_page.is_none() {
-                    let state = self.state.clone();
-                    self.harnesses_page = Some(cx.new(|cx| HarnessesPage::new(state, cx)));
-                }
-                match &self.harnesses_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Agents => {
-                if self.accounts_page.is_none() {
-                    let state = self.state.clone();
-                    self.accounts_page = Some(cx.new(|cx| AccountsPage::new(state, cx)));
-                }
-                match &self.accounts_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -3836,8 +3779,6 @@ impl Shell {
     ) -> AnyElement {
         let section_icon = |item: SettingsSection| match item {
             SettingsSection::Devices => icons::MONITOR,
-            SettingsSection::Harnesses => icons::WIDGET,
-            SettingsSection::Agents => icons::KEY_MINIMALISTIC,
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Notifications => icons::BELL,
             SettingsSection::Shortcuts => icons::KEYBOARD,
@@ -5874,15 +5815,11 @@ impl Shell {
                         .iter()
                         .find(|chat| chat.id == chat_id)
                         .cloned();
-                    let harness_link = chat
-                        .as_ref()
-                        .and_then(crate::links::harness_conversation_link);
                     let session_id = chat
                         .as_ref()
                         .and_then(|chat| chat.harness_session_id.as_deref())
                         .is_some_and(|id| !id.trim().is_empty());
                     let zeron_id = chat_id.clone();
-                    let harness_id = chat_id.clone();
                     let session_chat_id = chat_id.clone();
                     menu.child(
                         popover::menu_row(&theme, false, format!("chat-copy-back-{chat_id}"))
@@ -5914,25 +5851,6 @@ impl Shell {
                             )
                             .child(SharedString::from("Conversation link")),
                     )
-                    .when_some(harness_link, |menu, link| {
-                        menu.child(
-                            popover::menu_row(
-                                &theme,
-                                false,
-                                format!("chat-copy-harness-{chat_id}"),
-                            )
-                            .id("chat-copy-harness")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_harness_conversation_link(&harness_id, cx)
-                            }))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from(link.label)),
-                        )
-                    })
                     .when(session_id, |menu| {
                         menu.child(
                             popover::menu_row(
@@ -9162,9 +9080,6 @@ mod tests {
         nav.push(chat("a"));
         nav.push(chat("a"));
         assert_eq!(nav.len(), 1, "re-selecting the current route never stacks");
-        nav.push(NavEntry::Settings(SettingsSection::Agents));
-        nav.push(NavEntry::Settings(SettingsSection::Agents));
-        assert_eq!(nav.len(), 2);
     }
 
     #[test]

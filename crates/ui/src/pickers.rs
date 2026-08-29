@@ -13,7 +13,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, Focusable as _, KeyDownEvent, SharedString,
@@ -50,21 +49,16 @@ fn slow_catalog_delay() -> Option<std::time::Duration> {
 }
 
 // ---------------------------------------------------------------------------
-// Catalog invalidation (Settings → Agents toggles)
+// Catalog invalidation
 // ---------------------------------------------------------------------------
 
-/// Marker global: [`bump_harness_catalog`] pokes it whenever a Settings →
-/// Agents toggle changes some device's enabled set, and every [`Pickers`]
-/// observes it to force-refresh its cached harness catalog — without this the
-/// composer served the boot-time list until restart (user report).
+/// Marker global used to force-refresh cached harness catalogs.
 #[derive(Default)]
 pub struct HarnessCatalogChanged;
 
 impl gpui::Global for HarnessCatalogChanged {}
 
-/// Notify all composers that some device's harness catalog changed. The
-/// global carries no data — `default_global` pushes the observer effect, and
-/// the observers re-fetch from the engine (the source of truth).
+/// Notify all composers that the harness catalog changed.
 pub fn bump_harness_catalog(cx: &mut App) {
     cx.default_global::<HarnessCatalogChanged>();
 }
@@ -201,10 +195,10 @@ pub fn reasoning_label(level: ReasoningLevel) -> &'static str {
 
 /// The TraitsPicker trigger summary: the effective reasoning level plus every
 /// model option's effective choice — the explicit pick when one is saved and
-/// still offered, else the option's default — joined with " · " ("High · 1M ·
-/// Fast", Cursor's "Agent · Balance"). Defaults are spelled out rather than
-/// hidden so the run's configuration reads without opening the popover; `None`
-/// only when the model has nothing to describe (no ladder, no options).
+/// still offered, else the option's default — joined with " · ". Defaults are
+/// spelled out rather than hidden so the run's configuration reads without
+/// opening the popover; `None` only when the model has nothing to describe
+/// (no ladder, no options).
 pub fn traits_summary(
     model: Option<&Model>,
     reasoning: Option<ReasoningLevel>,
@@ -557,9 +551,9 @@ impl Pickers {
             }
             cx.notify();
         });
-        // A Settings → Agents toggle changed some device's enabled set:
-        // force-refresh the cached catalog so the rail/chips follow without a
-        // restart (stale rows stay visible while the reload runs).
+        // A device's harness catalog changed: force-refresh the cached
+        // catalog so the rail/chips follow without a restart (stale rows stay
+        // visible while the reload runs).
         let catalog_observe = cx.observe_global::<HarnessCatalogChanged>(|this: &mut Self, cx| {
             this.ensure_harnesses(true, cx);
             cx.notify();
@@ -664,9 +658,7 @@ impl Pickers {
 
     /// The selected space's device when it differs from the connected
     /// engine's own — harness/model catalogs come from the device that RUNS
-    /// the agents (the CLIs live there; the viewer may have neither claude
-    /// nor codex installed — user report: "can't load codex models/traits
-    /// anywhere" from a Mac without codex).
+    /// the agents.
     fn space_target(&self, cx: &App) -> Option<String> {
         let state = self.state.read(cx);
         let device = state.selected_space_row()?.device_id.clone();
@@ -687,8 +679,8 @@ impl Pickers {
             return Some(config.harness);
         }
         // New-chat canvas: the remembered last-used harness (sticky defaults),
-        // when the loaded catalog still offers it (the device may have
-        // disabled it in Settings → Agents since).
+        // when the loaded catalog still offers it (the device may have made
+        // it unavailable since).
         if let Some(harness) = self.defaults.harness {
             let offered = match self.harnesses.ready() {
                 Some(list) => offered_harnesses(list).iter().any(|d| d.id == harness),
@@ -698,10 +690,7 @@ impl Pickers {
                 return Some(harness);
             }
         }
-        // Fall back to the first OFFERED harness: the registry lists the mock
-        // harness first, and resolving chips against it would boot the
-        // new-chat canvas onto "Mock" instead of Claude Code + its default
-        // model (it stays available under `ZERON_HARNESS=mock`).
+        // Fall back to the first offered harness.
         self.harnesses
             .ready()
             .and_then(|list| offered_harnesses(list).first().map(|d| d.id))
@@ -953,13 +942,11 @@ impl Pickers {
             // revalidates, keeping stale rows visible until fresh ones land.
             PickerKind::Branch | PickerKind::Checkout => self.ensure_refs(true, cx),
             PickerKind::HarnessModel => {
-                // Force: the enabled set moves under us (Settings → Agents,
-                // possibly from another viewer) — every open revalidates,
-                // keeping current rows visible until the fresh catalog lands.
+                // Force: every open revalidates, keeping current rows visible
+                // until the fresh catalog lands.
                 self.ensure_harnesses(true, cx);
-                // Model discovery can recover after a slow/plugin-heavy ACP
-                // cold start. Revalidate on every open instead of pinning a
-                // timeout/fallback result until the application restarts.
+                // Revalidate on every open instead of pinning a stale result
+                // until the application restarts.
                 self.prefetch_models(true, cx);
             }
             // Projects and devices are already synced state — nothing to load.
@@ -974,11 +961,9 @@ impl Pickers {
         // Non-forced (the render loop's eager kick) only loads from Idle: an
         // Error that could re-trigger a load would flip back to Loading
         // before the retry row ever painted (and spam the engine); Retry
-        // resets to Idle. FORCED refreshes (a Settings → Agents toggle, a
-        // picker open) reload through Ready/Error too — the enabled set just
-        // changed under the cache, which otherwise served the boot-time
-        // catalog until restart (user report). Stale-while-revalidate: loaded
-        // rows stay on screen while the fresh catalog lands.
+        // resets to Idle. FORCED refreshes (for example, from opening the
+        // picker) reload through Ready/Error too. Stale-while-revalidate:
+        // loaded rows stay on screen while the fresh catalog lands.
         let reload = match self.harnesses {
             Loadable::Idle => true,
             Loadable::Loading => false,
@@ -1076,34 +1061,10 @@ impl Pickers {
                     serde_json::Value::String(target.clone()),
                 );
             }
-            // A plugin-heavy OpenCode cold start can fail once while caches,
-            // MCP servers, or plugin runtimes are still warming. Keep this
-            // single Loading slot alive for two retries so recovery requires
-            // no picker close/reopen and cannot launch duplicate probes.
-            let mut attempt = 1_u64;
-            let result = loop {
-                let result = engine
-                    .client()
-                    .call(methods::LIST_MODELS, params.clone())
-                    .await;
-                if result.is_ok() || harness != HarnessId::Opencode || attempt >= 3 {
-                    break result;
-                }
-                if let Err(error) = &result {
-                    tracing::warn!(
-                        %error,
-                        attempt,
-                        "OpenCode model discovery failed; retrying automatically"
-                    );
-                }
-                if this.update(cx, |_, _| {}).is_err() {
-                    return;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_secs(attempt * 2))
-                    .await;
-                attempt += 1;
-            };
+            let result = engine
+                .client()
+                .call(methods::LIST_MODELS, params.clone())
+                .await;
             if let Some(delay) = slow_catalog_delay() {
                 cx.background_executor().timer(delay).await;
             }
@@ -3041,8 +3002,7 @@ impl Pickers {
                         .text_color(theme.text_muted)
                         .text_center()
                         .child(SharedString::from(
-                            "Enable an installed agent in Settings → Agents, \
-                             or install an agent CLI.",
+                            "Sign in to Keiki to make Copilot available.",
                         )),
                 )
                 .into_any_element();
@@ -3309,12 +3269,10 @@ impl Pickers {
         let harness_name = row.harness_name.clone();
         let harness = row.harness;
         let star_model = row.model.id.clone();
-        // Provider attribution (field report: several connected opencode
-        // providers advertise identically-named models — "GLM-5.2" exists
-        // under 64 providers — and rows were indistinguishable). The driver
-        // ships the provider display name in `description`; other harnesses'
-        // taglines read fine in the same slot. Skip when it just repeats the
-        // harness name.
+        // Provider attribution keeps identically-named models distinguishable.
+        // The driver
+        // ships the provider display name in `description`. Skip it when it
+        // just repeats the harness name.
         let attribution: Option<SharedString> = row
             .model
             .description
@@ -3352,9 +3310,8 @@ impl Pickers {
         }));
         // Compact single-line rows on a harness tab (user request): every
         // row there shares the tab's harness, so the identity subline is
-        // dead weight — attribution rides inline instead (opencode ships
-        // identically-named models under 64 providers; it must stay
-        // visible). The favorites tab mixes harnesses and keeps the
+        // dead weight — attribution rides inline instead. The favorites tab
+        // mixes harnesses and keeps the
         // two-line layout with the brand subline.
         let body: AnyElement = if compact {
             div()
@@ -3611,9 +3568,7 @@ fn default_badge(theme: &Theme) -> gpui::Div {
         .child(SharedString::from("Default"))
 }
 
-/// Brand mark + optional tint for a harness (the Claude mark keeps its brand
-/// orange even on the monochrome surface; the mock harness scripts
-/// Claude-flavoured runs, so it wears the Claude mark).
+/// Brand mark + optional tint for a harness.
 /// The 2px underline marking the viewed top tab: sits on the tab row's
 /// bottom hairline (the tab is 32px tall inside a 40px row, so -4px lands
 /// exactly on the border), rounded like a capsule.
@@ -3654,8 +3609,8 @@ fn scoped_model_rows<'a>(
         // Rank: label prefix < label substring < description hit; stars,
         // then input order, break ties (t3 modelPickerSearch's field ladder
         // + favorite boost, collapsed to our ranks). The description stays
-        // in the haystack — opencode's provider attribution ("anthropic")
-        // must find its models even inside one tab.
+        // in the haystack so provider attribution can find models inside one
+        // tab.
         let mut ranked: Vec<(usize, usize, usize, ModelRowData)> = Vec::new();
         let mut input_ix = 0usize;
         for descriptor in descriptors {
@@ -3733,15 +3688,11 @@ fn empty_list_note(theme: &Theme, copy: &str) -> AnyElement {
 }
 
 /// Display-side model-list hygiene, mirroring the engine's discovery-side
-/// fold (`models_from_session`) for catalogs served by OLDER engines (the
-/// space's device may run any version): the `default` alias row drops when a
-/// real row exists, an orphan `<model>[1m]` variant presents as its base id
-/// with the Context Window trait pinned to 1M, and Claude rows adopt the
-/// curated catalog's labels so the version number always shows ("Opus 5",
-/// not the wire's terse "Opus" alias — user request). Idempotent over
-/// already-clean lists. The send path recomposes the advertised id from the
-/// base + trait (`pick_model_value`), so a folded pick still runs.
-pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Vec<Model> {
+/// fold (`models_from_session`) for catalogs served by older engines: the
+/// `default` alias row drops when a real row exists, and an orphan
+/// `<model>[1m]` variant presents as its base id with the Context Window
+/// trait pinned to 1M. Idempotent over already-clean lists.
+pub(crate) fn normalize_model_rows(_harness: HarnessId, models: Vec<Model>) -> Vec<Model> {
     fn strip_1m(id: &str) -> Option<&str> {
         id.strip_suffix("[1m]").or_else(|| id.strip_suffix("-1m"))
     }
@@ -3751,10 +3702,7 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
             .collect::<String>()
             .to_ascii_lowercase()
     }
-    let catalog = match harness {
-        HarnessId::ClaudeCode => zeron_harness::claude::catalog::static_models(),
-        _ => Vec::new(),
-    };
+    let catalog: Vec<Model> = Vec::new();
     // Curated label for an id: exact normalized match, else — for bare
     // alphabetic aliases like `opus` — the first (flagship-ordered) family
     // row. Versioned foreign ids never fuzzy-match.
@@ -3820,20 +3768,8 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
 
 pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gpui::Hsla>) {
     match harness {
-        HarnessId::ClaudeCode | HarnessId::Mock => (
-            crate::icons::CLAUDE_MARK,
-            Some(crate::icons::claude_brand()),
-        ),
-        HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
-        HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
-        // Monochrome mark, tinted by the surface like OpenAI's.
-        HarnessId::Grok => (crate::icons::GROK_MARK, None),
-        // Nous Research's mark (the Hermes product icon), monochrome.
-        HarnessId::Hermes => (crate::icons::HERMES_MARK, None),
-        HarnessId::Pi => (crate::icons::PI_MARK, None),
-        // The pixel-"o" from opencode's wordmark (their favicon), monochrome.
-        HarnessId::Opencode => (crate::icons::OPENCODE_MARK, None),
         HarnessId::Copilot => (crate::icons::MONITOR, None),
+        HarnessId::Mock | HarnessId::Unknown(_) => (crate::icons::MONITOR, None),
     }
 }
 
@@ -3847,36 +3783,26 @@ fn mock_harness_enabled() -> bool {
         == Some("mock")
 }
 
-/// Production pickers AND chip resolution hide the mock harness — the
-/// registry always lists it, but it must never surface in real UI (neither in
-/// the picker rail nor as the eager default the chips resolve against).
-/// `ZERON_HARNESS=mock` shows it; otherwise it only remains when it's
-/// literally all there is (a dev build with no real harness registered).
+/// Production pickers expose Copilot. Mock remains available only for local
+/// development and tests when explicitly requested.
 pub fn visible_harnesses(list: &[HarnessDescriptor]) -> Vec<HarnessDescriptor> {
     visible_harnesses_impl(list, mock_harness_enabled())
 }
 
 fn visible_harnesses_impl(list: &[HarnessDescriptor], allow_mock: bool) -> Vec<HarnessDescriptor> {
-    if allow_mock {
-        return list.to_vec();
-    }
-    let real: Vec<HarnessDescriptor> = list
-        .iter()
-        .filter(|d| d.id != HarnessId::Mock)
+    list.iter()
+        .filter(|descriptor| {
+            descriptor.id == HarnessId::Copilot || (allow_mock && descriptor.id == HarnessId::Mock)
+        })
         .cloned()
-        .collect();
-    if real.is_empty() { list.to_vec() } else { real }
+        .collect()
 }
 
-/// What the composer actually offers: [`visible_harnesses`] narrowed to the
-/// catalog device's enabled set AND installed CLIs (Settings → Agents is
-/// per-device state, so a space on another device follows THAT device's
-/// toggles; a default-enabled agent whose CLI is missing would only
-/// manufacture NotInstalled errors at send). The dev-rig mock opt-in
-/// survives the filter. There is NO fallback: a catalog where nothing is
-/// both enabled and installed offers nothing, and the composer surfaces the
-/// no-agents empty state + blocks new sends — resurrecting descriptors that
-/// can only fail with NotInstalled is the #128 bug.
+/// What the composer actually offers: [`visible_harnesses`] narrowed to
+/// descriptors that are installed and enabled on the catalog device. The
+/// dev-rig mock opt-in survives the filter. There is no fallback: a catalog
+/// where nothing is runnable offers nothing, and the composer surfaces the
+/// no-agents empty state rather than resurrecting unusable descriptors.
 pub fn offered_harnesses(list: &[HarnessDescriptor]) -> Vec<HarnessDescriptor> {
     offered_harnesses_impl(list, mock_harness_enabled())
 }
@@ -4018,10 +3944,7 @@ impl Render for Pickers {
         let harness_icon: (&'static str, Option<gpui::Hsla>) = match self.effective_harness(cx) {
             Some(harness) => harness_brand_icon(harness),
             None if no_agents => (crate::icons::TERMINAL, Some(theme.text_muted)),
-            None => (
-                crate::icons::CLAUDE_MARK,
-                Some(crate::icons::claude_brand()),
-            ),
+            None => (crate::icons::MONITOR, None),
         };
         let explicit_options = self.explicit_options(cx);
         let traits_set = traits_summary(
@@ -4073,7 +3996,7 @@ impl Render for Pickers {
         // Fast", "Agent · Balance") as the chip's muted second tone — the
         // run's configuration reads without opening anything, and the suffix
         // brightens only when something departs from its default. No suffix
-        // when the model has neither a ladder nor options (e.g. Hermes).
+        // when the model has neither a ladder nor options.
         let chip_suffix = traits_set.map(|summary| {
             (
                 SharedString::from(summary),
@@ -4126,215 +4049,6 @@ impl Render for Pickers {
 mod tests {
     use super::*;
     use zeron_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
-
-    fn bare_model(id: &str, label: &str) -> Model {
-        Model {
-            id: id.into(),
-            label: label.into(),
-            description: None,
-            reasoning_levels: Vec::new(),
-            options: Vec::new(),
-        }
-    }
-
-    fn descriptor(id: HarnessId, name: &str) -> HarnessDescriptor {
-        HarnessDescriptor {
-            id,
-            name: name.into(),
-            installed: true,
-            enabled: Some(true),
-            reasoning_levels: Vec::new(),
-            steering_mode: zeron_proto::SteeringMode::StepBoundary,
-            supports_steering: false,
-        }
-    }
-
-    #[test]
-    fn tab_search_never_leaves_the_viewed_harness() {
-        let descriptors = vec![
-            descriptor(HarnessId::ClaudeCode, "Claude Code"),
-            descriptor(HarnessId::Codex, "Codex"),
-        ];
-        let claude = vec![bare_model("fable-5", "Fable 5")];
-        let codex = vec![bare_model("gpt-fable", "Fable (Codex)")];
-        let models_for = |harness: HarnessId| -> Option<&[Model]> {
-            match harness {
-                HarnessId::ClaudeCode => Some(claude.as_slice()),
-                HarnessId::Codex => Some(codex.as_slice()),
-                _ => None,
-            }
-        };
-        // Both catalogs match "fable", but the viewed tab is Claude — the
-        // Codex hit must not appear.
-        let rows = scoped_model_rows(
-            "fable",
-            ModelRail::Harness,
-            Some(HarnessId::ClaudeCode),
-            &descriptors,
-            models_for,
-            |_, _| false,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].harness, HarnessId::ClaudeCode);
-        assert_eq!(rows[0].model.id, "fable-5");
-    }
-
-    #[test]
-    fn favorites_tab_search_ranks_only_starred_rows() {
-        let descriptors = vec![
-            descriptor(HarnessId::ClaudeCode, "Claude Code"),
-            descriptor(HarnessId::Codex, "Codex"),
-        ];
-        let claude = vec![bare_model("fable-5", "Fable 5")];
-        let codex = vec![bare_model("gpt-fable", "Fable (Codex)")];
-        let models_for = |harness: HarnessId| -> Option<&[Model]> {
-            match harness {
-                HarnessId::ClaudeCode => Some(claude.as_slice()),
-                HarnessId::Codex => Some(codex.as_slice()),
-                _ => None,
-            }
-        };
-        let starred =
-            |harness: HarnessId, model: &str| harness == HarnessId::Codex && model == "gpt-fable";
-        let rows = scoped_model_rows(
-            "fable",
-            ModelRail::Favorites,
-            Some(HarnessId::ClaudeCode),
-            &descriptors,
-            models_for,
-            starred,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].harness, HarnessId::Codex);
-
-        // Empty query on the favorites tab: the starred set, nothing else.
-        let rows = scoped_model_rows(
-            "",
-            ModelRail::Favorites,
-            Some(HarnessId::ClaudeCode),
-            &descriptors,
-            models_for,
-            starred,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].model.id, "gpt-fable");
-    }
-
-    #[test]
-    fn harness_tab_lists_stars_first_and_description_still_matches() {
-        let descriptors = vec![descriptor(HarnessId::Opencode, "opencode")];
-        let mut provider_a = bare_model("glm-5.2-a", "GLM-5.2");
-        provider_a.description = Some("Anthropic".into());
-        let mut provider_b = bare_model("glm-5.2-b", "GLM-5.2");
-        provider_b.description = Some("Baseten".into());
-        let models = vec![provider_a, provider_b];
-        let models_for = |harness: HarnessId| -> Option<&[Model]> {
-            (harness == HarnessId::Opencode).then_some(models.as_slice())
-        };
-        let starred = |harness: HarnessId, model: &str| {
-            harness == HarnessId::Opencode && model == "glm-5.2-b"
-        };
-        // No query: catalog order with the star floated to the top.
-        let rows = scoped_model_rows(
-            "",
-            ModelRail::Harness,
-            Some(HarnessId::Opencode),
-            &descriptors,
-            models_for,
-            starred,
-        );
-        assert_eq!(rows[0].model.id, "glm-5.2-b");
-        assert_eq!(rows[1].model.id, "glm-5.2-a");
-        // Provider attribution stays searchable inside the tab.
-        let rows = scoped_model_rows(
-            "baseten",
-            ModelRail::Harness,
-            Some(HarnessId::Opencode),
-            &descriptors,
-            models_for,
-            starred,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].model.id, "glm-5.2-b");
-    }
-
-    #[test]
-    fn normalize_drops_default_alias_and_folds_orphan_1m_rows() {
-        // The shape an OLDER engine serves: a `default` alias row plus
-        // 1M-pinned variants with no bare base. A non-claude harness keeps
-        // wire labels (no curated catalog to borrow from).
-        let models = normalize_model_rows(
-            HarnessId::Codex,
-            vec![
-                bare_model("default", "Default (recommended)"),
-                bare_model("titan[1m]", "Titan (1M context)"),
-                bare_model("gpt-x-9[1m]", "GPT X-9"),
-                bare_model("nano", "Nano"),
-            ],
-        );
-        assert_eq!(
-            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            vec!["titan", "gpt-x-9", "nano"]
-        );
-        assert_eq!(models[0].label, "Titan");
-        assert_eq!(models[1].label, "GPT X-9");
-        // Folded rows pin the Context Window trait to 1M.
-        assert!(
-            models[0]
-                .options
-                .iter()
-                .any(|o| o.id == "contextWindow" && o.default_choice == "1m")
-        );
-        assert!(models[2].options.is_empty());
-
-        // A `default`-only list survives (nothing real to prefer).
-        let only_default =
-            normalize_model_rows(HarnessId::Codex, vec![bare_model("default", "Default")]);
-        assert_eq!(only_default.len(), 1);
-
-        // A base-plus-variant pair (already folded by a NEWER engine — the
-        // variant never reaches us; belt-and-braces if it does): variant
-        // drops, base is untouched.
-        let paired = normalize_model_rows(
-            HarnessId::Codex,
-            vec![
-                bare_model("titan-5", "Titan 5"),
-                bare_model("titan-5[1m]", "Titan 5 (1M)"),
-            ],
-        );
-        assert_eq!(paired.len(), 1);
-        assert_eq!(paired[0].id, "titan-5");
-
-        // Idempotent over a clean list.
-        let clean = vec![bare_model("titan-5", "Titan 5")];
-        assert_eq!(normalize_model_rows(HarnessId::Codex, clean.clone()), clean);
-    }
-
-    #[test]
-    fn normalize_gives_claude_rows_their_versioned_catalog_labels() {
-        // The real prod shape: alias values with terse names. Claude rows
-        // adopt the curated labels so the version number always shows
-        // (user request), exact ids included; foreign ids pass through.
-        let models = normalize_model_rows(
-            HarnessId::ClaudeCode,
-            vec![
-                bare_model("default", "Default (recommended)"),
-                bare_model("opus[1m]", "Opus (1M context)"),
-                bare_model("claude-fable-5[1m]", "Fable"),
-                bare_model("sonnet", "Sonnet"),
-                bare_model("haiku", "Haiku"),
-                bare_model("claude-nova-1", "Nova 1"),
-            ],
-        );
-        assert_eq!(
-            models.iter().map(|m| m.label.as_str()).collect::<Vec<_>>(),
-            vec!["Opus 5", "Fable 5", "Sonnet 5", "Haiku 4.5", "Nova 1"]
-        );
-        assert_eq!(
-            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            vec!["opus", "claude-fable-5", "sonnet", "haiku", "claude-nova-1"]
-        );
-    }
 
     #[test]
     fn traits_summary_formats_non_defaults() {
@@ -4549,11 +4263,11 @@ mod tests {
     fn resolved_chat_config_requires_harness() {
         let mut resolved = ResolvedRunConfig::default();
         assert!(resolved.chat_config().is_none());
-        resolved.harness = Some(HarnessId::ClaudeCode);
+        resolved.harness = Some(HarnessId::Copilot);
         resolved.model = Some("opus".into());
         resolved.reasoning = Some(ReasoningLevel::High);
         let config = resolved.chat_config().expect("harness set");
-        assert_eq!(config.harness, HarnessId::ClaudeCode);
+        assert_eq!(config.harness, HarnessId::Copilot);
         assert_eq!(config.model.as_deref(), Some("opus"));
         assert_eq!(config.sandbox, SandboxLevel::WorkspaceWrite);
     }
@@ -4623,15 +4337,13 @@ mod tests {
         };
         let mixed = vec![
             descriptor(HarnessId::Mock, "Mock"),
-            descriptor(HarnessId::ClaudeCode, "Claude Code"),
+            descriptor(HarnessId::Copilot, "Copilot"),
         ];
-        // Env-independent core: mock hidden in production…
         let visible = visible_harnesses_impl(&mixed, false);
         assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].id, HarnessId::ClaudeCode);
+        assert_eq!(visible[0].id, HarnessId::Copilot);
         let only_mock = vec![descriptor(HarnessId::Mock, "Mock")];
-        assert_eq!(visible_harnesses_impl(&only_mock, false).len(), 1);
-        // …and opted back in by ZERON_HARNESS=mock (the e2e rig).
+        assert!(visible_harnesses_impl(&only_mock, false).is_empty());
         assert_eq!(visible_harnesses_impl(&mixed, true).len(), 2);
         assert_eq!(visible_harnesses_impl(&mixed, true)[0].id, HarnessId::Mock);
     }
@@ -4647,42 +4359,34 @@ mod tests {
             installed: true,
             enabled,
         };
-        let catalog = |claude: Option<bool>, codex: Option<bool>, grok: Option<bool>| {
+        let catalog = |copilot: Option<bool>| {
             vec![
                 descriptor(HarnessId::Mock, "Mock", Some(false)),
-                descriptor(HarnessId::ClaudeCode, "Claude Code", claude),
-                descriptor(HarnessId::Codex, "Codex", codex),
-                descriptor(HarnessId::Grok, "Grok", grok),
+                descriptor(HarnessId::Copilot, "Copilot", copilot),
             ]
         };
-        // A catalog from an engine predating the flag (all None) follows its
-        // installed probes, so every detected real harness is offered.
-        let offered = offered_harnesses_impl(&catalog(None, None, None), false);
+        let offered = offered_harnesses_impl(&catalog(None), false);
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
-            vec![HarnessId::ClaudeCode, HarnessId::Codex, HarnessId::Grok]
+            vec![HarnessId::Copilot]
         );
-        // The device's flags win: Grok on, Codex off; catalog order holds.
-        let offered = offered_harnesses_impl(&catalog(Some(true), Some(false), Some(true)), false);
+        let offered = offered_harnesses_impl(&catalog(Some(true)), false);
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
-            vec![HarnessId::ClaudeCode, HarnessId::Grok]
+            vec![HarnessId::Copilot]
         );
-        // The dev-rig mock opt-in survives the enabled filter (and Grok's
-        // unknown flag still resolves through its installed probe).
-        let offered = offered_harnesses_impl(&catalog(Some(true), Some(false), None), true);
+        let offered = offered_harnesses_impl(&catalog(Some(true)), true);
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
-            vec![HarnessId::Mock, HarnessId::ClaudeCode, HarnessId::Grok]
+            vec![HarnessId::Mock, HarnessId::Copilot]
         );
         // Nothing enabled offers nothing — the composer renders the
         // no-agents empty state instead of resurrecting disabled agents.
-        let offered =
-            offered_harnesses_impl(&catalog(Some(false), Some(false), Some(false)), false);
+        let offered = offered_harnesses_impl(&catalog(Some(false)), false);
         assert!(offered.is_empty());
         // So does a legacy catalog whose installed probes all failed: never
         // resurface unrunnable agents just to avoid an empty picker.
-        let mut missing = catalog(None, None, None);
+        let mut missing = catalog(None);
         missing.iter_mut().for_each(|d| d.installed = false);
         assert!(offered_harnesses_impl(&missing, false).is_empty());
     }
@@ -4699,31 +4403,20 @@ mod tests {
                 installed,
                 enabled,
             };
-        // Enabled-but-missing-CLI agents stay out of the rail; an installed
-        // enabled one rides along. A live engine no longer stamps that
-        // combination (enablement follows detection), but a catalog from an
-        // older engine still can — the filter is the cross-version defense.
         let catalog = vec![
-            descriptor(HarnessId::ClaudeCode, "Claude Code", Some(true), false),
-            descriptor(HarnessId::Codex, "Codex", Some(true), false),
-            descriptor(HarnessId::Grok, "Grok", Some(true), true),
+            descriptor(HarnessId::Copilot, "Copilot", Some(true), false),
+            descriptor(HarnessId::Unknown("legacy"), "Legacy", Some(true), true),
+        ];
+        let offered = offered_harnesses_impl(&catalog, false);
+        assert!(offered.is_empty());
+        let catalog = vec![
+            descriptor(HarnessId::Copilot, "Copilot", Some(true), true),
+            descriptor(HarnessId::Unknown("legacy"), "Legacy", Some(false), true),
         ];
         let offered = offered_harnesses_impl(&catalog, false);
         assert_eq!(
             offered.iter().map(|d| d.id).collect::<Vec<_>>(),
-            vec![HarnessId::Grok]
+            vec![HarnessId::Copilot]
         );
-        // Nothing enabled AND installed: an empty offered set — the fresh
-        // machine where the default-enabled Claude/Codex have no CLIs (#128).
-        // No fallback: offering them again would only manufacture
-        // NotInstalled errors at send; the composer shows the no-agents
-        // state and blocks new sends instead.
-        let catalog = vec![
-            descriptor(HarnessId::ClaudeCode, "Claude Code", Some(true), false),
-            descriptor(HarnessId::Codex, "Codex", Some(false), false),
-            descriptor(HarnessId::Grok, "Grok", Some(false), true),
-        ];
-        let offered = offered_harnesses_impl(&catalog, false);
-        assert!(offered.is_empty());
     }
 }

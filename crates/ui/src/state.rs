@@ -3542,8 +3542,8 @@ mod tests {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
         let config = zeron_proto::ChatConfig {
-            harness: HarnessId::ClaudeCode,
-            model: Some("claude-fable-5".into()),
+            harness: HarnessId::Copilot,
+            model: Some("copilot".into()),
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
@@ -3566,7 +3566,7 @@ mod tests {
         state.apply_chat_config(
             "missing",
             zeron_proto::ChatConfig {
-                harness: HarnessId::ClaudeCode,
+                harness: HarnessId::Copilot,
                 model: None,
                 reasoning: None,
                 model_options: serde_json::Map::new(),

@@ -915,7 +915,7 @@ impl Inner {
 
     // NB: there is deliberately no `forget_harness_session` anymore. The old
     // tombstone fired on "run died before SessionStarted", which — since the
-    // ACP conversion made stale ids a harness-internal fallback — only ever
+    // Older conversions made stale ids a harness-internal fallback — only ever
     // meant a child STARTUP failure, and permanently severed good
     // conversations (user incident 2026-08-13). A truly stale id simply
     // yields a fresh session whose SessionStarted overwrites the row.
@@ -1367,8 +1367,8 @@ async fn drive_run(
     // costs a status dip: the parked-resume path below re-arms Working the
     // moment output flows again, and nothing is lost. `ZERON_TURN_QUIESCE_MS`
     // overrides the window; 0 disables.
-    // RETIRED for native drivers: a harness whose every turn shape ends with
-    // a deterministic wire Done (claude/codex/cursor native) needs no
+    // A harness whose every turn shape ends with a deterministic wire Done
+    // needs no
     // quiesce backstop — arming one only risks false parks on long silent
     // work. The env knob still forces a window on for diagnostics.
     let deterministic_turn_end = harness.deterministic_turn_end();
@@ -1385,9 +1385,8 @@ async fn drive_run(
     // SELF-CONTINUED turns get a much SHORTER quiesce window. A turn the
     // agent starts on its own (background-task wake) can never receive a
     // harness Done: the adapter has no `session/prompt` outstanding to
-    // settle — verified in claude-agent-acp's autonomous-result lane, which
-    // consumes the SDK's turn-end without emitting anything; codex shows
-    // the same shape. The watchdog is that turn shape's ONLY settle path,
+    // settle — the autonomous-result lane consumes the SDK's turn-end without
+    // emitting anything. The watchdog is that turn shape's ONLY settle path,
     // so the default 120s window read as 2min of stuck-Working after every
     // background notification (user report 2026-08-13). The in-flight
     // fold gate below still protects running tools; reasoning heartbeats
@@ -1591,7 +1590,7 @@ async fn drive_run(
                 .iter()
                 .any(|p| matches!(p, MessagePart::Tool { id, .. } if id == parent_tool_use_id));
             let sink_known = subagents.contains_key(parent_tool_use_id);
-            // A Done with NO sink (a subagent that never streamed — codex
+            // A Done with NO sink (a subagent that never streamed —
             // turn ends can beat registration) is chip-only: minting a doc
             // just to freeze it empty helps no one, and stamping the ref
             // would link the chip to that never-created doc (an empty tab
@@ -1745,7 +1744,7 @@ async fn drive_run(
             }
         }
         // PARKED: a steer boundary, a terminal Done, or SELF-CONTINUED OUTPUT
-        // re-opens the session; everything else stays gated. The ACP child
+        // re-opens the session; everything else stays gated. The child
         // keeps forwarding `session/update` frames after a turn completes,
         // and they split two ways:
         //
@@ -1866,7 +1865,7 @@ async fn drive_run(
         // Startup-crash retry: a run that dies before ever starting (errored
         // Done, no SessionStarted, nothing streamed) means the AGENT CHILD
         // failed to come up — not that the injected resume id was bad. Since
-        // the ACP conversion (2026-08-08) a stale id is handled inside the
+        // conversion (2026-08-08) a stale id is handled inside the
         // harness (`session/load` falls back to `session/new`), so the old
         // guess here — tombstone the id, retry fresh — fired only on child
         // startup failures and permanently severed GOOD conversations (user
@@ -2184,23 +2183,23 @@ mod tests {
     #[test]
     fn live_routing_requires_the_same_runtime_configuration() {
         let initial = request();
-        let config = RuntimeConfig::from_request(HarnessId::Grok, &initial);
+        let config = RuntimeConfig::from_request(HarnessId::Mock, &initial);
 
         let mut follow_up = initial.clone();
         follow_up.prompt = "second".into();
         follow_up.resume = Some("session-1".into());
-        assert!(config.can_route(HarnessId::Grok, &follow_up));
+        assert!(config.can_route(HarnessId::Mock, &follow_up));
 
         follow_up.model = Some("grok-4.5".into());
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Copilot, &follow_up));
         follow_up.model = initial.model.clone();
 
         follow_up.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Mock, &follow_up));
         follow_up.reasoning = initial.reasoning;
 
         follow_up.attachments.push("/tmp/image.png".into());
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Copilot, &follow_up));
     }
 
     #[test]

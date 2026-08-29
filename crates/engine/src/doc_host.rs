@@ -2822,7 +2822,7 @@ impl DocHost {
         self.workspace()
             .and_then(|ws| ws.chat_config(chat_id))
             .map(|config| config.harness)
-            .unwrap_or(self.inner.config.default_harness)
+            .unwrap_or_else(|| self.inner.config.default_harness.clone())
     }
 
     /// The harness a request dispatches on: the request's own pick when it
@@ -2833,7 +2833,10 @@ impl DocHost {
         chat_id: &str,
         request: &zeron_proto::RunRequest,
     ) -> HarnessId {
-        request.harness.unwrap_or_else(|| self.harness_for(chat_id))
+        request
+            .harness
+            .clone()
+            .unwrap_or_else(|| self.harness_for(chat_id))
     }
 
     /// Drain pending commands (host-only): evaluate → mark processed BEFORE execute →
@@ -3144,7 +3147,7 @@ impl DocHost {
                     && ws.chat_config(chat_id).is_none()
                 {
                     let config = zeron_proto::ChatConfig {
-                        harness,
+                        harness: harness.clone(),
                         model: request.model.clone(),
                         reasoning: request.reasoning,
                         model_options: request.model_options.clone(),
@@ -3400,7 +3403,7 @@ impl DocHost {
         let config = chat.config;
         Some(zeron_proto::RunRequest {
             prompt: prompt.to_string(),
-            harness: config.as_ref().map(|c| c.harness),
+            harness: config.as_ref().map(|c| c.harness.clone()),
             model: config.as_ref().and_then(|c| c.model.clone()),
             reasoning: config.as_ref().and_then(|c| c.reasoning),
             model_options: config

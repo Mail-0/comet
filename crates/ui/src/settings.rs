@@ -14,12 +14,10 @@ use std::time::Duration;
 use gpui::{App, Global, Task};
 use serde::{Deserialize, Serialize};
 
-pub mod accounts;
 pub mod appearance;
 pub mod archived;
 pub mod composer;
 pub mod devices;
-pub mod harnesses;
 pub mod notifications;
 pub mod shortcuts;
 pub mod widgets;

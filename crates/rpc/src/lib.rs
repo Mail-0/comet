@@ -34,9 +34,6 @@ pub use server::{serve_connection, serve_ws_listener};
 /// Full surface: docs/research/feature-inventory.md §2.
 pub mod methods {
     pub const LIST_HARNESSES: &str = "ListHarnesses";
-    /// Flip a harness's enablement on the target device (Settings → Agents);
-    /// replies with the device's fresh `ListHarnesses` catalog.
-    pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const SET_COPILOT_CREDENTIALS: &str = "SetCopilotCredentials";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_COMMANDS: &str = "ListCommands";
@@ -135,14 +132,6 @@ pub mod methods {
     pub const WATCH_CHECKOUT_CHANGE_REQUEST: &str = "WatchCheckoutChangeRequest";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
-    // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
-    pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
-    pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
-    pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";
-    pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
-    pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
-    pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";
-    pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
     // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";

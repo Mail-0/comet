@@ -846,8 +846,8 @@ mod tests {
             serde_json::Value::String("1m".into()),
         );
         let config = ChatConfig {
-            harness: HarnessId::ClaudeCode,
-            model: Some("claude-fable-5".into()),
+            harness: HarnessId::Unknown("claude"),
+            model: Some("legacy-model".into()),
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
@@ -947,6 +947,21 @@ mod tests {
         let dev = &ws.read_devices().unwrap()[0];
         assert_eq!(dev.name, "workstation");
         assert_eq!(dev.last_seen_at, Some(ts(6_000)));
+    }
+
+    #[test]
+    fn legacy_harness_chat_remains_visible_archivable_and_deletable() {
+        let ws = WorkspaceDoc::new();
+        let mut legacy = chat("legacy-chat", "dev-a");
+        legacy.config.as_mut().unwrap().harness = HarnessId::Unknown("codex");
+        ws.upsert_chat(&legacy).unwrap();
+
+        let visible = ws.read_chats().unwrap();
+        assert_eq!(visible, vec![legacy]);
+        assert!(ws.set_chat_archived("legacy-chat", true).unwrap());
+        assert!(ws.chat("legacy-chat").unwrap().unwrap().archived);
+        assert!(ws.delete_chat("legacy-chat").unwrap());
+        assert!(ws.read_chats().unwrap().is_empty());
     }
 
     #[test]

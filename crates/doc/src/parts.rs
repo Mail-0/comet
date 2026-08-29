@@ -21,7 +21,7 @@ pub const TOOL_OUTPUT_SUMMARY_MAX: usize = 160;
 /// sidecar is PARKED as of 2026-08-10, so this IS the whole record in the
 /// doc — the full text survives only in the host's local run journal):
 ///
-/// - Markdown code fences are stripped first — ACP harnesses fence every
+/// - Markdown code fences are stripped first — some clients fence every
 ///   output, so the fence is transport wrapping, never content (pre-fix,
 ///   every summary read "```console…").
 /// - Outputs that fit [`TOOL_OUTPUT_SUMMARY_MAX`] chars ride whole — a
@@ -67,7 +67,7 @@ pub fn summarize_tool_output(text: &str) -> Option<String> {
 
 /// Per-file diff stats persisted in place of inline diff text (t3's shape).
 /// The inline diff was the bigger bomb than outputs — 32KB/edit, unexercised
-/// only because the claude harness emits none. Full diff text lives in the
+/// only because some clients emit none. Full diff text lives in the
 /// sidecar behind `diff_ref`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -404,7 +404,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     _ => SubagentStatus::Done,
                 }),
                 // A steer RESURRECTS a settled chip — it announces more work
-                // (claude: a queued SendMessage relaunches the agent), so
+                // a queued SendMessage relaunches the agent, so
                 // this is the one event allowed past the no-regress guard.
                 AgentEvent::UserMessage { .. } => Some(SubagentStatus::Running),
                 _ => None,
@@ -418,7 +418,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 } = p
                     && id == parent_tool_use_id
                     // Genus gate: only a SPAWN call ever carries subagent
-                    // lifecycle. A driver keying bug (claude's background
+                    // lifecycle. A driver keying bug in background
                     // shells settled through the subagent subtype,
                     // 2026-08-20) must not decorate an ordinary chip.
                     && call.is_subagent_spawn()
@@ -1158,7 +1158,7 @@ mod tests {
 
     #[test]
     fn subagent_events_never_decorate_a_non_spawn_chip() {
-        // Mis-keyed tagged traffic (claude's background shells settled
+        // Mis-keyed tagged traffic from background shells settled
         // through the subagent subtype, 2026-08-20) must not stamp lifecycle
         // onto an ordinary tool chip — the genus gate is the CALL.
         use zeron_proto::DoneStatus;

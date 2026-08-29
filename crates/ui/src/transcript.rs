@@ -272,7 +272,7 @@ pub struct ToolItem {
     pub is_error: bool,
     pub resolved: bool,
     /// Expandable detail: a code-block of output lines, or a real diff
-    /// section rendered by the changes pane's component (ACP harnesses).
+    /// section rendered by the changes pane's component.
     /// Precomputed here because rows are cached by fingerprint — diffing and
     /// tokenizing per paint would run on every scroll frame.
     pub detail: Option<Arc<ToolDetail>>,
@@ -316,7 +316,7 @@ fn is_agent_call(call: &ToolCall) -> bool {
 }
 
 /// The chip's GENUS is the call itself, never the ref: docs written before
-/// the claude-driver fix carry stray `subagent_ref`s on ordinary Run chips
+/// older clients carry stray `subagent_ref`s on ordinary Run chips
 /// (a background shell's `task_notification` was mis-tagged as subagent
 /// traffic), and honoring the ref alone turned those Runs into spawn chips
 /// that opened empty, never-created subagent docs.
@@ -6871,7 +6871,7 @@ mod tests {
 
     #[test]
     fn stray_subagent_ref_on_a_run_chip_stays_an_ordinary_tool() {
-        // Docs written before the claude-driver fix carry subagent refs on
+        // Docs written by older clients carry subagent refs on
         // ordinary Run chips (a background shell's task_notification was
         // mis-tagged as subagent traffic). The ref alone must not change the
         // chip's genus: it folds with its neighbors and renders as a plain

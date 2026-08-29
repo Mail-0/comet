@@ -2,26 +2,40 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HarnessId {
-    ClaudeCode,
-    Codex,
-    Cursor,
-    /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
-    Grok,
-    /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
-    Hermes,
-    /// The pi coding agent (pi.dev), driven over ACP via the `pi-acp` adapter.
-    Pi,
-    /// SST's opencode agent, driven natively over its own HTTP/SSE server
-    /// protocol (`opencode serve` — the same wire the opencode desktop app
-    /// speaks).
-    Opencode,
+    Unknown(&'static str),
     /// Dashboard Copilot, driven over the authenticated AG-UI HTTP stream.
     Copilot,
     /// Test harness; never shown in production pickers.
     Mock,
+}
+
+impl Serialize for HarnessId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Unknown(value) => value,
+            Self::Copilot => "copilot",
+            Self::Mock => "mock",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "copilot" => Self::Copilot,
+            "mock" => Self::Mock,
+            _ => Self::Unknown(Box::leak(value.into_boxed_str())),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -548,8 +562,15 @@ mod tests {
     #[test]
     fn harness_id_uses_kebab_case() {
         assert_eq!(
-            serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
-            "\"claude-code\""
+            serde_json::to_string(&HarnessId::Unknown("claude")).unwrap(),
+            "\"claude\""
         );
+    }
+
+    #[test]
+    fn legacy_harness_id_round_trips_without_failing_deserialization() {
+        let id: HarnessId = serde_json::from_str("\"codex\"").unwrap();
+        assert_eq!(id, HarnessId::Unknown("codex"));
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"codex\"");
     }
 }

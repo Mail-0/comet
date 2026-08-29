@@ -9274,9 +9274,7 @@ version = "0.2.29"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
  "futures",
- "libc",
  "reqwest",
  "serde",
  "serde_json",

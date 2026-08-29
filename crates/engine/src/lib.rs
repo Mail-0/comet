@@ -2,8 +2,8 @@
 //! run journal + crash recovery, and the IPC RPC server.
 //!
 //! Spec: ARCHITECTURE.md §5 and docs/research/feature-inventory.md §3. M2 surface:
-//! sessions + docs + commands + minimal IPC. Terminals, repos/diffs, uploads, auth,
-//! agent accounts, and the device-room host land in later milestones.
+//! sessions + docs + commands + minimal IPC. Terminals, repos/diffs, uploads,
+//! auth, and the device-room host land in later milestones.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,6 @@ use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 
 use zeron_sync::DocsStore;
 
-pub mod agent_accounts;
 pub mod auth;
 pub mod change_requests;
 pub mod chat2_host;
@@ -37,7 +36,6 @@ pub mod titles;
 pub mod uploads;
 pub mod workspace_host;
 
-pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use copilot::CopilotCredentialHolder;
@@ -128,7 +126,6 @@ pub struct EngineCore {
     pub diff_sync: CheckoutDiffSync,
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
-    pub agent_accounts: AgentAccounts,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -207,9 +204,6 @@ impl EngineCore {
         let device_id = load_or_create_device_id(data_dir)?;
         let copilot_credentials = CopilotCredentialHolder::default();
         registry.register_copilot(Arc::new(copilot_credentials.clone()));
-        // This device's harness enablement (Settings → Agents) rides the
-        // engine data dir — per-device, like the CLI installs it gates.
-        registry.load_prefs(data_dir);
         let store = Arc::new(DocsStore::open(profile.store_root())?);
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);
@@ -274,7 +268,6 @@ impl EngineCore {
                 uploads.clone(),
             )
         });
-        let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -299,7 +292,6 @@ impl EngineCore {
             diff_sync,
             spaces_sync,
             uploads,
-            agent_accounts,
             device_id,
             local_import,
             workspace_scope: profile.scope(),
@@ -428,7 +420,6 @@ impl EngineCore {
             self.change_requests.clone(),
             self.diff_sync.clone(),
             self.uploads.clone(),
-            self.agent_accounts.clone(),
             self.workspace_scope,
         )
         .with_auth(self.auth())
@@ -462,7 +453,6 @@ impl EngineCore {
     pub async fn shutdown(&self) {
         self.sessions.shutdown().await;
         self.terminals.shutdown();
-        self.agent_accounts.shutdown();
         self.change_requests.shutdown();
         // Cancel + await every worker that can reach Edge before flushing: a
         // replaced synced runtime must not keep polling releases or draining
@@ -770,11 +760,6 @@ impl Engine {
             core.set_updater(updater);
         }
         tracing::info!(device_id = %core.device_id, "engine core assembled");
-        // Managed ACP adapters install in the background at boot (agents
-        // whose CLI is present but whose adapter isn't yet), so a first chat
-        // never waits on — or dies inside — an npm run.
-        zeron_harness::acp::prewarm_managed_adapters();
-
         let host_relay = edge.as_ref().map(|edge| {
             let mut link_config =
                 zeron_rpc::LinkCacheConfig::new(edge.url.clone(), Arc::new(auth.clone()));
