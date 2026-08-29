@@ -203,24 +203,42 @@ fn request_task_error(operation: &'static str, error: impl std::fmt::Display) ->
     keiki_api::Error::TaskFailed(format!("{operation}: {error}"))
 }
 
-fn sync_mcp_server(state: &AppState) {
-    let Some(client) = state.keiki_client.as_ref() else {
-        zeron_engine::mcp::mcp_servers().clear();
+fn sync_mcp_server(state: &AppState, cx: &mut Context<AppState>) {
+    let servers = match (state.keiki_client.as_ref(), state.keiki_token.as_ref()) {
+        (Some(client), Some(token))
+            if state.keiki_status == SessionStatus::SignedIn && token.has_scope("mcp") =>
+        {
+            vec![zeron_harness::McpServerSpec {
+                name: "keiki".into(),
+                url: client.mcp_endpoint(),
+                bearer_token: token.access_token().to_owned(),
+            }]
+        }
+        _ => Vec::new(),
+    };
+    sync_mcp_servers_rpc(state, cx, servers);
+}
+
+fn sync_mcp_servers_rpc(
+    state: &AppState,
+    cx: &mut Context<AppState>,
+    servers: Vec<zeron_harness::McpServerSpec>,
+) {
+    let Some(engine) = state.engine().cloned() else {
+        tracing::warn!("Keiki MCP sync skipped because the engine is unavailable");
         return;
     };
-    let Some(token) = state.keiki_token.as_ref() else {
-        zeron_engine::mcp::mcp_servers().clear();
-        return;
-    };
-    if state.keiki_status != SessionStatus::SignedIn || !token.has_scope("mcp") {
-        zeron_engine::mcp::mcp_servers().clear();
-        return;
-    }
-    zeron_engine::mcp::mcp_servers().set(vec![zeron_harness::McpServerSpec {
-        name: "keiki".into(),
-        url: client.mcp_endpoint(),
-        bearer_token: token.access_token().to_owned(),
-    }]);
+    let task = cx.spawn(async move |_, _| {
+        let params = serde_json::json!({ "servers": servers });
+        if let Err(error) = engine
+            .client()
+            .call(zeron_rpc::methods::SET_MCP_SERVERS, params)
+            .await
+        {
+            tracing::warn!(error = %error, "Keiki MCP server sync failed");
+        }
+    });
+    task.detach();
 }
 
 pub(crate) async fn authorized<T, F, Fut>(
@@ -301,10 +319,10 @@ async fn refresh_keiki_token(
         .await
         .map_err(keiki_api::Error::Local)?;
     entity
-        .update(cx, |state, _| {
+        .update(cx, |state, cx| {
             state.keiki_token = Some(refreshed.clone());
             state.keiki_credentials = Some(refreshed_credentials);
-            sync_mcp_server(state);
+            sync_mcp_server(state, cx);
         })
         .map_err(|error| request_task_error("Keiki token state update", error))?;
     Ok(refreshed)
@@ -738,10 +756,10 @@ pub fn map_transcript(detail: &ConversationDetail) -> Vec<SessionMessageEntry> {
 
 pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
     let client = Client::new(api_url);
-    state.update(cx, |state, _| {
+    state.update(cx, |state, cx| {
         state.keiki_client = Some(client.clone());
         state.keiki_status = SessionStatus::Loading;
-        sync_mcp_server(state);
+        sync_mcp_server(state, cx);
     });
     let boot_state = state.clone();
     let credentials_task = cx.read_credentials(CREDENTIAL_KEY);
@@ -754,7 +772,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
             boot_state.update(cx, |state, cx| {
                 state.keiki_status = SessionStatus::SignedOut;
                 state.keiki_error = None;
-                sync_mcp_server(state);
+                sync_mcp_server(state, cx);
                 cx.notify();
             });
             return;
@@ -787,7 +805,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                     state.keiki_token = Some(tokens);
                     state.keiki_status = SessionStatus::SignedIn;
                     state.keiki_error = None;
-                    sync_mcp_server(state);
+                    sync_mcp_server(state, cx);
                     cx.notify();
                 });
                 poll(boot_state.downgrade(), cx).await;
@@ -804,7 +822,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                 boot_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
-                    sync_mcp_server(state);
+                    sync_mcp_server(state, cx);
                     cx.notify();
                 });
             }
@@ -813,7 +831,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                 boot_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
-                    sync_mcp_server(state);
+                    sync_mcp_server(state, cx);
                     cx.notify();
                 });
             }
@@ -846,7 +864,7 @@ async fn expire_keiki_session(
     let delete_credentials = entity
         .update(cx, |state, cx| {
             state.mark_keiki_signed_out(message.map(str::to_string));
-            sync_mcp_server(state);
+            sync_mcp_server(state, cx);
             let delete_credentials = cx.delete_credentials(CREDENTIAL_KEY);
             cx.notify();
             delete_credentials
@@ -1105,6 +1123,9 @@ async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
         if !signed_in {
             return;
         }
+        if let Err(error) = entity.update(cx, |state, cx| sync_mcp_server(state, cx)) {
+            tracing::warn!(%error, "Keiki MCP state sync setup failed");
+        }
         if token.should_refresh_within(Duration::from_secs(15 * 60)) {
             // A run can outlive this access token and lose Keiki tools mid-run;
             // a loopback proxy is the follow-up, not part of this change.
@@ -1237,13 +1258,13 @@ async fn complete_callback(
                 state.keiki_credentials = Some(credentials);
                 state.keiki_status = SessionStatus::SignedIn;
                 state.keiki_error = None;
-                sync_mcp_server(state);
+                sync_mcp_server(state, cx);
                 cx.notify();
             }
             Err(error) => {
                 state.keiki_status = SessionStatus::Error;
                 state.keiki_error = Some(error.to_string());
-                sync_mcp_server(state);
+                sync_mcp_server(state, cx);
                 tracing::warn!(error = %error, "Keiki sign-in failed");
                 cx.notify();
             }
@@ -1332,7 +1353,7 @@ pub fn begin_sign_in(
                     task_state.update(cx, |state, cx| {
                         state.keiki_status = SessionStatus::Error;
                         state.keiki_error = Some(error.to_string());
-                        sync_mcp_server(state);
+                        sync_mcp_server(state, cx);
                         cx.notify();
                     });
                     shell.set_sidebar_notice(format!("Keiki sign in failed: {error}"));
@@ -1352,7 +1373,7 @@ pub fn begin_sign_in(
                 task_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
-                    sync_mcp_server(state);
+                    sync_mcp_server(state, cx);
                     cx.notify();
                 });
                 return;
@@ -1361,7 +1382,7 @@ pub fn begin_sign_in(
                 task_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
-                    sync_mcp_server(state);
+                    sync_mcp_server(state, cx);
                     cx.notify();
                 });
                 return;

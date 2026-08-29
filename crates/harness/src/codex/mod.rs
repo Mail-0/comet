@@ -220,13 +220,14 @@ impl CodexHarness {
 }
 
 fn mcp_override_arguments(server: &crate::McpServerSpec) -> [String; 4] {
+    let environment_name = mcp_bearer_environment_name(&server.name);
     [
         "-c".into(),
         format!("mcp_servers.{}.url=\"{}\"", server.name, server.url),
         "-c".into(),
         format!(
-            "mcp_servers.{}.bearer_token_env_var=\"KEIKI_MCP_BEARER\"",
-            server.name
+            "mcp_servers.{}.bearer_token_env_var=\"{}\"",
+            server.name, environment_name
         ),
     ]
 }
@@ -235,12 +236,30 @@ fn configure_mcp_command(command: &mut Command, servers: &[crate::McpServerSpec]
     for server in servers {
         let arguments = mcp_override_arguments(server);
         command.args(arguments);
-        command.env(mcp_bearer_environment_name(), &server.bearer_token);
+        command.env(
+            mcp_bearer_environment_name(&server.name),
+            &server.bearer_token,
+        );
     }
 }
 
-fn mcp_bearer_environment_name() -> &'static str {
-    "KEIKI_MCP_BEARER"
+fn mcp_bearer_environment_name(server_name: &str) -> String {
+    let normalized_name: String = server_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let normalized_name = if normalized_name.is_empty() {
+        "SERVER"
+    } else {
+        normalized_name.as_str()
+    };
+    format!("KEIKI_MCP_BEARER_{normalized_name}")
 }
 
 /// `skills/list` result → picker commands. `data` groups skills by cwd; the
@@ -1588,7 +1607,7 @@ mod tests {
                 "-c",
                 "mcp_servers.keiki.url=\"https://onkeiki.com/mcp\"",
                 "-c",
-                "mcp_servers.keiki.bearer_token_env_var=\"KEIKI_MCP_BEARER\"",
+                "mcp_servers.keiki.bearer_token_env_var=\"KEIKI_MCP_BEARER_KEIKI\"",
             ]
         );
         assert!(
@@ -1596,6 +1615,13 @@ mod tests {
                 .iter()
                 .any(|argument| argument.contains("secret-token"))
         );
-        assert_eq!(mcp_bearer_environment_name(), "KEIKI_MCP_BEARER");
+        assert_eq!(
+            mcp_bearer_environment_name(&server.name),
+            "KEIKI_MCP_BEARER_KEIKI"
+        );
+        assert_ne!(
+            mcp_bearer_environment_name(&server.name),
+            mcp_bearer_environment_name("billing-prod")
+        );
     }
 }

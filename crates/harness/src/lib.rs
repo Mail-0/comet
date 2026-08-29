@@ -60,7 +60,7 @@ pub struct RunControls {
     pub mcp_servers: Vec<McpServerSpec>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpServerSpec {
     pub name: String,
     pub url: String,

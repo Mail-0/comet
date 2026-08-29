@@ -51,7 +51,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -74,6 +74,12 @@ use crate::workspace_host::WorkspaceHost;
 
 const FILE_SEARCH_RPC_TIMEOUT: Duration = Duration::from_secs(6);
 const FILE_SEARCH_FEATURED_PATHS: usize = 32;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetMcpServersParams {
+    servers: Vec<zeron_harness::McpServerSpec>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1139,6 +1145,11 @@ impl RpcService for EngineRpc {
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
             }
+            methods::SET_MCP_SERVERS => {
+                let p: SetMcpServersParams = parse_params(params)?;
+                self.sessions.set_mcp_servers(p.servers);
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
                 let harness = self
@@ -1916,6 +1927,29 @@ mod tests {
         .expect("ui param shape");
         assert_eq!(p.account_id, "acct-1");
         assert_eq!(p.harness, HarnessId::ClaudeCode);
+    }
+
+    #[test]
+    fn mcp_server_params_serialize_and_redact_tokens_in_debug() {
+        let params = SetMcpServersParams {
+            servers: vec![zeron_harness::McpServerSpec {
+                name: "keiki".into(),
+                url: "https://onkeiki.com/mcp".into(),
+                bearer_token: "secret-token".into(),
+            }],
+        };
+        let wire = serde_json::to_value(&params).expect("MCP params serialize");
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "servers": [{
+                    "name": "keiki",
+                    "url": "https://onkeiki.com/mcp",
+                    "bearer_token": "secret-token"
+                }]
+            })
+        );
+        assert!(!format!("{params:?}").contains("secret-token"));
     }
 
     #[test]

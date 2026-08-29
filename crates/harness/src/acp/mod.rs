@@ -1168,10 +1168,23 @@ struct Session {
 }
 
 fn http_mcp_supported(initialize_response: &Value) -> bool {
-    initialize_response
-        .get("mcpCapabilities")
-        .and_then(|capabilities| capabilities.get("http"))
-        .is_some_and(|http| http.as_bool() == Some(true) || http.is_object())
+    fn scan(value: &Value, depth: u8) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let Some(object) = value.as_object() else {
+            return false;
+        };
+        if let Some(http) = object
+            .get("mcpCapabilities")
+            .and_then(|capabilities| capabilities.get("http"))
+        {
+            return http.as_bool() == Some(true) || http.is_object();
+        }
+        object.values().any(|value| scan(value, depth - 1))
+    }
+
+    scan(initialize_response, 4)
 }
 
 fn session_parameters(cwd: &str, servers: &[crate::McpServerSpec], http_supported: bool) -> Value {
@@ -3425,14 +3438,16 @@ mod tests {
         let without_http = session_parameters(
             "/tmp",
             std::slice::from_ref(&server),
-            http_mcp_supported(&json!({ "mcpCapabilities": {} })),
+            http_mcp_supported(&json!({ "agentCapabilities": { "mcpCapabilities": {} } })),
         );
         assert_eq!(without_http["mcpServers"], json!([]));
 
         let with_http = session_parameters(
             "/tmp",
             &[server],
-            http_mcp_supported(&json!({ "mcpCapabilities": { "http": true } })),
+            http_mcp_supported(&json!({
+                "agentCapabilities": { "mcpCapabilities": { "http": true } }
+            })),
         );
         assert_eq!(
             with_http["mcpServers"],
@@ -3446,5 +3461,18 @@ mod tests {
                 }]
             }])
         );
+    }
+
+    #[test]
+    fn http_mcp_capability_is_found_in_v1_and_v2_nested_shapes() {
+        assert!(http_mcp_supported(&json!({
+            "agentCapabilities": { "mcpCapabilities": { "http": true } }
+        })));
+        assert!(http_mcp_supported(&json!({
+            "capabilities": { "mcpCapabilities": { "http": {} } }
+        })));
+        assert!(!http_mcp_supported(&json!({
+            "agentCapabilities": { "mcpCapabilities": { "stdio": true } }
+        })));
     }
 }

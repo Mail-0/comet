@@ -29,12 +29,6 @@ impl McpServerHolder {
     }
 }
 
-static MCP_SERVERS: std::sync::OnceLock<McpServerHolder> = std::sync::OnceLock::new();
-
-pub fn mcp_servers() -> &'static McpServerHolder {
-    MCP_SERVERS.get_or_init(McpServerHolder::default)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
