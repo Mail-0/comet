@@ -7254,12 +7254,9 @@ impl Shell {
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.9))
                         .when(!keiki_loading, |button| {
-                            button
-                                .cursor_pointer()
-                                .hover(|s| s.opacity(0.9))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.start_keiki_sign_in(cx)
-                                }))
+                            button.on_click(cx.listener(|this, _, _, cx| {
+                                this.start_keiki_sign_in(cx)
+                            }))
                         })
                         .child(SharedString::from(if keiki_loading {
                             "Opening Keiki…"

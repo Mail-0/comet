@@ -6190,7 +6190,13 @@ impl Render for Composer {
                         .child(
                             div()
                                 .text_color(theme.text_muted)
-                                .child("What the agent would say (draft — not sent)"),
+                                .child("Real agent turn — recorded on this conversation"),
+                        )
+                        .child(
+                            div()
+                                .mt(px(3.0))
+                                .text_color(theme.text_faint)
+                                .child("Nothing was sent to the contact"),
                         )
                         .child(div().mt(px(5.0)).child(SharedString::from(draft)))
                         .child(actions),

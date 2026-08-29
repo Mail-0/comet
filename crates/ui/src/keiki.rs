@@ -487,25 +487,63 @@ fn spawn_conversation_action<R: 'static>(
                     Err(error) => Err(error),
                 }
             }
-            ConversationAction::Steer => authorized(
-                &task_state.downgrade(),
-                client,
-                token,
-                credentials,
-                "Keiki steer",
-                move |client, access_token| {
-                    let locator = request_locator.clone();
-                    let text = request_text.clone();
-                    async move {
-                        client
-                            .steer_conversation(&access_token, &locator, text)
-                            .await
+            ConversationAction::Steer => {
+                let refresh_client = client.clone();
+                let refresh_token = token.clone();
+                let refresh_credentials = credentials.clone();
+                let steered = authorized(
+                    &task_state.downgrade(),
+                    client,
+                    token,
+                    credentials,
+                    "Keiki steer",
+                    move |client, access_token| {
+                        let locator = request_locator.clone();
+                        let text = request_text.clone();
+                        async move {
+                            client
+                                .steer_conversation(&access_token, &locator, text)
+                                .await
+                        }
+                    },
+                    cx,
+                )
+                .await;
+                match steered {
+                    Ok(response) => {
+                        let fetch_locator = locator.clone();
+                        let detail = match authorized(
+                            &task_state.downgrade(),
+                            refresh_client,
+                            refresh_token,
+                            refresh_credentials,
+                            "Keiki transcript refresh",
+                            move |client, access_token| {
+                                let locator = fetch_locator.clone();
+                                async move { client.conversation(&access_token, &locator).await }
+                            },
+                            cx,
+                        )
+                        .await
+                        {
+                            Ok(detail) => Some(detail),
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    %chat_id,
+                                    "Keiki transcript refresh after steer failed"
+                                );
+                                None
+                            }
+                        };
+                        Ok(ActionResult::Steered {
+                            reply: response.reply,
+                            detail,
+                        })
                     }
-                },
-                cx,
-            )
-            .await
-            .map(|response| ActionResult::Steered(response.reply)),
+                    Err(error) => Err(error),
+                }
+            }
         };
         task_state.update(cx, |state, cx| {
             let Some(conversation) = state.keiki_conversation.as_mut() else {
@@ -534,7 +572,12 @@ fn spawn_conversation_action<R: 'static>(
                         });
                     }
                 }
-                Ok(ActionResult::Steered(reply)) => conversation.steer_reply = Some(reply),
+                Ok(ActionResult::Steered { reply, detail }) => {
+                    conversation.steer_reply = Some(reply);
+                    if let Some(detail) = detail {
+                        state.apply_transcript(map_transcript(&detail));
+                    }
+                }
                 Err(error) => {
                     if matches!(
                         error,
@@ -560,7 +603,10 @@ enum ActionResult {
         response: keiki_api::SendConversationMessageResponse,
         detail: Option<ConversationDetail>,
     },
-    Steered(String),
+    Steered {
+        reply: String,
+        detail: Option<ConversationDetail>,
+    },
 }
 
 pub fn take_over<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
@@ -634,13 +680,28 @@ pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry>
         },
         parts: vec![MessagePart::Text {
             id: format!("{}:text", message.id),
-            text: message.content.clone(),
+            text: transcript_message_text(message),
         }],
         created_at: created_at.timestamp_millis(),
         device_id: DEVICE_ID.to_string(),
         status: None,
         continuation_of: None,
     })
+}
+
+fn transcript_message_text(message: &ConversationMessage) -> String {
+    if !message.internal {
+        return message.content.clone();
+    }
+    let label = message
+        .staff_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(
+            || "Internal turn".to_string(),
+            |name| format!("Internal turn — {name}"),
+        );
+    format!("**{label}**\n\n{}", message.content)
 }
 
 pub fn map_transcript(detail: &ConversationDetail) -> Vec<SessionMessageEntry> {
@@ -1206,6 +1267,34 @@ mod tests {
             staff_name: None,
         };
         assert_eq!(map_message(&message).unwrap().role, MessageRole::User);
+    }
+
+    #[test]
+    fn internal_messages_are_labeled_with_staff_name() {
+        let message = ConversationMessage {
+            id: "m".into(),
+            direction: MessageDirection::Outbound,
+            content: "I can help with that.".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            trace_id: None,
+            trace_duration_ms: None,
+            trace_status: None,
+            trace_model: None,
+            trace_tokens_in: None,
+            trace_tokens_out: None,
+            trace_total_steps: None,
+            trace_error: None,
+            internal: true,
+            staff_name: Some("Devin".into()),
+        };
+        let entry = map_message(&message).expect("internal messages map");
+        assert_eq!(
+            entry.parts,
+            vec![MessagePart::Text {
+                id: "m:text".into(),
+                text: "**Internal turn — Devin**\n\nI can help with that.".into(),
+            }]
+        );
     }
 
     #[test]
