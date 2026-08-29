@@ -4,6 +4,7 @@ members = [
     "crates/theme",
     "crates/keiki-model",
     "crates/keiki-api",
+    "crates/copilot",
     "crates/proto",
     "crates/doc",
     "crates/sync",

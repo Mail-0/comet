@@ -9205,6 +9205,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeron-copilot"
+version = "0.2.29"
+dependencies = [
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "zeron-proto",
+]
+
+[[package]]
 name = "zeron-doc"
 version = "0.2.29"
 dependencies = [
