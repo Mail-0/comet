@@ -243,9 +243,26 @@ where
             refresh_client.refresh_token(&refresh_credentials).await
         })
     });
-    let refreshed = refresh_task
-        .await
-        .map_err(|error| request_task_error("Keiki token refresh", error))??;
+    let refreshed = match refresh_task.await {
+        Ok(Ok(tokens)) => tokens,
+        Ok(Err(error)) => {
+            if let Err(cleanup_error) =
+                expire_keiki_session(entity, Some("Keiki session expired"), cx).await
+            {
+                tracing::error!(%cleanup_error, "Keiki session expiry cleanup failed");
+            }
+            return Err(error);
+        }
+        Err(error) => {
+            let refresh_error = request_task_error("Keiki token refresh", error);
+            if let Err(cleanup_error) =
+                expire_keiki_session(entity, Some("Keiki session expired"), cx).await
+            {
+                tracing::error!(%cleanup_error, "Keiki session expiry cleanup failed");
+            }
+            return Err(refresh_error);
+        }
+    };
     let refreshed_credentials = refreshed.stored_credentials(credentials.client_id.clone());
     persist_credentials(&credentials.client_id, &refreshed, entity, cx)
         .await
@@ -684,13 +701,11 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                 poll(boot_state.downgrade(), cx).await;
             }
             Ok(Err(error)) if error.is_invalid_refresh_token() => {
-                boot_state.update(cx, |state, cx| {
-                    state.keiki_status = SessionStatus::SignedOut;
-                    state.keiki_error = None;
-                    cx.delete_credentials(CREDENTIAL_KEY)
-                        .detach_and_log_err(&*cx);
-                    cx.notify();
-                });
+                if let Err(cleanup_error) =
+                    expire_keiki_session(&boot_state.downgrade(), None, cx).await
+                {
+                    tracing::warn!(%cleanup_error, "Keiki credential cleanup failed");
+                }
             }
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "Keiki credential restore failed");
@@ -727,6 +742,24 @@ async fn persist_credentials(
         })
         .map_err(|error| error.to_string())?;
     task.await.map_err(|error| error.to_string())
+}
+
+async fn expire_keiki_session(
+    entity: &WeakEntity<AppState>,
+    message: Option<&'static str>,
+    cx: &mut AsyncApp,
+) -> Result<(), keiki_api::Error> {
+    let delete_credentials = entity
+        .update(cx, |state, cx| {
+            state.mark_keiki_signed_out(message.map(str::to_string));
+            let delete_credentials = cx.delete_credentials(CREDENTIAL_KEY);
+            cx.notify();
+            delete_credentials
+        })
+        .map_err(|error| request_task_error("Keiki session expiry state update", error))?;
+    delete_credentials
+        .await
+        .map_err(|error| request_task_error("Keiki credential deletion", error))
 }
 
 pub(crate) async fn refresh_keiki_snapshot(
@@ -849,8 +882,30 @@ pub(crate) async fn create_agent_from_template(
 
 async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
     loop {
+        let signed_in =
+            match entity.update(cx, |state, _| state.keiki_status == SessionStatus::SignedIn) {
+                Ok(signed_in) => signed_in,
+                Err(error) => {
+                    tracing::warn!(%error, "Keiki poll state read failed");
+                    return;
+                }
+            };
+        if !signed_in {
+            return;
+        }
         if let Err(error) = refresh_keiki_snapshot(entity.clone(), cx).await {
             tracing::warn!(error = %error, "Keiki poll failed");
+            let signed_in =
+                match entity.update(cx, |state, _| state.keiki_status == SessionStatus::SignedIn) {
+                    Ok(signed_in) => signed_in,
+                    Err(error) => {
+                        tracing::warn!(%error, "Keiki poll state read failed");
+                        return;
+                    }
+                };
+            if !signed_in {
+                return;
+            }
             cx.background_executor()
                 .timer(Duration::from_secs(10))
                 .await;
@@ -1110,12 +1165,7 @@ pub fn sign_out(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) 
             };
         }
         state.update(cx, |state, cx| {
-            state.clear_keiki_rows();
-            state.keiki_token = None;
-            state.keiki_credentials = None;
-            state.keiki_flow = None;
-            state.keiki_status = SessionStatus::SignedOut;
-            state.keiki_error = None;
+            state.mark_keiki_signed_out(None);
             cx.delete_credentials(CREDENTIAL_KEY)
                 .detach_and_log_err(&*cx);
             cx.notify();

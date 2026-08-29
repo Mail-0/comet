@@ -990,6 +990,15 @@ impl AppState {
         }
     }
 
+    pub(crate) fn mark_keiki_signed_out(&mut self, error: Option<String>) {
+        self.clear_keiki_rows();
+        self.keiki_token = None;
+        self.keiki_credentials = None;
+        self.keiki_flow = None;
+        self.keiki_status = KeikiSessionStatus::SignedOut;
+        self.keiki_error = error;
+    }
+
     /// True when `device_id`'s engine (per its registry device row) is at
     /// least `min`. Unknown devices and unstamped versions are conservatively
     /// false — feature gates fall back to the legacy path rather than speak a
@@ -3354,6 +3363,56 @@ mod tests {
                 .iter()
                 .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
         );
+    }
+
+    #[test]
+    fn marking_keiki_signed_out_clears_session_and_owned_rows() {
+        let mut state = AppState::new();
+        state.apply_devices(vec![
+            device("engine-device", "Engine"),
+            crate::keiki::map_device(),
+        ]);
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:agent", crate::keiki::DEVICE_ID, "Agent", 2),
+        ]);
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:agent:+1555", 2, None),
+        ]);
+        state.selected_chat = Some("keiki-conv:agent:+1555".into());
+        state.keiki_credentials = Some(keiki_api::StoredCredentials {
+            client_id: "client".into(),
+            refresh_token: "refresh".into(),
+        });
+        state.keiki_error = Some("old error".into());
+        state.keiki_status = crate::keiki::SessionStatus::SignedIn;
+
+        state.mark_keiki_signed_out(Some("Keiki session expired".into()));
+
+        assert_eq!(state.keiki_status, crate::keiki::SessionStatus::SignedOut);
+        assert_eq!(state.keiki_error.as_deref(), Some("Keiki session expired"));
+        assert!(state.keiki_credentials.is_none());
+        assert!(
+            state
+                .devices
+                .iter()
+                .all(|device| device.id != crate::keiki::DEVICE_ID)
+        );
+        assert!(
+            state
+                .spaces
+                .iter()
+                .all(|space| !crate::keiki::is_keiki_space(&space.id))
+        );
+        assert!(
+            state
+                .chats
+                .iter()
+                .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
+        );
+        assert_eq!(state.selected_chat, None);
+        assert!(state.transcript.is_empty());
     }
 
     #[test]

@@ -23,7 +23,6 @@ use gpui::{
 };
 
 use gpui_tokio::Tokio;
-use keiki_api;
 use keiki_model::{AgentTemplateSummary, CreateAgentFromTemplate};
 use zeron_engine::InstanceLock;
 use zeron_proto::{AuthState, WorkspaceScope};
@@ -98,6 +97,7 @@ struct KeikiAgentDialog {
     error: Option<SharedString>,
     focus_pending: bool,
     template_task: Option<Task<()>>,
+    create_task: Option<Task<()>>,
     create_pending: bool,
 }
 
@@ -4565,6 +4565,7 @@ impl Shell {
             error: None,
             focus_pending: true,
             template_task: None,
+            create_task: None,
             create_pending: false,
         });
         let state = self.state.downgrade();
@@ -4660,6 +4661,9 @@ impl Shell {
                 if shell.keiki_agent_dialog.is_none() {
                     return;
                 }
+                if let Some(dialog) = shell.keiki_agent_dialog.as_mut() {
+                    dialog.create_task = None;
+                }
                 match outcome {
                     Ok(response) => {
                         let space_id = format!("{}{}", crate::keiki::AGENT_PREFIX, response.id);
@@ -4697,7 +4701,7 @@ impl Shell {
                 tracing::error!("update Keiki agent creation dialog: {error}");
             }
         });
-        dialog.template_task = Some(task);
+        dialog.create_task = Some(task);
         cx.notify();
     }
 
