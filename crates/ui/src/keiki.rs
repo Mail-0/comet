@@ -1270,6 +1270,66 @@ mod tests {
     }
 
     #[test]
+    fn small_conversation_mapping_preserves_all_messages() {
+        let messages = vec![
+            ConversationMessage {
+                id: "first".into(),
+                direction: MessageDirection::Inbound,
+                content: "Hello".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                trace_id: None,
+                trace_duration_ms: None,
+                trace_status: None,
+                trace_model: None,
+                trace_tokens_in: None,
+                trace_tokens_out: None,
+                trace_total_steps: None,
+                trace_error: None,
+                internal: false,
+                staff_name: None,
+            },
+            ConversationMessage {
+                id: "second".into(),
+                direction: MessageDirection::Outbound,
+                content: "Hi".into(),
+                created_at: "2026-01-01T00:01:00Z".into(),
+                trace_id: None,
+                trace_duration_ms: None,
+                trace_status: None,
+                trace_model: None,
+                trace_tokens_in: None,
+                trace_tokens_out: None,
+                trace_total_steps: None,
+                trace_error: None,
+                internal: false,
+                staff_name: None,
+            },
+        ];
+        let detail = ConversationDetail {
+            phone: "+15551234".into(),
+            meta: keiki_model::ConversationMeta {
+                contact_name: None,
+                contact_email: None,
+                agent_name: "Support".into(),
+                agent_id: Some("agent-1".into()),
+                message_count: messages.len() as u32,
+                first_seen: None,
+                last_seen: None,
+            },
+            messages,
+            agent: None,
+            blocked: false,
+            takeover: None,
+        };
+
+        let transcript = map_transcript(&detail);
+
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0].id, "first");
+        assert_eq!(transcript[1].id, "second");
+    }
+
+    #[test]
     fn internal_messages_are_labeled_with_staff_name() {
         let message = ConversationMessage {
             id: "m".into(),

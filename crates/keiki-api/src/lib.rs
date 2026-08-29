@@ -627,21 +627,11 @@ impl Client {
         let mut detail: ConversationDetail = self
             .send_json(self.conversation_authenticated_request(access_token, locator)?)
             .await?;
-        let initial_offset = detail
-            .meta
-            .message_count
-            .saturating_sub(CONVERSATION_MESSAGE_PAGE_LIMIT);
+        let Some(initial_offset) = newest_page_offset(detail.meta.message_count) else {
+            return Ok(detail);
+        };
         let mut messages = Vec::new();
         let mut offset = initial_offset;
-
-        if initial_offset == 0 {
-            let page_len = detail.messages.len();
-            messages.append(&mut detail.messages);
-            if page_len < CONVERSATION_MESSAGE_PAGE_LIMIT as usize {
-                return Ok(detail);
-            }
-            offset = CONVERSATION_MESSAGE_PAGE_LIMIT;
-        }
 
         loop {
             let page: ConversationDetail = self
@@ -911,6 +901,11 @@ fn newest_messages(
         .saturating_sub(CONVERSATION_MESSAGE_PAGE_LIMIT as usize);
     messages.drain(..first_message);
     messages
+}
+
+fn newest_page_offset(message_count: u32) -> Option<u32> {
+    (message_count > CONVERSATION_MESSAGE_PAGE_LIMIT)
+        .then(|| message_count - CONVERSATION_MESSAGE_PAGE_LIMIT)
 }
 
 impl AuthorizationFlow {
@@ -1633,5 +1628,15 @@ mod tests {
             newest.last().map(|message| message.id.as_str()),
             Some("502")
         );
+    }
+
+    #[test]
+    fn newest_page_offset_only_pages_conversations_over_the_limit() {
+        assert_eq!(newest_page_offset(0), None);
+        assert_eq!(newest_page_offset(1), None);
+        assert_eq!(newest_page_offset(499), None);
+        assert_eq!(newest_page_offset(500), None);
+        assert_eq!(newest_page_offset(501), Some(1));
+        assert_eq!(newest_page_offset(1001), Some(501));
     }
 }
