@@ -97,6 +97,7 @@ pub mod acp;
 pub(crate) mod adapter_install;
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 pub mod cursor;
 pub(crate) mod jsonrpc;
 pub mod mock;
@@ -257,6 +258,7 @@ pub(crate) fn crash_message(
 pub use acp::AcpHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
+pub use copilot::{CopilotCredentialSource, CopilotHarness};
 pub use cursor::CursorHarness;
 pub use opencode::OpencodeHarness;
 

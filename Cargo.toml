@@ -27,6 +27,7 @@ publish = false
 keiki-model = { path = "crates/keiki-model" }
 keiki-api = { path = "crates/keiki-api" }
 zeron-proto = { path = "crates/proto" }
+zeron-copilot = { path = "crates/copilot" }
 zeron-doc = { path = "crates/doc" }
 zeron-sync = { path = "crates/sync" }
 zeron-harness = { path = "crates/harness" }

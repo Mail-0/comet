@@ -774,7 +774,7 @@ async fn rpc_surface_over_in_memory_transport() {
         .call(zeron_rpc::methods::LIST_HARNESSES, serde_json::Value::Null)
         .await
         .unwrap();
-    assert_eq!(harnesses[0]["id"], "mock");
+    assert_eq!(harnesses[0]["id"], "copilot");
     let models = client
         .call(
             zeron_rpc::methods::LIST_MODELS,

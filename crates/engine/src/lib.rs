@@ -19,6 +19,7 @@ pub mod agent_accounts;
 pub mod auth;
 pub mod change_requests;
 pub mod chat2_host;
+pub mod copilot;
 pub mod diff_sync;
 pub mod doc_host;
 pub mod instance_lock;
@@ -39,6 +40,7 @@ pub mod workspace_host;
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
+pub use copilot::CopilotCredentialHolder;
 pub use diff_sync::{
     CheckoutDiffSync, DiffFileTextPair, DiffSidecar, DiffSnapshot, TurnSnapshot,
     capture_commit_diff, capture_diff, capture_diff_against, capture_turn_diff, merge_base,
@@ -119,6 +121,7 @@ pub struct EngineCore {
     pub doc_host: DocHost,
     pub workspace: WorkspaceHost,
     pub registry: Arc<HarnessRegistry>,
+    pub copilot_credentials: CopilotCredentialHolder,
     pub repos: Repos,
     pub terminals: Terminals,
     pub change_requests: CheckoutChangeRequests,
@@ -202,6 +205,8 @@ impl EngineCore {
         std::fs::create_dir_all(data_dir)?;
         let legacy_uploads_root = profile.claim_legacy_uploads_root()?;
         let device_id = load_or_create_device_id(data_dir)?;
+        let copilot_credentials = CopilotCredentialHolder::default();
+        registry.register_copilot(Arc::new(copilot_credentials.clone()));
         // This device's harness enablement (Settings → Agents) rides the
         // engine data dir — per-device, like the CLI installs it gates.
         registry.load_prefs(data_dir);
@@ -287,6 +292,7 @@ impl EngineCore {
             doc_host,
             workspace,
             registry,
+            copilot_credentials,
             repos,
             terminals,
             change_requests,
@@ -425,7 +431,8 @@ impl EngineCore {
             self.agent_accounts.clone(),
             self.workspace_scope,
         )
-        .with_auth(self.auth());
+        .with_auth(self.auth())
+        .with_copilot_credentials(self.copilot_credentials.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }

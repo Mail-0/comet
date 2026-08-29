@@ -254,6 +254,17 @@ impl HarnessRegistry {
         }
     }
 
+    pub fn register_copilot(&self, credentials: Arc<dyn zeron_harness::CopilotCredentialSource>) {
+        let id = HarnessId::Copilot;
+        self.slots().insert(
+            id,
+            Slot::Ready(Arc::new(zeron_harness::CopilotHarness::new(credentials))),
+        );
+        let mut order = self.order();
+        order.retain(|registered| *registered != id);
+        order.insert(0, id);
+    }
+
     /// Register a slot resolved on first `resolve` (the factory result is
     /// cached). `installed` is the CLI-presence probe run per `descriptors()`
     /// call; it must never spawn.
@@ -327,6 +338,7 @@ pub fn default_registry() -> HarnessRegistry {
     // claude/codex resolve doesn't pay the shell-startup latency inline.
     zeron_harness::shell_env::prewarm();
     let registry = HarnessRegistry::new();
+    registry.register_copilot(Arc::new(crate::CopilotCredentialHolder::default()));
     registry.register(Arc::new(MockHarness {
         script: vec![
             AgentEvent::TextDelta {
@@ -570,6 +582,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                HarnessId::Copilot,
                 HarnessId::Mock,
                 HarnessId::ClaudeCode,
                 HarnessId::Codex,

@@ -96,6 +96,13 @@ struct SetHarnessEnabledParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetCopilotCredentialsParams {
+    base_url: String,
+    access_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
@@ -404,6 +411,7 @@ pub struct EngineRpc {
     uploads: Uploads,
     agent_accounts: AgentAccounts,
     auth: Option<Auth>,
+    copilot_credentials: Option<crate::CopilotCredentialHolder>,
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<zeron_update::Updater>,
     local_import: Option<crate::local_import::LocalImporter>,
@@ -441,6 +449,7 @@ impl EngineRpc {
             uploads,
             agent_accounts,
             auth: None,
+            copilot_credentials: None,
             links: None,
             updater: None,
             local_import: None,
@@ -451,6 +460,11 @@ impl EngineRpc {
     /// Attach the auth service (AuthStatus + AuthRpc mutations).
     pub fn with_auth(mut self, auth: Auth) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    pub fn with_copilot_credentials(mut self, holder: crate::CopilotCredentialHolder) -> Self {
+        self.copilot_credentials = Some(holder);
         self
     }
 
@@ -1016,11 +1030,20 @@ fn doc_messages_stream(
 #[derive(Clone)]
 pub struct AuthRpc {
     auth: Auth,
+    copilot_credentials: Option<crate::CopilotCredentialHolder>,
 }
 
 impl AuthRpc {
     pub fn new(auth: Auth) -> Self {
-        Self { auth }
+        Self {
+            auth,
+            copilot_credentials: None,
+        }
+    }
+
+    pub fn with_copilot_credentials(mut self, holder: crate::CopilotCredentialHolder) -> Self {
+        self.copilot_credentials = Some(holder);
+        self
     }
 
     pub fn handles(method: &str) -> bool {
@@ -1069,6 +1092,9 @@ impl RpcService for AuthRpc {
             }
             methods::SIGN_OUT => {
                 self.auth.sign_out();
+                if let Some(holder) = &self.copilot_credentials {
+                    holder.clear();
+                }
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::LIST_ORGS => {
@@ -1122,9 +1148,11 @@ impl RpcService for EngineRpc {
             return self.forward(&target, method, params).await;
         }
         if AuthRpc::handles(method) {
-            return AuthRpc::new(self.auth()?.clone())
-                .handle(method, params)
-                .await;
+            let mut auth_rpc = AuthRpc::new(self.auth()?.clone());
+            if let Some(holder) = self.copilot_credentials.clone() {
+                auth_rpc = auth_rpc.with_copilot_credentials(holder);
+            }
+            return auth_rpc.handle(method, params).await;
         }
         match method {
             methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
@@ -1138,6 +1166,18 @@ impl RpcService for EngineRpc {
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
+            }
+            methods::SET_COPILOT_CREDENTIALS => {
+                let p: SetCopilotCredentialsParams = parse_params(params)?;
+                let holder = self
+                    .copilot_credentials
+                    .as_ref()
+                    .ok_or_else(|| RpcError::Failed("Copilot holder unavailable".into()))?;
+                holder.set(zeron_copilot::CopilotCredentials {
+                    base_url: p.base_url,
+                    access_token: p.access_token,
+                });
+                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;

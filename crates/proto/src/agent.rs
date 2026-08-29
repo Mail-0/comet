@@ -18,6 +18,8 @@ pub enum HarnessId {
     /// protocol (`opencode serve` — the same wire the opencode desktop app
     /// speaks).
     Opencode,
+    /// Dashboard Copilot, driven over the authenticated AG-UI HTTP stream.
+    Copilot,
     /// Test harness; never shown in production pickers.
     Mock,
 }

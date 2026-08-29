@@ -383,6 +383,11 @@ pub enum AgUiEvent {
         tool_call_id: String,
         delta: String,
     },
+    ToolCallChunk {
+        tool_call_id: Option<String>,
+        tool_call_name: Option<String>,
+        delta: Option<String>,
+    },
     ToolCallEnd {
         tool_call_id: String,
         input: Option<Value>,
@@ -526,6 +531,14 @@ impl AgUiEvent {
                     delta: wire.delta,
                 })
             }
+            "TOOL_CALL_CHUNK" => {
+                let wire: ToolCallChunkWire = serde_json::from_value(value)?;
+                Ok(Self::ToolCallChunk {
+                    tool_call_id: wire.tool_call_id,
+                    tool_call_name: wire.tool_call_name,
+                    delta: wire.delta,
+                })
+            }
             "TOOL_CALL_END" => {
                 let wire: ToolCallEndWire = serde_json::from_value(value)?;
                 Ok(Self::ToolCallEnd {
@@ -642,6 +655,17 @@ struct ToolCallArgsWire {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ToolCallChunkWire {
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    tool_call_name: Option<String>,
+    #[serde(default)]
+    delta: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ToolCallEndWire {
     tool_call_id: String,
     #[serde(default)]
@@ -740,7 +764,8 @@ impl ResumePayload {
 pub struct TurnMapper {
     assistant_message_id: Option<String>,
     tool_calls: HashMap<String, PendingToolCall>,
-    interrupt_ids: Vec<String>,
+    last_tool_call_id: Option<String>,
+    interrupts: Vec<Interrupt>,
 }
 
 #[derive(Debug)]
@@ -758,7 +783,7 @@ impl TurnMapper {
         match event {
             AgUiEvent::RunStarted { run_id, .. } => {
                 vec![AgentEvent::SessionStarted {
-                    harness: HarnessId::Mock,
+                    harness: HarnessId::Copilot,
                     model: "copilot".into(),
                     tools: Vec::new(),
                     cwd: String::new(),
@@ -796,6 +821,7 @@ impl TurnMapper {
                 tool_call_id,
                 tool_call_name,
             } => {
+                self.last_tool_call_id = Some(tool_call_id.clone());
                 self.tool_calls.insert(
                     tool_call_id,
                     PendingToolCall {
@@ -809,6 +835,7 @@ impl TurnMapper {
                 tool_call_id,
                 delta,
             } => {
+                self.last_tool_call_id = Some(tool_call_id.clone());
                 self.tool_calls
                     .entry(tool_call_id)
                     .or_insert_with(|| PendingToolCall {
@@ -819,10 +846,36 @@ impl TurnMapper {
                     .push_str(&delta);
                 Vec::new()
             }
+            AgUiEvent::ToolCallChunk {
+                tool_call_id,
+                tool_call_name,
+                delta,
+            } => {
+                let id = tool_call_id
+                    .or_else(|| self.last_tool_call_id.clone())
+                    .or_else(|| tool_call_name.clone())
+                    .unwrap_or_else(|| "unknown-tool-call".into());
+                self.last_tool_call_id = Some(id.clone());
+                let pending = self
+                    .tool_calls
+                    .entry(id)
+                    .or_insert_with(|| PendingToolCall {
+                        name: "unknown".into(),
+                        args: String::new(),
+                    });
+                if let Some(name) = tool_call_name {
+                    pending.name = name;
+                }
+                if let Some(delta) = delta {
+                    pending.args.push_str(&delta);
+                }
+                Vec::new()
+            }
             AgUiEvent::ToolCallEnd {
                 tool_call_id,
                 input,
             } => {
+                self.last_tool_call_id = Some(tool_call_id.clone());
                 let Some(pending) = self.tool_calls.remove(&tool_call_id) else {
                     return Vec::new();
                 };
@@ -854,33 +907,72 @@ impl TurnMapper {
                 outcome: Some(RunOutcome::Interrupt { interrupts }),
                 ..
             } => {
-                self.interrupt_ids
-                    .extend(interrupts.into_iter().map(|interrupt| interrupt.id));
-                Vec::new()
+                let events = self.flush_tool_calls();
+                self.interrupts.extend(interrupts);
+                events
             }
             AgUiEvent::RunFinished {
                 run_id,
                 outcome: Some(RunOutcome::Success),
                 result,
-            } => vec![AgentEvent::Done {
-                status: DoneStatus::Completed,
-                result: result.map(compact_json),
-                error: None,
-                session_id: Some(run_id),
-            }],
-            AgUiEvent::RunFinished { .. } => Vec::new(),
-            AgUiEvent::RunError { message } => vec![AgentEvent::Done {
-                status: DoneStatus::Errored,
-                result: None,
-                error: Some(message),
-                session_id: None,
-            }],
+            } => {
+                let mut events = self.flush_tool_calls();
+                events.push(AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: result.map(compact_json),
+                    error: None,
+                    session_id: Some(run_id),
+                });
+                events
+            }
+            AgUiEvent::RunFinished { run_id, result, .. } => {
+                let mut events = self.flush_tool_calls();
+                events.push(AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: result.map(compact_json),
+                    error: None,
+                    session_id: Some(run_id),
+                });
+                events
+            }
+            AgUiEvent::RunError { message } => {
+                let mut events = self.flush_tool_calls();
+                events.push(AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: Some(message),
+                    session_id: None,
+                });
+                events
+            }
             AgUiEvent::Unknown { .. } => Vec::new(),
         }
     }
 
+    fn flush_tool_calls(&mut self) -> Vec<AgentEvent> {
+        self.tool_calls
+            .drain()
+            .map(|(id, pending)| AgentEvent::ToolCall {
+                id,
+                call: ToolCall::Unknown {
+                    name: pending.name,
+                    input: (!pending.args.is_empty())
+                        .then(|| serde_json::from_str(&pending.args).ok())
+                        .flatten(),
+                },
+            })
+            .collect()
+    }
+
+    pub fn take_interrupts(&mut self) -> Vec<Interrupt> {
+        std::mem::take(&mut self.interrupts)
+    }
+
     pub fn take_interrupt_ids(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.interrupt_ids)
+        self.take_interrupts()
+            .into_iter()
+            .map(|interrupt| interrupt.id)
+            .collect()
     }
 }
 
@@ -992,6 +1084,75 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
         let mut mapper = TurnMapper::new();
         assert!(mapper.handle(event).is_empty());
         assert_eq!(mapper.take_interrupt_ids(), vec!["i1"]);
+    }
+
+    #[test]
+    fn missing_finish_outcome_completes_the_run() {
+        let event = AgUiEvent::from_json(r#"{"type":"RUN_FINISHED","runId":"r"}"#).unwrap();
+        let mut mapper = TurnMapper::new();
+        assert_eq!(
+            mapper.handle(event),
+            vec![AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: Some("r".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn chunked_tool_calls_inherit_ids_and_flush_at_completion() {
+        let events = events_from_chunks(&[
+            b"data: {\"type\":\"TOOL_CALL_CHUNK\",\"toolCallName\":\"search\",\"delta\":\"{\\\"query\\\":\\\"hel\"}\n\n",
+            b"data: {\"type\":\"TOOL_CALL_CHUNK\",\"delta\":\"lo\\\"}\"}\n\n",
+            b"data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\"}\n\n",
+        ]);
+        let mut mapper = TurnMapper::new();
+        let mapped = events
+            .into_iter()
+            .flat_map(|event| mapper.handle(event))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mapped,
+            vec![
+                AgentEvent::ToolCall {
+                    id: "search".into(),
+                    call: ToolCall::Unknown {
+                        name: "search".into(),
+                        input: Some(serde_json::json!({"query": "hello"})),
+                    },
+                },
+                AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: None,
+                    error: None,
+                    session_id: Some("r".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn incomplete_tool_calls_flush_before_errors() {
+        let events = events_from_chunks(&[
+            b"data: {\"type\":\"TOOL_CALL_CHUNK\",\"toolCallId\":\"call\",\"toolCallName\":\"search\",\"delta\":\"{\\\"query\\\":\\\"hel\"}\n\n",
+            b"data: {\"type\":\"RUN_ERROR\",\"message\":\"failed\"}\n\n",
+        ]);
+        let mut mapper = TurnMapper::new();
+        let mapped = events
+            .into_iter()
+            .flat_map(|event| mapper.handle(event))
+            .collect::<Vec<_>>();
+        assert!(matches!(mapped.first(), Some(AgentEvent::ToolCall { id, .. }) if id == "call"));
+        assert!(matches!(
+            mapped.last(),
+            Some(AgentEvent::Done {
+                status: DoneStatus::Errored,
+                error: Some(message),
+                ..
+            }) if message == "failed"
+        ));
     }
 
     #[test]
