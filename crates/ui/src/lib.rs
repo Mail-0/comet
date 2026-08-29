@@ -85,7 +85,7 @@ fn open_main_window(config: UiConfig, cx: &mut App) {
         move |window, cx| {
             window.set_rem_size(px(typography::font_size(cx).pixels()));
             appearance::observe_window(window, cx).detach();
-            cx.new(|_| shell::Shell::new(config.api_base_url))
+            cx.new(|cx| shell::Shell::new(config.api_base_url, window, cx))
         },
     )
     .expect("failed to open window");

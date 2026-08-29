@@ -1,4 +1,4 @@
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, actions};
+use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, actions};
 
 use crate::appearance::{self, AppearanceMode};
 
@@ -30,9 +30,6 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
-    cx.on_action(|_: &Zoom, cx| with_active_window(cx, |window| window.zoom_window()));
-    cx.on_action(|_: &CloseWindow, cx| with_active_window(cx, |window| window.remove_window()));
     cx.on_action(|_: &AppearanceSystem, cx| appearance::set_mode(AppearanceMode::System, cx));
     cx.on_action(|_: &AppearanceLight, cx| appearance::set_mode(AppearanceMode::Light, cx));
     cx.on_action(|_: &AppearanceDark, cx| appearance::set_mode(AppearanceMode::Dark, cx));
@@ -94,10 +91,4 @@ pub fn app_menus() -> Vec<Menu> {
         ]));
     }
     menus
-}
-
-fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
-    if let Some(window) = cx.active_window() {
-        window.update(cx, |_, window, _| f(window)).ok();
-    }
 }

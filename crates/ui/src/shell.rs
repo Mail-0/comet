@@ -1,11 +1,12 @@
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, WindowControlArea, div,
+    AnyElement, Context, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window, WindowControlArea, div,
     prelude::FluentBuilder as _, px,
 };
 use keiki_api::Client;
 use keiki_model::{AgentStatus, AgentSummary, sort_agents};
 
+use crate::app_menus;
 use crate::icons::{self, icon};
 use crate::theme::Theme;
 
@@ -13,14 +14,18 @@ pub struct Shell {
     _client: Client,
     agents: Vec<AgentSummary>,
     selected_agent_id: Option<String>,
+    focus_handle: FocusHandle,
 }
 
 impl Shell {
-    pub fn new(api_base_url: String) -> Self {
+    pub fn new(api_base_url: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
         Self {
             _client: Client::new(api_base_url),
             agents: Vec::new(),
             selected_agent_id: None,
+            focus_handle,
         }
     }
 
@@ -78,6 +83,7 @@ impl Shell {
                 div()
                     .h(px(44.0))
                     .px(px(16.0))
+                    .when(cfg!(target_os = "macos"), |header| header.pl(px(80.0)))
                     .flex()
                     .items_center()
                     .gap(px(9.0))
@@ -115,7 +121,11 @@ impl Shell {
                             .border_1()
                             .border_color(theme.border)
                             .text_color(theme.text_muted)
-                            .child(icon(icons::PLUS).size(px(14.0))),
+                            .child(
+                                icon(icons::PLUS)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            ),
                     ),
             )
             .child(
@@ -232,6 +242,16 @@ impl Render for Shell {
             .bg(theme.bg)
             .text_color(theme.text)
             .font_family(theme.font_sans.clone())
+            .track_focus(&self.focus_handle)
+            .on_action(|_: &app_menus::Minimize, window, _| {
+                window.minimize_window();
+            })
+            .on_action(|_: &app_menus::Zoom, window, _| {
+                window.zoom_window();
+            })
+            .on_action(|_: &app_menus::CloseWindow, window, _| {
+                window.remove_window();
+            })
             .child(self.render_sidebar(&theme, cx))
             .child(self.render_content(&theme))
     }
