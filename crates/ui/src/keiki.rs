@@ -85,7 +85,11 @@ pub fn map_agent(agent: &keiki_model::AgentSummary) -> Space {
 
 pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Option<Chat> {
     let agent_id = conversation.agent_id.as_deref()?;
-    let created_at = parse_timestamp(&conversation.last_message_at)?;
+    let created_at = timestamp_or_now(
+        &conversation.last_message_at,
+        "lastMessageAt",
+        "conversation",
+    );
     Some(Chat {
         id: chat_id(agent_id, &conversation.phone),
         device_id: DEVICE_ID.to_string(),
@@ -113,9 +117,42 @@ pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Opti
 }
 
 pub fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    let mut normalized = value.replacen(' ', "T", 1);
+    if let Some(time_start) = normalized.find('T')
+        && let Some(offset_start) =
+            normalized[time_start + 1..]
+                .char_indices()
+                .rev()
+                .find_map(|(index, character)| {
+                    (character == '+' || character == '-').then_some(time_start + 1 + index)
+                })
+    {
+        let offset = &normalized[offset_start..];
+        if offset.len() == 3
+            && offset.as_bytes()[1].is_ascii_digit()
+            && offset.as_bytes()[2].is_ascii_digit()
+        {
+            normalized.push_str(":00");
+        }
+    }
+    DateTime::parse_from_rfc3339(&normalized)
         .ok()
         .map(|value| value.with_timezone(&Utc))
+}
+
+fn timestamp_or_now(value: &str, field: &'static str, object: &'static str) -> DateTime<Utc> {
+    parse_timestamp(value).unwrap_or_else(|| {
+        tracing::warn!(
+            field,
+            object,
+            value = %value,
+            "Keiki timestamp could not be parsed; using current time"
+        );
+        Utc::now()
+    })
 }
 
 fn request_task_error(operation: &'static str, error: impl std::fmt::Display) -> keiki_api::Error {
@@ -124,7 +161,7 @@ fn request_task_error(operation: &'static str, error: impl std::fmt::Display) ->
 }
 
 pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry> {
-    let created_at = parse_timestamp(&message.created_at)?;
+    let created_at = timestamp_or_now(&message.created_at, "createdAt", "message");
     Some(SessionMessageEntry {
         id: message.id.clone(),
         role: match message.direction {
@@ -726,8 +763,10 @@ pub fn sign_out(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) 
             };
         }
         state.update(cx, |state, cx| {
+            state.clear_keiki_rows();
             state.keiki_token = None;
             state.keiki_credentials = None;
+            state.keiki_flow = None;
             state.keiki_status = SessionStatus::SignedOut;
             state.keiki_error = None;
             cx.delete_credentials(CREDENTIAL_KEY)
@@ -780,5 +819,61 @@ mod tests {
                 .timestamp(),
             1_767_218_400
         );
+    }
+
+    #[test]
+    fn parses_postgres_timestamps_with_fractional_seconds() {
+        assert_eq!(
+            parse_timestamp("2026-08-28 16:58:29.714004+00")
+                .unwrap()
+                .to_rfc3339(),
+            "2026-08-28T16:58:29.714004+00:00"
+        );
+    }
+
+    #[test]
+    fn parses_postgres_timestamps_without_fractional_seconds() {
+        assert_eq!(
+            parse_timestamp("2026-08-28 16:58:29+00")
+                .unwrap()
+                .to_rfc3339(),
+            "2026-08-28T16:58:29+00:00"
+        );
+    }
+
+    #[test]
+    fn parses_space_separated_timestamps_with_trailing_z() {
+        assert_eq!(
+            parse_timestamp("2026-08-28 16:58:29.7Z")
+                .unwrap()
+                .to_rfc3339(),
+            "2026-08-28T16:58:29.700+00:00"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_timestamps() {
+        assert_eq!(parse_timestamp("not-a-timestamp"), None);
+    }
+
+    #[test]
+    fn conversation_with_invalid_timestamp_is_kept() {
+        let conversation: keiki_model::ConversationSummary =
+            serde_json::from_value(serde_json::json!({
+                "phone": "+15551234",
+                "contactName": null,
+                "agentName": "Support",
+                "agentId": "agent-1",
+                "apiKey": "redacted-test-key",
+                "lastMessage": "Hello",
+                "lastMessageAt": "not-a-timestamp",
+                "lastDirection": "inbound",
+                "messageCount": 1,
+                "isActive": true,
+                "hasErrors": false
+            }))
+            .unwrap();
+
+        assert!(map_conversation(&conversation).is_some());
     }
 }

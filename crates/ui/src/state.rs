@@ -951,6 +951,38 @@ impl AppState {
         }
     }
 
+    /// Remove all rows owned by Keiki without changing the engine snapshot
+    /// or its synchronization state.
+    pub fn clear_keiki_rows(&mut self) {
+        let selected_keiki_chat = self
+            .selected_chat
+            .as_deref()
+            .is_some_and(crate::keiki::is_keiki_chat);
+
+        self.devices
+            .retain(|device| device.id != crate::keiki::DEVICE_ID);
+        if self.selected_device.as_deref() == Some(crate::keiki::DEVICE_ID) {
+            self.selected_device = None;
+        }
+
+        self.spaces
+            .retain(|space| !crate::keiki::is_keiki_space(&space.id));
+        if let Some(selected) = &self.selected_space
+            && !self.spaces.iter().any(|space| &space.id == selected)
+        {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+
+        self.chats
+            .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        if selected_keiki_chat {
+            self.selected_chat = None;
+            self.transcript.clear();
+            self.transcript_replayed = false;
+            self.transcript_task = None;
+        }
+    }
+
     /// True when `device_id`'s engine (per its registry device row) is at
     /// least `min`. Unknown devices and unstamped versions are conservatively
     /// false — feature gates fall back to the legacy path rather than speak a
@@ -3205,6 +3237,57 @@ mod tests {
                 .chats
                 .iter()
                 .any(|chat| chat.id == "keiki-conv:agent:+1555")
+        );
+    }
+
+    #[test]
+    fn clearing_keiki_rows_preserves_engine_state() {
+        let mut state = AppState::new();
+        state.apply_devices(vec![device("engine-device", "Engine")]);
+        state.devices.push(crate::keiki::map_device());
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:agent", crate::keiki::DEVICE_ID, "Agent", 2),
+        ]);
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:agent:+1555", 2, None),
+        ]);
+        state.spaces_synced = true;
+        state.chats_synced = false;
+        state.selected_device = Some(crate::keiki::DEVICE_ID.into());
+        state.selected_space = Some("keiki-agent:agent".into());
+        state.selected_chat = Some("engine-chat".into());
+        state.transcript = vec![user_entry("engine-entry")];
+        state.transcript_replayed = true;
+
+        state.clear_keiki_rows();
+
+        assert_eq!(state.devices, vec![device("engine-device", "Engine")]);
+        assert_eq!(state.spaces[0].id, "engine-space");
+        assert_eq!(state.chats[0].id, "engine-chat");
+        assert_eq!(state.selected_space.as_deref(), Some("engine-space"));
+        assert_eq!(state.selected_device, None);
+        assert_eq!(state.selected_chat.as_deref(), Some("engine-chat"));
+        assert_eq!(state.transcript, vec![user_entry("engine-entry")]);
+        assert!(state.transcript_replayed);
+        assert!(state.spaces_synced);
+        assert!(!state.chats_synced);
+
+        state.chats.push(chat("keiki-conv:agent:+1666", 3, None));
+        state.selected_chat = Some("keiki-conv:agent:+1666".into());
+        state.transcript = vec![user_entry("keiki-entry")];
+        state.transcript_replayed = true;
+        state.clear_keiki_rows();
+
+        assert_eq!(state.selected_chat, None);
+        assert!(state.transcript.is_empty());
+        assert!(!state.transcript_replayed);
+        assert!(
+            state
+                .chats
+                .iter()
+                .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
         );
     }
 
