@@ -41,7 +41,6 @@ fn controls() -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
-        mcp_servers: Vec::new(),
     };
     (controls, steer_tx, token)
 }

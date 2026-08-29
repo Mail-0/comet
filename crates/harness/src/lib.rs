@@ -56,26 +56,6 @@ pub struct RunControls {
     /// interrupt, then escalates to SIGTERM/SIGKILL on the child after a grace
     /// period. The run's stream ends with `Done { status: Interrupted }`.
     pub interrupt: CancellationToken,
-    /// Runtime-only MCP servers; never serialized into a persisted run request.
-    pub mcp_servers: Vec<McpServerSpec>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct McpServerSpec {
-    pub name: String,
-    pub url: String,
-    pub bearer_token: String,
-}
-
-impl std::fmt::Debug for McpServerSpec {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("McpServerSpec")
-            .field("name", &self.name)
-            .field("url", &self.url)
-            .field("bearer_token", &"[redacted]")
-            .finish()
-    }
 }
 
 #[async_trait]

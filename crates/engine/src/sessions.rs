@@ -35,7 +35,6 @@ use zeron_proto::{
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
-use crate::mcp::McpServerHolder;
 use crate::registry::HarnessRegistry;
 use crate::run_journal::RunJournal;
 use crate::{EngineError, new_id, now_ms};
@@ -159,7 +158,6 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
-    mcp_servers: McpServerHolder,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -179,7 +177,6 @@ impl SessionsEngine {
         device_id: String,
         journal: Arc<RunJournal>,
         registry: Arc<HarnessRegistry>,
-        mcp_servers: McpServerHolder,
     ) -> Self {
         let (sessions_tx, _) = watch::channel(Vec::new());
         Self {
@@ -196,7 +193,6 @@ impl SessionsEngine {
                 harness_sessions: Mutex::new(HashMap::new()),
                 titles: OnceLock::new(),
                 turn_listener: OnceLock::new(),
-                mcp_servers,
             }),
         }
     }
@@ -216,10 +212,6 @@ impl SessionsEngine {
     /// already treats a missing doc host as "not wired".
     pub fn clear_doc_host(&self) {
         lock(&self.inner.doc_host).take();
-    }
-
-    pub fn set_mcp_servers(&self, servers: Vec<zeron_harness::McpServerSpec>) {
-        self.inner.mcp_servers.set(servers);
     }
 
     /// Wire the chat auto-titler (called once at engine assembly). After each
@@ -453,7 +445,6 @@ impl SessionsEngine {
             request_input,
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
-            mcp_servers: self.inner.mcp_servers.snapshot(),
         };
 
         lock(&self.inner.runs).insert(

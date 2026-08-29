@@ -227,14 +227,7 @@ impl Client {
 
     pub async fn discover_oauth(&self, requested_scope: &str) -> Result<(), Error> {
         const AUTHORIZATION_SERVER_METADATA: &str = "/.well-known/oauth-authorization-server";
-        let mcp_requested = requested_scope
-            .split_ascii_whitespace()
-            .any(|scope| scope == "mcp");
-        let protected_resource_metadata = if mcp_requested {
-            "/.well-known/oauth-protected-resource/mcp"
-        } else {
-            "/.well-known/oauth-protected-resource/api/webapp"
-        };
+        let protected_resource_metadata = "/.well-known/oauth-protected-resource/api/webapp";
         let metadata: AuthorizationServerMetadata = self
             .send_contract_json(
                 self.http.get(self.endpoint(AUTHORIZATION_SERVER_METADATA)),
@@ -307,11 +300,7 @@ impl Client {
                 protected_resource_metadata,
             )
             .await?;
-        let expected_resource = if mcp_requested {
-            self.mcp_endpoint()
-        } else {
-            self.endpoint("/api/webapp")
-        };
+        let expected_resource = self.endpoint("/api/webapp");
         if resource.resource != expected_resource {
             return Err(Error::OAuthContract {
                 endpoint: protected_resource_metadata,
@@ -334,16 +323,15 @@ impl Client {
                 ),
             });
         }
-        let resource_scope = if mcp_requested { "mcp" } else { "manage" };
         if !resource
             .scopes_supported
             .iter()
-            .any(|scope| scope == resource_scope)
+            .any(|scope| scope == "manage")
         {
             return Err(Error::OAuthContract {
                 endpoint: protected_resource_metadata,
                 detail: format!(
-                    "scopes_supported was {:?}, expected {resource_scope}",
+                    "scopes_supported was {:?}, expected manage",
                     resource.scopes_supported,
                 ),
             });
@@ -415,14 +403,7 @@ impl Client {
         requested_scope: &str,
     ) -> Result<Url, Error> {
         let mut url = Url::parse(&self.endpoint("/oauth/authorize"))?;
-        let resource = if requested_scope
-            .split_ascii_whitespace()
-            .any(|scope| scope == "mcp")
-        {
-            self.mcp_endpoint()
-        } else {
-            self.endpoint("/api/webapp")
-        };
+        let resource = self.endpoint("/api/webapp");
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", &flow.client_id)
@@ -861,10 +842,6 @@ impl Client {
         format!("{}{}", self.base_url, path)
     }
 
-    pub fn mcp_endpoint(&self) -> String {
-        self.endpoint("/mcp")
-    }
-
     async fn send_json<T: DeserializeOwned>(
         &self,
         request: reqwest::RequestBuilder,
@@ -1122,11 +1099,10 @@ fn validate_supported_scopes(
     if require_manage {
         required.push("manage");
     }
-    if requested_scope
-        .split_ascii_whitespace()
-        .any(|scope| scope == "mcp")
-    {
-        required.push("mcp");
+    for scope in requested_scope.split_ascii_whitespace() {
+        if !required.contains(&scope) {
+            required.push(scope);
+        }
     }
     if let Some(missing) = required
         .into_iter()
@@ -1296,51 +1272,15 @@ mod tests {
     }
 
     #[test]
-    fn authorization_url_supports_mcp_scope_and_resource() {
-        let client = Client::new("https://keiki.example/");
-        let flow = AuthorizationFlow::from_parts(
-            CLIENT_ID.into(),
-            REDIRECT_URI.into(),
-            VERIFIER.into(),
-            CHALLENGE.into(),
-            "state-123".into(),
-        );
-        let url = client.authorization_url(&flow, "mcp manage").unwrap();
-        let query = url
-            .query_pairs()
-            .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(
-            query.get("scope").map(|value| value.as_ref()),
-            Some("mcp manage")
-        );
-        assert_eq!(
-            query.get("resource").map(|value| value.as_ref()),
-            Some("https://keiki.example/mcp")
-        );
-    }
-
-    #[test]
-    fn supported_scope_validation_requires_requested_mcp_only_when_requested() {
-        let manage = vec!["manage".to_string()];
-        assert!(validate_supported_scopes(&manage, "manage", true).is_ok());
-        assert!(validate_supported_scopes(&manage, "mcp manage", true).is_err());
-        let both = vec!["manage".to_string(), "mcp".to_string()];
-        assert!(validate_supported_scopes(&both, "mcp manage", true).is_ok());
-    }
-
-    #[test]
-    fn token_scopes_and_mcp_endpoint_are_available() {
-        let client = Client::new("https://keiki.example/");
-        assert_eq!(client.mcp_endpoint(), "https://keiki.example/mcp");
+    fn token_scopes_are_available() {
         let token = TokenSet::try_from(TokenResponse {
             access_token: "access".into(),
             refresh_token: "refresh".into(),
             token_type: "Bearer".into(),
             expires_in: 3600,
-            scope: "mcp manage".into(),
+            scope: "manage".into(),
         })
         .unwrap();
-        assert!(token.has_scope("mcp"));
         assert!(token.has_scope("manage"));
         assert!(!token.has_scope("other"));
     }

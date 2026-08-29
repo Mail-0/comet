@@ -3177,10 +3177,6 @@ impl Shell {
         crate::keiki::begin_sign_in(self.state.clone(), "manage", cx);
     }
 
-    fn connect_keiki_tools(&mut self, cx: &mut Context<Self>) {
-        crate::keiki::begin_sign_in(self.state.clone(), "mcp manage", cx);
-    }
-
     // ---- org gate ----
 
     fn ensure_org_ui(&mut self, cx: &mut Context<Self>) {
@@ -4833,12 +4829,6 @@ impl Shell {
         let open = self.user_menu.is_open();
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
         let keiki_status = self.state.read(cx).keiki_status;
-        let keiki_tools_connected = self
-            .state
-            .read(cx)
-            .keiki_token
-            .as_ref()
-            .is_some_and(|token| token.has_scope("mcp"));
         let keiki_error = self.state.read(cx).keiki_error.clone();
         // Bottom-of-sidebar identity: avatar circle + scope/account label and
         // its secondary status line.
@@ -5008,41 +4998,21 @@ impl Shell {
                 .when(
                     keiki_status == crate::keiki::SessionStatus::SignedIn,
                     |menu| {
-                        let tools_row = popover::menu_row(theme, false, "user-menu-keiki-tools")
-                            .id("user-menu-keiki-tools")
-                            .when(!keiki_tools_connected, |row| {
-                                row.on_click(cx.listener(|this, _, _, cx| {
-                                    this.connect_keiki_tools(cx);
+                        menu.child(
+                            popover::menu_row(theme, false, "user-menu-keiki-signout")
+                                .id("user-menu-keiki-signout")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    crate::keiki::sign_out(this.state.clone(), cx).detach();
                                     this.close_user_menu(cx);
                                 }))
-                            })
-                            .when(keiki_tools_connected, |row| row.opacity(0.6))
-                            .child(
-                                icon(icons::GLOBAL)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from(if keiki_tools_connected {
-                                "Keiki tools connected"
-                            } else {
-                                "Connect Keiki tools…"
-                            }));
-                        menu.child(tools_row)
-                            .child(
-                                popover::menu_row(theme, false, "user-menu-keiki-signout")
-                                    .id("user-menu-keiki-signout")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        crate::keiki::sign_out(this.state.clone(), cx).detach();
-                                        this.close_user_menu(cx);
-                                    }))
-                                    .child(
-                                        icon(icons::LOGOUT_2)
-                                            .size(px(16.0))
-                                            .text_color(theme.text_muted),
-                                    )
-                                    .child(SharedString::from("Sign out of Keiki")),
-                            )
-                            .child(popover::menu_separator())
+                                .child(
+                                    icon(icons::LOGOUT_2)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Sign out of Keiki")),
+                        )
+                        .child(popover::menu_separator())
                     },
                 )
                 .when(
@@ -8403,6 +8373,58 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keiki_chat(id: &str) -> zeron_proto::Chat {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "deviceId": "device",
+            "archived": false,
+            "createdAt": "2024-01-01T00:00:00Z",
+        }))
+        .expect("test chat")
+    }
+
+    #[test]
+    fn prune_pinned_keiki_conversations_drops_stale_ids() {
+        let mut pinned = vec![
+            "keiki-conv:agent:stale".to_string(),
+            "keiki-conv:agent:live".to_string(),
+        ];
+        let chats = vec![keiki_chat("keiki-conv:agent:live")];
+
+        prune_pinned_keiki_conversations(&mut pinned, &chats);
+
+        assert_eq!(pinned, vec!["keiki-conv:agent:live"]);
+    }
+
+    #[test]
+    fn prune_pinned_keiki_conversations_keeps_live_ids() {
+        let mut pinned = vec!["keiki-conv:agent:live".to_string()];
+        let chats = vec![keiki_chat("keiki-conv:agent:live")];
+
+        prune_pinned_keiki_conversations(&mut pinned, &chats);
+
+        assert_eq!(pinned, vec!["keiki-conv:agent:live"]);
+    }
+
+    #[test]
+    fn prune_pinned_keiki_conversations_skips_empty_keiki_snapshot() {
+        let mut pinned = vec![
+            "keiki-conv:agent:live".to_string(),
+            "keiki-conv:other:also-live".to_string(),
+        ];
+        let chats = vec![keiki_chat("zeron-chat")];
+
+        prune_pinned_keiki_conversations(&mut pinned, &chats);
+
+        assert_eq!(
+            pinned,
+            vec![
+                "keiki-conv:agent:live".to_string(),
+                "keiki-conv:other:also-live".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn every_default_shortcut_binds_on_this_platform() {

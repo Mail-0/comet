@@ -23,7 +23,6 @@ pub mod diff_sync;
 pub mod doc_host;
 pub mod instance_lock;
 pub mod local_import;
-pub mod mcp;
 pub mod profile;
 pub mod registry;
 pub mod repos;
@@ -47,7 +46,6 @@ pub use diff_sync::{
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
-pub use mcp::McpServerHolder;
 pub use profile::EngineProfile;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
@@ -118,7 +116,6 @@ pub struct EngineConfig {
 /// and the in-process (headed) mode.
 pub struct EngineCore {
     pub sessions: SessionsEngine,
-    pub mcp_servers: McpServerHolder,
     pub doc_host: DocHost,
     pub workspace: WorkspaceHost,
     pub registry: Arc<HarnessRegistry>,
@@ -211,13 +208,7 @@ impl EngineCore {
         let store = Arc::new(DocsStore::open(profile.store_root())?);
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);
-        let mcp_servers = McpServerHolder::default();
-        let sessions = SessionsEngine::new(
-            device_id.clone(),
-            journal,
-            registry.clone(),
-            mcp_servers.clone(),
-        );
+        let sessions = SessionsEngine::new(device_id.clone(), journal, registry.clone());
         let doc_host = DocHost::new(
             store.clone(),
             DocHostConfig {
@@ -293,7 +284,6 @@ impl EngineCore {
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         Ok(Self {
             sessions,
-            mcp_servers,
             doc_host,
             workspace,
             registry,
