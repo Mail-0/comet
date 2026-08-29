@@ -71,6 +71,7 @@ fn controls(
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        mcp_servers: Vec::new(),
     };
     (controls, steer_tx, token)
 }
@@ -302,6 +303,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        mcp_servers: Vec::new(),
     };
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 

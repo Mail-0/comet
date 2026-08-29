@@ -203,6 +203,26 @@ fn request_task_error(operation: &'static str, error: impl std::fmt::Display) ->
     keiki_api::Error::TaskFailed(format!("{operation}: {error}"))
 }
 
+fn sync_mcp_server(state: &AppState) {
+    let Some(client) = state.keiki_client.as_ref() else {
+        zeron_engine::mcp::mcp_servers().clear();
+        return;
+    };
+    let Some(token) = state.keiki_token.as_ref() else {
+        zeron_engine::mcp::mcp_servers().clear();
+        return;
+    };
+    if state.keiki_status != SessionStatus::SignedIn || !token.has_scope("mcp") {
+        zeron_engine::mcp::mcp_servers().clear();
+        return;
+    }
+    zeron_engine::mcp::mcp_servers().set(vec![zeron_harness::McpServerSpec {
+        name: "keiki".into(),
+        url: client.mcp_endpoint(),
+        bearer_token: token.access_token().to_owned(),
+    }]);
+}
+
 pub(crate) async fn authorized<T, F, Fut>(
     entity: &WeakEntity<AppState>,
     client: Client,
@@ -236,12 +256,25 @@ where
         return Err(error);
     }
 
-    let refresh_client = client.clone();
-    let refresh_credentials = credentials.clone();
+    let refreshed = refresh_keiki_token(entity, client.clone(), credentials.clone(), cx).await?;
+
+    let retry_client = client;
+    let retry_token = refreshed.access_token().to_string();
+    let retry = make_request(retry_client, retry_token);
+    cx.update(|cx| gpui_tokio::Tokio::spawn(cx, retry))
+        .await
+        .map_err(|error| request_task_error(operation, error))?
+}
+
+async fn refresh_keiki_token(
+    entity: &WeakEntity<AppState>,
+    client: Client,
+    credentials: StoredCredentials,
+    cx: &mut AsyncApp,
+) -> Result<TokenSet, keiki_api::Error> {
+    let client_id = credentials.client_id.clone();
     let refresh_task = cx.update(|cx| {
-        gpui_tokio::Tokio::spawn(cx, async move {
-            refresh_client.refresh_token(&refresh_credentials).await
-        })
+        gpui_tokio::Tokio::spawn(cx, async move { client.refresh_token(&credentials).await })
     });
     let refreshed = match refresh_task.await {
         Ok(Ok(tokens)) => tokens,
@@ -263,23 +296,18 @@ where
             return Err(refresh_error);
         }
     };
-    let refreshed_credentials = refreshed.stored_credentials(credentials.client_id.clone());
-    persist_credentials(&credentials.client_id, &refreshed, entity, cx)
+    let refreshed_credentials = refreshed.stored_credentials(client_id.clone());
+    persist_credentials(&client_id, &refreshed, entity, cx)
         .await
         .map_err(keiki_api::Error::Local)?;
     entity
         .update(cx, |state, _| {
             state.keiki_token = Some(refreshed.clone());
             state.keiki_credentials = Some(refreshed_credentials);
+            sync_mcp_server(state);
         })
         .map_err(|error| request_task_error("Keiki token state update", error))?;
-
-    let retry_client = client;
-    let retry_token = refreshed.access_token().to_string();
-    let retry = make_request(retry_client, retry_token);
-    cx.update(|cx| gpui_tokio::Tokio::spawn(cx, retry))
-        .await
-        .map_err(|error| request_task_error(operation, error))?
+    Ok(refreshed)
 }
 
 fn conversation_error(error: &keiki_api::Error) -> String {
@@ -713,6 +741,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
     state.update(cx, |state, _| {
         state.keiki_client = Some(client.clone());
         state.keiki_status = SessionStatus::Loading;
+        sync_mcp_server(state);
     });
     let boot_state = state.clone();
     let credentials_task = cx.read_credentials(CREDENTIAL_KEY);
@@ -725,6 +754,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
             boot_state.update(cx, |state, cx| {
                 state.keiki_status = SessionStatus::SignedOut;
                 state.keiki_error = None;
+                sync_mcp_server(state);
                 cx.notify();
             });
             return;
@@ -757,6 +787,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                     state.keiki_token = Some(tokens);
                     state.keiki_status = SessionStatus::SignedIn;
                     state.keiki_error = None;
+                    sync_mcp_server(state);
                     cx.notify();
                 });
                 poll(boot_state.downgrade(), cx).await;
@@ -773,6 +804,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                 boot_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
+                    sync_mcp_server(state);
                     cx.notify();
                 });
             }
@@ -781,6 +813,7 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                 boot_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
+                    sync_mcp_server(state);
                     cx.notify();
                 });
             }
@@ -813,6 +846,7 @@ async fn expire_keiki_session(
     let delete_credentials = entity
         .update(cx, |state, cx| {
             state.mark_keiki_signed_out(message.map(str::to_string));
+            sync_mcp_server(state);
             let delete_credentials = cx.delete_credentials(CREDENTIAL_KEY);
             cx.notify();
             delete_credentials
@@ -1051,16 +1085,33 @@ pub(crate) async fn delete_agent(
 
 async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
     loop {
-        let signed_in =
-            match entity.update(cx, |state, _| state.keiki_status == SessionStatus::SignedIn) {
-                Ok(signed_in) => signed_in,
-                Err(error) => {
-                    tracing::warn!(%error, "Keiki poll state read failed");
-                    return;
-                }
-            };
+        let context = match entity.update(cx, |state, _| {
+            Some((
+                state.keiki_status == SessionStatus::SignedIn,
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        }) {
+            Ok(context) => context,
+            Err(error) => {
+                tracing::warn!(%error, "Keiki poll state read failed");
+                return;
+            }
+        };
+        let Some((signed_in, client, token, credentials)) = context else {
+            return;
+        };
         if !signed_in {
             return;
+        }
+        if token.should_refresh_within(Duration::from_secs(15 * 60)) {
+            // A run can outlive this access token and lose Keiki tools mid-run;
+            // a loopback proxy is the follow-up, not part of this change.
+            if let Err(error) = refresh_keiki_token(&entity, client, credentials, cx).await {
+                tracing::warn!(error = %error, "Keiki poll token refresh failed");
+                return;
+            }
         }
         if let Err(error) = refresh_keiki_snapshot(entity.clone(), cx).await {
             tracing::warn!(error = %error, "Keiki poll failed");
@@ -1186,11 +1237,13 @@ async fn complete_callback(
                 state.keiki_credentials = Some(credentials);
                 state.keiki_status = SessionStatus::SignedIn;
                 state.keiki_error = None;
+                sync_mcp_server(state);
                 cx.notify();
             }
             Err(error) => {
                 state.keiki_status = SessionStatus::Error;
                 state.keiki_error = Some(error.to_string());
+                sync_mcp_server(state);
                 tracing::warn!(error = %error, "Keiki sign-in failed");
                 cx.notify();
             }
@@ -1216,7 +1269,11 @@ pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<Ap
     .detach();
 }
 
-pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) {
+pub fn begin_sign_in(
+    state: Entity<AppState>,
+    requested_scope: &'static str,
+    cx: &mut Context<crate::shell::Shell>,
+) {
     state.update(cx, |state, cx| {
         state.keiki_status = SessionStatus::Loading;
         state.keiki_error = None;
@@ -1237,7 +1294,9 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
                 .map_err(|error| request_task_error("OAuth loopback listener", error))??;
             let discovery_client = client.clone();
             let discovery = cx.update(|cx| {
-                gpui_tokio::Tokio::spawn(cx, async move { discovery_client.discover_oauth().await })
+                gpui_tokio::Tokio::spawn(cx, async move {
+                    discovery_client.discover_oauth(requested_scope).await
+                })
             });
             discovery
                 .await
@@ -1255,7 +1314,7 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
                 .await
                 .map_err(|error| request_task_error("OAuth client registration", error))??;
             let flow = AuthorizationFlow::new(client_id, redirect_uri.clone());
-            let url = client.authorization_url(&flow)?;
+            let url = client.authorization_url(&flow, requested_scope)?;
             task_state.update(cx, |state, _| state.keiki_flow = Some(flow));
             let callback_task = cx.update(|cx| {
                 gpui_tokio::Tokio::spawn(
@@ -1273,6 +1332,7 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
                     task_state.update(cx, |state, cx| {
                         state.keiki_status = SessionStatus::Error;
                         state.keiki_error = Some(error.to_string());
+                        sync_mcp_server(state);
                         cx.notify();
                     });
                     shell.set_sidebar_notice(format!("Keiki sign in failed: {error}"));
@@ -1292,6 +1352,7 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
                 task_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
+                    sync_mcp_server(state);
                     cx.notify();
                 });
                 return;
@@ -1300,6 +1361,7 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
                 task_state.update(cx, |state, cx| {
                     state.keiki_status = SessionStatus::Error;
                     state.keiki_error = Some(error.to_string());
+                    sync_mcp_server(state);
                     cx.notify();
                 });
                 return;

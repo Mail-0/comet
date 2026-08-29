@@ -445,6 +445,7 @@ impl SessionsEngine {
             request_input,
             steering: steer_rx,
             interrupt: interrupt_token.clone(),
+            mcp_servers: crate::mcp::mcp_servers().snapshot(),
         };
 
         lock(&self.inner.runs).insert(

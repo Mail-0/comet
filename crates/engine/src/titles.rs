@@ -236,6 +236,7 @@ async fn collect_text(
         }),
         steering: steer_rx,
         interrupt: CancellationToken::new(),
+        mcp_servers: Vec::new(),
     };
     let mut stream = harness.run(request, controls).await?;
     let mut text = String::new();

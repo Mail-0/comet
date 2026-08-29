@@ -3226,7 +3226,11 @@ impl Shell {
     }
 
     fn start_keiki_sign_in(&mut self, cx: &mut Context<Self>) {
-        crate::keiki::begin_sign_in(self.state.clone(), cx);
+        crate::keiki::begin_sign_in(self.state.clone(), "manage", cx);
+    }
+
+    fn connect_keiki_tools(&mut self, cx: &mut Context<Self>) {
+        crate::keiki::begin_sign_in(self.state.clone(), "mcp manage", cx);
     }
 
     // ---- org gate ----
@@ -5188,6 +5192,12 @@ impl Shell {
         let open = self.user_menu.is_open();
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
         let keiki_status = self.state.read(cx).keiki_status;
+        let keiki_tools_connected = self
+            .state
+            .read(cx)
+            .keiki_token
+            .as_ref()
+            .is_some_and(|token| token.has_scope("mcp"));
         let keiki_error = self.state.read(cx).keiki_error.clone();
         // Bottom-of-sidebar identity: avatar circle + scope/account label and
         // its secondary status line.
@@ -5357,21 +5367,41 @@ impl Shell {
                 .when(
                     keiki_status == crate::keiki::SessionStatus::SignedIn,
                     |menu| {
-                        menu.child(
-                            popover::menu_row(theme, false, "user-menu-keiki-signout")
-                                .id("user-menu-keiki-signout")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    crate::keiki::sign_out(this.state.clone(), cx).detach();
+                        let tools_row = popover::menu_row(theme, false, "user-menu-keiki-tools")
+                            .id("user-menu-keiki-tools")
+                            .when(!keiki_tools_connected, |row| {
+                                row.on_click(cx.listener(|this, _, _, cx| {
+                                    this.connect_keiki_tools(cx);
                                     this.close_user_menu(cx);
                                 }))
-                                .child(
-                                    icon(icons::LOGOUT_2)
-                                        .size(px(16.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Sign out of Keiki")),
-                        )
-                        .child(popover::menu_separator())
+                            })
+                            .when(keiki_tools_connected, |row| row.opacity(0.6))
+                            .child(
+                                icon(icons::GLOBAL)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from(if keiki_tools_connected {
+                                "Keiki tools connected"
+                            } else {
+                                "Connect Keiki tools…"
+                            }));
+                        menu.child(tools_row)
+                            .child(
+                                popover::menu_row(theme, false, "user-menu-keiki-signout")
+                                    .id("user-menu-keiki-signout")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        crate::keiki::sign_out(this.state.clone(), cx).detach();
+                                        this.close_user_menu(cx);
+                                    }))
+                                    .child(
+                                        icon(icons::LOGOUT_2)
+                                            .size(px(16.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Sign out of Keiki")),
+                            )
+                            .child(popover::menu_separator())
                     },
                 )
                 .when(

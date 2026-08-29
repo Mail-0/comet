@@ -1167,6 +1167,35 @@ struct Session {
     stderr_tail: crate::StderrTail,
 }
 
+fn http_mcp_supported(initialize_response: &Value) -> bool {
+    initialize_response
+        .get("mcpCapabilities")
+        .and_then(|capabilities| capabilities.get("http"))
+        .is_some_and(|http| http.as_bool() == Some(true) || http.is_object())
+}
+
+fn session_parameters(cwd: &str, servers: &[crate::McpServerSpec], http_supported: bool) -> Value {
+    let mcp_servers = if http_supported {
+        servers
+            .iter()
+            .map(|server| {
+                json!({
+                    "type": "http",
+                    "name": server.name,
+                    "url": server.url,
+                    "headers": [{
+                        "name": "Authorization",
+                        "value": format!("Bearer {}", server.bearer_token),
+                    }],
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    json!({ "cwd": cwd, "mcpServers": mcp_servers })
+}
+
 fn initialize_params(_harness: HarnessId) -> Value {
     let capabilities = json!({
         "fs": { "readTextFile": false, "writeTextFile": false },
@@ -1808,6 +1837,7 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        mcp_servers,
     } = controls;
     let request_input = std::sync::Arc::new(request_input);
 
@@ -1819,7 +1849,8 @@ async fn run_session(session: Session) {
         let steer_ext = steering_supported(&init);
         let init_commands = scan_available_commands(&init);
 
-        let session_params = json!({ "cwd": request.cwd, "mcpServers": [] });
+        let session_params =
+            session_parameters(&request.cwd, &mcp_servers, http_mcp_supported(&init));
         let (session_id, session_response) = if let Some(resume) = &request.resume {
             let mut load = session_params.clone();
             load["sessionId"] = Value::String(resume.clone());
@@ -3382,5 +3413,38 @@ mod tests {
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "compact");
         assert!(scan_available_commands(&json!({ "protocolVersion": 1 })).is_empty());
+    }
+
+    #[test]
+    fn http_mcp_servers_require_advertised_http_capability() {
+        let server = crate::McpServerSpec {
+            name: "keiki".into(),
+            url: "https://onkeiki.com/mcp".into(),
+            bearer_token: "secret-token".into(),
+        };
+        let without_http = session_parameters(
+            "/tmp",
+            std::slice::from_ref(&server),
+            http_mcp_supported(&json!({ "mcpCapabilities": {} })),
+        );
+        assert_eq!(without_http["mcpServers"], json!([]));
+
+        let with_http = session_parameters(
+            "/tmp",
+            &[server],
+            http_mcp_supported(&json!({ "mcpCapabilities": { "http": true } })),
+        );
+        assert_eq!(
+            with_http["mcpServers"],
+            json!([{
+                "type": "http",
+                "name": "keiki",
+                "url": "https://onkeiki.com/mcp",
+                "headers": [{
+                    "name": "Authorization",
+                    "value": "Bearer secret-token"
+                }]
+            }])
+        );
     }
 }

@@ -44,6 +44,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
+use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
@@ -415,7 +416,11 @@ impl Harness for ClaudeHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
+        let mcp_config = write_mcp_config(&controls.mcp_servers)?;
         let mut cmd = self.build_command(&exe, &request);
+        if let Some((_, path)) = &mcp_config {
+            append_mcp_config_argument(&mut cmd, path);
+        }
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(exe.display().to_string())
@@ -471,6 +476,7 @@ impl Harness for ClaudeHarness {
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
+            _mcp_config: mcp_config.map(|(directory, _)| directory),
         }));
 
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
@@ -485,6 +491,55 @@ enum StdinMsg {
     /// Close stdin (end of steering input): the CLI finishes the current turn
     /// and exits, which ends the run stream at stdout EOF.
     Close,
+}
+
+fn mcp_config_json(servers: &[crate::McpServerSpec]) -> Value {
+    let mut configured = serde_json::Map::new();
+    for server in servers {
+        configured.insert(
+            server.name.clone(),
+            serde_json::json!({
+                "type": "http",
+                "url": server.url,
+                "headers": {
+                    "Authorization": format!("Bearer {}", server.bearer_token),
+                },
+            }),
+        );
+    }
+    serde_json::json!({ "mcpServers": configured })
+}
+
+fn write_mcp_config(
+    servers: &[crate::McpServerSpec],
+) -> Result<Option<(TempDir, PathBuf)>, HarnessError> {
+    if servers.is_empty() {
+        return Ok(None);
+    }
+    let directory = tempfile::tempdir().map_err(HarnessError::Io)?;
+    let path = directory.path().join("mcp.json");
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .map_err(HarnessError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(HarnessError::Io)?;
+    }
+    serde_json::to_writer(file, &mcp_config_json(servers))
+        .map_err(|error| HarnessError::Protocol(error.to_string()))?;
+    Ok(Some((directory, path)))
+}
+
+fn append_mcp_config_argument(command: &mut Command, path: &std::path::Path) {
+    command.args(mcp_config_arguments(path));
+}
+
+fn mcp_config_arguments(path: &std::path::Path) -> [std::ffi::OsString; 2] {
+    ["--mcp-config".into(), path.as_os_str().to_owned()]
 }
 
 /// Anthropic's API caps inline images at 5MB of raw bytes; larger files stay
@@ -595,6 +650,7 @@ struct Session {
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
     stderr_tail: crate::StderrTail,
+    _mcp_config: Option<TempDir>,
 }
 
 /// The per-run event loop: one task multiplexing stdout frames, the steering
@@ -610,11 +666,13 @@ async fn run_session(session: Session) {
         interrupt_grace,
         kill_grace,
         stderr_tail,
+        _mcp_config,
     } = session;
     let RunControls {
         request_input,
         mut steering,
         interrupt,
+        mcp_servers: _,
     } = controls;
     let request_input = Arc::new(request_input);
 
@@ -904,5 +962,47 @@ mod tests {
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
         assert!(updated["questions"].is_array());
+    }
+
+    #[test]
+    fn mcp_config_has_http_authorization_shape() {
+        let config = mcp_config_json(&[crate::McpServerSpec {
+            name: "keiki".into(),
+            url: "https://onkeiki.com/mcp".into(),
+            bearer_token: "secret-token".into(),
+        }]);
+        assert_eq!(
+            config,
+            json!({
+                "mcpServers": {
+                    "keiki": {
+                        "type": "http",
+                        "url": "https://onkeiki.com/mcp",
+                        "headers": { "Authorization": "Bearer secret-token" },
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_config_file_is_private_and_argument_is_supported() {
+        let servers = [crate::McpServerSpec {
+            name: "keiki".into(),
+            url: "https://onkeiki.com/mcp".into(),
+            bearer_token: "secret-token".into(),
+        }];
+        let (_directory, path) = write_mcp_config(&servers).unwrap().expect("config");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let arguments = mcp_config_arguments(&path);
+        assert_eq!(arguments[0], "--mcp-config");
+        assert_eq!(arguments[1], path.as_os_str());
     }
 }

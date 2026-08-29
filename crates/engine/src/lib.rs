@@ -23,6 +23,7 @@ pub mod diff_sync;
 pub mod doc_host;
 pub mod instance_lock;
 pub mod local_import;
+pub mod mcp;
 pub mod profile;
 pub mod registry;
 pub mod repos;
@@ -46,6 +47,7 @@ pub use diff_sync::{
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
+pub use mcp::{McpServerHolder, mcp_servers};
 pub use profile::EngineProfile;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};

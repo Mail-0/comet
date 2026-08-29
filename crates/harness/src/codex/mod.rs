@@ -219,6 +219,30 @@ impl CodexHarness {
     }
 }
 
+fn mcp_override_arguments(server: &crate::McpServerSpec) -> [String; 4] {
+    [
+        "-c".into(),
+        format!("mcp_servers.{}.url=\"{}\"", server.name, server.url),
+        "-c".into(),
+        format!(
+            "mcp_servers.{}.bearer_token_env_var=\"KEIKI_MCP_BEARER\"",
+            server.name
+        ),
+    ]
+}
+
+fn configure_mcp_command(command: &mut Command, servers: &[crate::McpServerSpec]) {
+    for server in servers {
+        let arguments = mcp_override_arguments(server);
+        command.args(arguments);
+        command.env(mcp_bearer_environment_name(), &server.bearer_token);
+    }
+}
+
+fn mcp_bearer_environment_name() -> &'static str {
+    "KEIKI_MCP_BEARER"
+}
+
 /// `skills/list` result → picker commands. `data` groups skills by cwd; the
 /// same skill appears under every root, so dedupe by name keeping first
 /// appearance order. The interface's shortDescription is picker-sized; the
@@ -320,6 +344,7 @@ impl Harness for CodexHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
+        let mcp_servers = controls.mcp_servers.clone();
         // Yolo mode: danger-full-access + approvalPolicy "never" (set below) —
         // codex's --dangerously-bypass-approvals-and-sandbox equivalent.
         // Parity with the Claude adapter, which auto-approves every
@@ -329,6 +354,7 @@ impl Harness for CodexHarness {
         // kills every command.
         request.sandbox = zeron_proto::SandboxLevel::DangerFullAccess;
         let mut cmd = Command::new(&exe);
+        configure_mcp_command(&mut cmd, &mcp_servers);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
         if !request.cwd.is_empty() {
@@ -496,6 +522,7 @@ async fn run_session(session: Session) {
         request_input,
         mut steering,
         interrupt,
+        mcp_servers: _,
     } = controls;
     let request_input = Arc::new(request_input);
 
@@ -1414,7 +1441,11 @@ fn user_input_questions(params: &Value) -> Vec<(String, UserInputQuestion)> {
                 id: new_message_id(),
                 header: {
                     let h = field(["header", "title", "label"]);
-                    if h.is_empty() { "Codex question".into() } else { h }
+                    if h.is_empty() {
+                        "Codex question".into()
+                    } else {
+                        h
+                    }
                 },
                 question: field(["question", "prompt", "text"]),
                 options: q
@@ -1541,5 +1572,30 @@ mod tests {
         r.note_started("t-3".into());
         assert_eq!(r.active.as_deref(), Some("t-3"));
         assert!(r.is_completed("t-2"));
+    }
+
+    #[test]
+    fn mcp_overrides_keep_token_in_environment() {
+        let server = crate::McpServerSpec {
+            name: "keiki".into(),
+            url: "https://onkeiki.com/mcp".into(),
+            bearer_token: "secret-token".into(),
+        };
+        let arguments = mcp_override_arguments(&server);
+        assert_eq!(
+            arguments.as_slice(),
+            [
+                "-c",
+                "mcp_servers.keiki.url=\"https://onkeiki.com/mcp\"",
+                "-c",
+                "mcp_servers.keiki.bearer_token_env_var=\"KEIKI_MCP_BEARER\"",
+            ]
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("secret-token"))
+        );
+        assert_eq!(mcp_bearer_environment_name(), "KEIKI_MCP_BEARER");
     }
 }

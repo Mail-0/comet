@@ -70,6 +70,7 @@ fn controls(
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        mcp_servers: Vec::new(),
     };
     (controls, steer_tx, token)
 }
@@ -389,6 +390,7 @@ async fn approvals_round_trip_as_input_requests() {
         }),
         steering: steer_rx,
         interrupt: token.clone(),
+        mcp_servers: Vec::new(),
     };
     let mut req = request("scenario:approve");
     req.auto_approve = false;
