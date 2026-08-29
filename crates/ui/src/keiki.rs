@@ -118,6 +118,11 @@ pub fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
         .map(|value| value.with_timezone(&Utc))
 }
 
+fn request_task_error(operation: &'static str, error: impl std::fmt::Display) -> keiki_api::Error {
+    tracing::error!(operation, error = %error, "Keiki request task failed");
+    keiki_api::Error::TaskFailed(format!("{operation}: {error}"))
+}
+
 pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry> {
     let created_at = parse_timestamp(&message.created_at)?;
     Some(SessionMessageEntry {
@@ -553,17 +558,17 @@ pub fn handle_callback(state: &mut AppState, callback: &str, cx: &mut Context<Ap
             });
             let tokens = exchange
                 .await
-                .map_err(|_| keiki_api::Error::InvalidContract)??;
+                .map_err(|error| request_task_error("authorization-code exchange", error))??;
             let credentials = flow.stored_credentials(&tokens);
-            let payload =
-                serde_json::to_vec(&credentials).map_err(|_| keiki_api::Error::InvalidContract)?;
+            let payload = serde_json::to_vec(&credentials)
+                .map_err(|error| keiki_api::Error::Local(error.to_string()))?;
             let write = this.update(cx, |_, cx| {
                 cx.write_credentials(CREDENTIAL_KEY, "OAuth", &payload)
             });
             write
-                .map_err(|_| keiki_api::Error::InvalidContract)?
+                .map_err(|error| request_task_error("credential write setup", error))?
                 .await
-                .map_err(|_| keiki_api::Error::InvalidContract)?;
+                .map_err(|error| request_task_error("credential write", error))?;
             Ok::<_, keiki_api::Error>((tokens, credentials))
         }
         .await;
@@ -609,7 +614,7 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
             });
             discovery
                 .await
-                .map_err(|_| keiki_api::Error::InvalidContract)??;
+                .map_err(|error| request_task_error("OAuth discovery", error))??;
             let registration_client = client.clone();
             let registration = cx.update(|cx| {
                 gpui_tokio::Tokio::spawn(cx, async move {
@@ -620,7 +625,7 @@ pub fn begin_sign_in(state: Entity<AppState>, cx: &mut Context<crate::shell::She
             });
             let client_id = registration
                 .await
-                .map_err(|_| keiki_api::Error::InvalidContract)??;
+                .map_err(|error| request_task_error("OAuth client registration", error))??;
             let flow = AuthorizationFlow::new(client_id, OAUTH_REDIRECT_URI.to_string());
             let url = client.authorization_url(&flow)?;
             state.update(cx, |state, _| state.keiki_flow = Some(flow));

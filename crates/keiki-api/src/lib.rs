@@ -77,6 +77,17 @@ pub enum Error {
     AuthorizationRejected(String),
     #[error("the server returned an invalid OAuth contract")]
     InvalidContract,
+    #[error("Keiki OAuth contract mismatch at {endpoint}: {detail}")]
+    OAuthContract {
+        endpoint: &'static str,
+        detail: String,
+    },
+    #[error("Keiki request task failed: {0}")]
+    TaskFailed(String),
+    #[error("Keiki local operation failed: {0}")]
+    Local(String),
+    #[error("invalid Keiki response: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("Keiki returned {status}: {message}")]
     Api { status: StatusCode, message: String },
     #[error(transparent)]
@@ -116,72 +127,179 @@ impl Client {
     }
 
     pub async fn discover_oauth(&self) -> Result<(), Error> {
+        const AUTHORIZATION_SERVER_METADATA: &str = "/.well-known/oauth-authorization-server";
+        const PROTECTED_RESOURCE_METADATA: &str =
+            "/.well-known/oauth-protected-resource/api/webapp";
         let metadata: AuthorizationServerMetadata = self
-            .send_json(
-                self.http
-                    .get(self.endpoint("/.well-known/oauth-authorization-server")),
+            .send_contract_json(
+                self.http.get(self.endpoint(AUTHORIZATION_SERVER_METADATA)),
+                AUTHORIZATION_SERVER_METADATA,
             )
             .await?;
-        if metadata.issuer != self.base_url
-            || metadata.authorization_endpoint != self.endpoint("/oauth/authorize")
-            || metadata.token_endpoint != self.endpoint("/oauth/token")
-            || metadata.registration_endpoint != self.endpoint("/oauth/register")
-            || metadata.revocation_endpoint != self.endpoint("/oauth/revoke")
-            || !metadata
-                .code_challenge_methods_supported
-                .iter()
-                .any(|method| method == "S256")
-            || !metadata
-                .scopes_supported
-                .iter()
-                .any(|scope| scope == "manage")
+        if metadata.issuer != self.base_url {
+            return Err(Error::OAuthContract {
+                endpoint: AUTHORIZATION_SERVER_METADATA,
+                detail: format!(
+                    "issuer was {:?}, expected {:?}",
+                    metadata.issuer, self.base_url
+                ),
+            });
+        }
+        for (field, actual, expected) in [
+            (
+                "authorization_endpoint",
+                metadata.authorization_endpoint.as_str(),
+                self.endpoint("/oauth/authorize"),
+            ),
+            (
+                "token_endpoint",
+                metadata.token_endpoint.as_str(),
+                self.endpoint("/oauth/token"),
+            ),
+            (
+                "registration_endpoint",
+                metadata.registration_endpoint.as_str(),
+                self.endpoint("/oauth/register"),
+            ),
+            (
+                "revocation_endpoint",
+                metadata.revocation_endpoint.as_str(),
+                self.endpoint("/oauth/revoke"),
+            ),
+        ] {
+            if actual != expected {
+                return Err(Error::OAuthContract {
+                    endpoint: AUTHORIZATION_SERVER_METADATA,
+                    detail: format!("{field} was {actual:?}, expected {expected:?}"),
+                });
+            }
+        }
+        if !metadata
+            .code_challenge_methods_supported
+            .iter()
+            .any(|method| method == "S256")
         {
-            return Err(Error::InvalidContract);
+            return Err(Error::OAuthContract {
+                endpoint: AUTHORIZATION_SERVER_METADATA,
+                detail: format!(
+                    "code_challenge_methods_supported was {:?}, expected S256",
+                    metadata.code_challenge_methods_supported
+                ),
+            });
+        }
+        if !metadata
+            .scopes_supported
+            .iter()
+            .any(|scope| scope == "manage")
+        {
+            return Err(Error::OAuthContract {
+                endpoint: AUTHORIZATION_SERVER_METADATA,
+                detail: format!(
+                    "scopes_supported was {:?}, expected manage",
+                    metadata.scopes_supported
+                ),
+            });
         }
 
         let resource: ProtectedResourceMetadata = self
-            .send_json(
-                self.http
-                    .get(self.endpoint("/.well-known/oauth-protected-resource/api/webapp")),
+            .send_contract_json(
+                self.http.get(self.endpoint(PROTECTED_RESOURCE_METADATA)),
+                PROTECTED_RESOURCE_METADATA,
             )
             .await?;
-        if resource.resource != self.endpoint("/api/webapp")
-            || !resource
-                .authorization_servers
-                .iter()
-                .any(|server| server == &self.base_url)
-            || !resource
-                .scopes_supported
-                .iter()
-                .any(|scope| scope == "manage")
-            || !resource
-                .bearer_methods_supported
-                .iter()
-                .any(|method| method == "header")
+        let expected_resource = self.endpoint("/api/webapp");
+        if resource.resource != expected_resource {
+            return Err(Error::OAuthContract {
+                endpoint: PROTECTED_RESOURCE_METADATA,
+                detail: format!(
+                    "resource was {:?}, expected {:?}",
+                    resource.resource, expected_resource
+                ),
+            });
+        }
+        if !resource
+            .authorization_servers
+            .iter()
+            .any(|server| server == &self.base_url)
         {
-            return Err(Error::InvalidContract);
+            return Err(Error::OAuthContract {
+                endpoint: PROTECTED_RESOURCE_METADATA,
+                detail: format!(
+                    "authorization_servers was {:?}, expected {}",
+                    resource.authorization_servers, self.base_url
+                ),
+            });
+        }
+        if !resource
+            .scopes_supported
+            .iter()
+            .any(|scope| scope == "manage")
+        {
+            return Err(Error::OAuthContract {
+                endpoint: PROTECTED_RESOURCE_METADATA,
+                detail: format!(
+                    "scopes_supported was {:?}, expected manage",
+                    resource.scopes_supported
+                ),
+            });
+        }
+        if !resource
+            .bearer_methods_supported
+            .iter()
+            .any(|method| method == "header")
+        {
+            return Err(Error::OAuthContract {
+                endpoint: PROTECTED_RESOURCE_METADATA,
+                detail: format!(
+                    "bearer_methods_supported was {:?}, expected header",
+                    resource.bearer_methods_supported
+                ),
+            });
         }
 
         Ok(())
     }
 
     pub async fn register_client(&self, redirect_uri: &str) -> Result<String, Error> {
+        const REGISTRATION_ENDPOINT: &str = "/oauth/register";
         let response: RegistrationResponse = self
-            .send_json(self.http.post(self.endpoint("/oauth/register")).json(
-                &RegistrationRequest {
-                    client_name: "Keiki Desktop",
-                    redirect_uris: [redirect_uri],
-                },
-            ))
+            .send_contract_json(
+                self.http
+                    .post(self.endpoint(REGISTRATION_ENDPOINT))
+                    .json(&RegistrationRequest {
+                        client_name: "Keiki Desktop",
+                        redirect_uris: [redirect_uri],
+                    }),
+                REGISTRATION_ENDPOINT,
+            )
             .await?;
-        if response.client_id.is_empty()
-            || response.token_endpoint_auth_method != "none"
-            || !response
-                .redirect_uris
-                .iter()
-                .any(|registered| registered == redirect_uri)
+        if response.client_id.is_empty() {
+            return Err(Error::OAuthContract {
+                endpoint: REGISTRATION_ENDPOINT,
+                detail: "client_id was empty".into(),
+            });
+        }
+        if response.token_endpoint_auth_method != "none" {
+            return Err(Error::OAuthContract {
+                endpoint: REGISTRATION_ENDPOINT,
+                detail: format!(
+                    "token_endpoint_auth_method was {:?}, expected none",
+                    response.token_endpoint_auth_method
+                ),
+            });
+        }
+        if !response
+            .redirect_uris
+            .iter()
+            .any(|registered| registered == redirect_uri)
         {
-            return Err(Error::InvalidContract);
+            return Err(Error::OAuthContract {
+                endpoint: REGISTRATION_ENDPOINT,
+                detail: format!(
+                    "redirect_uris was {:?}, expected {:?}",
+                    response.redirect_uris, redirect_uri
+                ),
+            });
         }
         Ok(response.client_id)
     }
@@ -619,6 +737,21 @@ impl Client {
             Err(response_error(response).await)
         }
     }
+
+    async fn send_contract_json<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+        endpoint: &'static str,
+    ) -> Result<T, Error> {
+        let response = request.send().await.map_err(Error::Request)?;
+        let status = response.status();
+        let body = response.text().await.map_err(Error::Request)?;
+        tracing::debug!(endpoint, %status, body, "Keiki OAuth response");
+        if !status.is_success() {
+            return Err(response_error_body(status, &body));
+        }
+        serde_json::from_str(&body).map_err(Error::Json)
+    }
 }
 
 impl AuthorizationFlow {
@@ -829,7 +962,12 @@ fn unique_query_value<'a>(
 
 async fn response_error(response: reqwest::Response) -> Error {
     let status = response.status();
-    let body = response.json::<ErrorResponse>().await.ok();
+    let body = response.text().await.unwrap_or_default();
+    response_error_body(status, &body)
+}
+
+fn response_error_body(status: StatusCode, body: &str) -> Error {
+    let body = serde_json::from_str::<ErrorResponse>(body).ok();
     let message = body
         .and_then(|body| body.error_description.or(body.error))
         .unwrap_or_else(|| "request failed".into());

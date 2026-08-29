@@ -928,7 +928,6 @@ impl AppState {
             .retain(|space| !crate::keiki::is_keiki_space(&space.id));
         self.spaces.extend(spaces);
         sort_spaces(&mut self.spaces);
-        self.spaces_synced = true;
         if let Some(selected) = &self.selected_space
             && !self.spaces.iter().any(|space| &space.id == selected)
         {
@@ -942,7 +941,6 @@ impl AppState {
             .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
         self.chats.extend(chats);
         sort_chats(&mut self.chats);
-        self.chats_synced = true;
         if let Some(selected) = &self.selected_chat
             && !self.chats.iter().any(|chat| &chat.id == selected)
         {
@@ -3128,6 +3126,8 @@ mod tests {
     #[test]
     fn keiki_snapshot_replaces_only_keiki_rows() {
         let mut state = AppState::new();
+        assert!(!state.spaces_synced);
+        assert!(!state.chats_synced);
         state.apply_devices(vec![device("engine-device", "Engine")]);
         state.devices.push(crate::keiki::map_device());
         state.apply_spaces(vec![
@@ -3138,6 +3138,8 @@ mod tests {
             chat("engine-chat", 1, None),
             chat("keiki-conv:old:+1555", 2, None),
         ]);
+        state.spaces_synced = false;
+        state.chats_synced = false;
 
         let mut fresh_space = space("keiki-agent:new", crate::keiki::DEVICE_ID, "New agent", 3);
         fresh_space.name = Some("New agent".into());
@@ -3145,6 +3147,8 @@ mod tests {
         fresh_chat.device_id = crate::keiki::DEVICE_ID.into();
         state.apply_keiki_snapshot(vec![fresh_space], vec![fresh_chat]);
 
+        assert!(!state.spaces_synced);
+        assert!(!state.chats_synced);
         assert!(
             state
                 .devices

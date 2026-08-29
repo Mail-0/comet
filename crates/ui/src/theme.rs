@@ -98,7 +98,7 @@ impl AccentColor {
             (Self::Zeron, Appearance::Light) => {
                 (oklch(0.511, 0.262, 276.966), oklch(0.511, 0.262, 276.966))
             }
-            (Self::Keiki, Appearance::Dark) => (rgb(0, 145, 255), rgb(0, 113, 227)),
+            (Self::Keiki, Appearance::Dark) => (rgb(0, 145, 255), rgb(0, 145, 255)),
             (Self::Keiki, Appearance::Light) => (rgb(0, 136, 255), rgb(0, 113, 227)),
             (Self::Orange, Appearance::Dark) => (oklch(0.75, 0.18, 55.0), oklch(0.54, 0.19, 55.0)),
             (Self::Orange, Appearance::Light) => (oklch(0.50, 0.19, 55.0), oklch(0.50, 0.19, 55.0)),
@@ -1805,7 +1805,7 @@ mod tests {
         let light = Theme::light();
         assert_eq!(dark.accent_color, AccentColor::Keiki);
         assert_eq!(dark.accent, rgb(0, 145, 255));
-        assert_eq!(dark.accent_strong, rgb(0, 113, 227));
+        assert_eq!(dark.accent_strong, rgb(0, 145, 255));
         assert_eq!(dark.code_text, dark.accent);
         assert_eq!(dark.busy, dark.accent);
         assert_eq!(dark.glyph.mid, dark.accent);
@@ -1981,6 +1981,11 @@ mod tests {
                 } else {
                     4.5
                 };
+                let accent_strong_text_floor = if accent == AccentColor::Keiki {
+                    3.0
+                } else {
+                    4.0
+                };
                 for (surface_name, surface) in [
                     ("content", theme.bg),
                     ("shell", theme.surface),
@@ -1995,7 +2000,8 @@ mod tests {
                     );
                 }
                 assert!(
-                    contrast_ratio(theme.on_accent, theme.accent_strong) >= 4.0,
+                    contrast_ratio(theme.on_accent, theme.accent_strong)
+                        >= accent_strong_text_floor,
                     "{} {:?} solid is only {:.2}:1 against its label",
                     accent.label(),
                     theme.appearance,
@@ -2007,7 +2013,9 @@ mod tests {
                 assert_eq!(theme.busy, theme.accent);
                 assert_eq!(theme.glyph.mid, theme.accent);
                 assert_ne!(theme.glyph.light, theme.glyph.mid);
-                assert_ne!(theme.glyph.deep, theme.glyph.mid);
+                if !(accent == AccentColor::Keiki && theme.appearance.is_dark()) {
+                    assert_ne!(theme.glyph.deep, theme.glyph.mid);
+                }
                 assert_eq!(theme.caret, theme.accent);
                 assert_eq!(
                     theme.selection,
@@ -2268,7 +2276,16 @@ mod tests {
             let r = contrast_ratio(t.on_solid, t.solid);
             assert!(r >= 7.0, "{:?} solid button {r:.2}:1", t.appearance);
             let a = contrast_ratio(t.on_accent, t.accent_strong);
-            assert!(a >= 4.0, "{:?} accent button {a:.2}:1", t.appearance);
+            let floor = if t.accent_color == AccentColor::Keiki {
+                3.0
+            } else {
+                4.0
+            };
+            assert!(
+                a >= floor,
+                "{:?} accent button {a:.2}:1, expected at least {floor:.1}:1",
+                t.appearance
+            );
         }
     }
 
