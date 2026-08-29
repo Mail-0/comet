@@ -1,11 +1,12 @@
 # Keiki Desktop
 
 Native desktop client for creating, managing, and communicating with
-[Keiki](https://app.keiki.ai) agents.
+[Keiki](https://onkeiki.com) agents.
 
-This milestone establishes the macOS GPUI shell and the first Keiki-native data
-contracts. Agent synchronization, authentication, creation, conversations, live
-tests, and traces will be connected incrementally.
+The desktop shell supports OAuth 2.1 browser sign-in with PKCE, secure refresh
+credential storage in the platform keychain, session restoration, and sign-out
+revocation. Agent synchronization, creation, conversations, live tests, and
+traces will be connected incrementally.
 
 ## Develop
 
@@ -18,7 +19,7 @@ Requirements:
 cargo run -p keiki
 ```
 
-The client uses `https://app.keiki.ai` by default. Override it for local
+The client uses `https://onkeiki.com` by default. Override it for local
 development with `KEIKI_API_URL`; override settings storage with
 `KEIKI_DATA_DIR`.
 

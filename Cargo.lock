@@ -3083,7 +3083,14 @@ dependencies = [
 name = "keiki-api"
 version = "0.2.29"
 dependencies = [
+ "base64",
+ "rand 0.9.5",
  "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "url",
 ]
 
 [[package]]

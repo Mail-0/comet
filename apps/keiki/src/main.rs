@@ -12,7 +12,7 @@ fn main() -> anyhow::Result<()> {
     keiki_ui::run_app(keiki_ui::UiConfig {
         data_dir: data_dir(),
         api_base_url: std::env::var("KEIKI_API_URL")
-            .unwrap_or_else(|_| "https://app.keiki.ai".into()),
+            .unwrap_or_else(|_| "https://onkeiki.com".into()),
     });
     Ok(())
 }

@@ -7,7 +7,10 @@ pub mod theme;
 pub mod theme_library;
 pub mod typography;
 
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
@@ -21,8 +24,21 @@ struct ReopenState(UiConfig);
 
 impl gpui::Global for ReopenState {}
 
+struct OpenUrlQueue(Arc<Mutex<Vec<String>>>);
+
+impl gpui::Global for OpenUrlQueue {}
+
 pub fn run_app(config: UiConfig) {
     let app = gpui_platform::application().with_assets(icons::Assets);
+    let open_urls = Arc::new(Mutex::new(Vec::new()));
+    app.on_open_urls({
+        let open_urls = open_urls.clone();
+        move |urls| {
+            if let Ok(mut queue) = open_urls.lock() {
+                queue.extend(urls);
+            }
+        }
+    });
     app.on_reopen(|cx| {
         if cx.windows().is_empty()
             && let Some(reopen) = cx.try_global::<ReopenState>()
@@ -58,6 +74,7 @@ pub fn run_app(config: UiConfig) {
         })
         .detach();
         cx.set_global(ReopenState(config.clone()));
+        cx.set_global(OpenUrlQueue(open_urls));
         open_main_window(config.clone(), cx);
         cx.set_menus(app_menus::app_menus());
         cx.activate(true);
@@ -65,6 +82,7 @@ pub fn run_app(config: UiConfig) {
 }
 
 fn open_main_window(config: UiConfig, cx: &mut App) {
+    let open_urls = cx.global::<OpenUrlQueue>().0.clone();
     let bounds = Bounds::centered(None, size(px(1320.), px(880.)), cx);
     cx.open_window(
         WindowOptions {
@@ -85,7 +103,7 @@ fn open_main_window(config: UiConfig, cx: &mut App) {
         move |window, cx| {
             window.set_rem_size(px(typography::font_size(cx).pixels()));
             appearance::observe_window(window, cx).detach();
-            cx.new(|cx| shell::Shell::new(config.api_base_url, window, cx))
+            cx.new(|cx| shell::Shell::new(config.api_base_url, open_urls, window, cx))
         },
     )
     .expect("failed to open window");
