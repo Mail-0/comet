@@ -33,13 +33,12 @@ jobs:
       - run: cargo test --workspace
       - run: cargo build -p zeron
 
-  # The macOS cfg paths have never been compiled against the Apple SDK, and the
-  # release job's dmg build is continue-on-error for the same reason. This job
-  # surfaces those errors on every PR without blocking; drop continue-on-error
-  # once it is green.
+  # The macOS cfg paths (Keychain in agent_accounts.rs) had never been compiled
+  # against the Apple SDK before this workflow; they do compile, so this job
+  # blocks. The release dmg build stays continue-on-error — packaging, signing
+  # and notarization are still unproven.
   macos:
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: rust toolchain (rust-toolchain.toml)
