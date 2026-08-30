@@ -173,7 +173,12 @@ fn promote_local_device_group<T>(
     }
 }
 
-fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyElement) -> gpui::Div {
+fn sidebar_disclosure_header(
+    theme: &Theme,
+    label: SharedString,
+    chevron: AnyElement,
+    leading: Option<AnyElement>,
+) -> gpui::Div {
     div()
         .flex()
         .flex_row()
@@ -182,6 +187,7 @@ fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyEle
         .h(px(SIDEBAR_DISCLOSURE_HEADER_HEIGHT))
         .px(px(Theme::SPACE_SM))
         .cursor_pointer()
+        .when_some(leading, |el, leading| el.child(leading))
         .child(
             div()
                 .flex_none()
@@ -1319,6 +1325,15 @@ impl Shell {
         };
         rendered.push(copilot_row);
         for (group, rows) in groups {
+            let group_state = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
+            {
+                crate::avatars::group_avatar_state(
+                    rows.iter()
+                        .map(|row| crate::avatars::avatar_state(row.status)),
+                )
+            } else {
+                keiki_model::AvatarState::Idle
+            };
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for row in rows {
                 let ActiveChatRow {
@@ -1402,7 +1417,16 @@ impl Shell {
             let chevron = self.sidebar_disclosure_chevron(&motion_key, !collapsed, theme);
             let toggle_key = collapse_key.clone();
             let toggle_motion_key = motion_key.clone();
-            let header = sidebar_disclosure_header(theme, visible_label, chevron)
+            let group_avatar = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
+            {
+                key.strip_prefix(crate::keiki::AGENT_PREFIX)
+                    .and_then(|agent_id| {
+                        self.avatar_element(agent_id, group_state, 16.0, theme, cx)
+                    })
+            } else {
+                None
+            };
+            let header = sidebar_disclosure_header(theme, visible_label, chevron, group_avatar)
                 .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
@@ -1538,7 +1562,7 @@ impl Shell {
             format!("Archived ({total})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron)
+        let header = sidebar_disclosure_header(theme, label, chevron, None)
             .id("archived-toggle")
             .on_click(cx.listener(move |this, _, _, cx| {
                 let was_open = this.archived_open;

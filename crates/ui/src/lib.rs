@@ -15,6 +15,7 @@
 pub mod app_menus;
 pub mod appearance;
 pub mod attachments;
+pub mod avatars;
 pub mod badges;
 pub mod change_requests;
 pub mod changes;

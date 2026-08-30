@@ -3505,6 +3505,7 @@ version = "0.2.29"
 dependencies = [
  "base64",
  "keiki-model",
+ "percent-encoding",
  "rand 0.9.5",
  "reqwest",
  "serde",

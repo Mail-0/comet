@@ -2,15 +2,16 @@ use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use keiki_model::{
-    AgentInput, AgentSummary, AgentTemplateSummary, BlockConversationResponse,
-    ClearConversationResponse, ConversationDetail, ConversationLocator, ConversationSearchHit,
-    ConversationSummary, ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse,
-    SendConversationMessageResponse, SessionResponse, SessionUser, SteerConversationResponse,
-    TakeoverResponse,
+    AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
+    BlockConversationResponse, ClearConversationResponse, ConversationDetail, ConversationLocator,
+    ConversationSearchHit, ConversationSummary, ConversationTakeover, CreateAgentFromTemplate,
+    CreateAgentResponse, SendConversationMessageResponse, SessionResponse, SessionUser,
+    SteerConversationResponse, TakeoverResponse,
 };
 use keiki_model::{
     AgentTemplatesResponse, AgentsResponse, ConversationTextInput, ConversationsResponse,
 };
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::Rng as _;
 use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -25,6 +26,15 @@ pub const OAUTH_REDIRECT_URI: &str = "keiki://oauth/callback";
 const LOOPBACK_CALLBACK_PATH: &str = "/oauth/callback";
 const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CONVERSATION_MESSAGE_PAGE_LIMIT: u32 = 500;
+const AVATAR_SIZE_BUCKETS: [u32; 9] = [16, 24, 32, 48, 64, 96, 128, 192, 256];
+
+pub fn avatar_size_bucket(requested: u32) -> u32 {
+    let requested = requested.max(48);
+    AVATAR_SIZE_BUCKETS
+        .into_iter()
+        .find(|bucket| *bucket >= requested)
+        .unwrap_or(256)
+}
 
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -463,6 +473,44 @@ impl Client {
     pub async fn session(&self, access_token: &str) -> Result<SessionResponse, Error> {
         self.send_json(self.session_authenticated_request(access_token))
             .await
+    }
+
+    pub fn agent_avatar_url(
+        &self,
+        agent_id: &str,
+        size: u32,
+        state: AvatarState,
+        theme: AvatarTheme,
+    ) -> String {
+        let encoded_agent_id = utf8_percent_encode(agent_id, NON_ALPHANUMERIC);
+        format!(
+            "{}/api/public/agent-avatars/{}.gif?size={}&state={}&theme={}",
+            self.base_url,
+            encoded_agent_id,
+            avatar_size_bucket(size),
+            state.as_str(),
+            theme.as_str()
+        )
+    }
+
+    pub async fn agent_avatar(
+        &self,
+        agent_id: &str,
+        size: u32,
+        state: AvatarState,
+        theme: AvatarTheme,
+    ) -> Result<Vec<u8>, Error> {
+        let response = self
+            .http
+            .get(self.agent_avatar_url(agent_id, size, state, theme))
+            .send()
+            .await
+            .map_err(Error::Request)?;
+        if response.status().is_success() {
+            Ok(response.bytes().await.map_err(Error::Request)?.to_vec())
+        } else {
+            Err(response_error(response).await)
+        }
     }
 
     pub fn list_agents_authenticated_request(&self, access_token: &str) -> reqwest::RequestBuilder {
@@ -1184,6 +1232,46 @@ mod tests {
                 .get(reqwest::header::AUTHORIZATION)
                 .unwrap(),
             "Bearer access-token"
+        );
+    }
+
+    #[test]
+    fn avatar_size_bucket_never_uses_a_static_animation_size() {
+        assert_eq!(avatar_size_bucket(14), 48);
+        assert_eq!(avatar_size_bucket(48), 48);
+        assert_eq!(avatar_size_bucket(100), 128);
+        assert_eq!(avatar_size_bucket(999), 256);
+    }
+
+    #[test]
+    fn avatar_url_uses_the_public_contract_without_authentication() {
+        let client = Client::new("https://onkeiki.com");
+        assert_eq!(
+            client.agent_avatar_url(
+                "agent/with spaces",
+                14,
+                AvatarState::Thinking,
+                AvatarTheme::Dark,
+            ),
+            "https://onkeiki.com/api/public/agent-avatars/agent%2Fwith%20spaces.gif?size=48&state=thinking&theme=dark"
+        );
+        let request = client
+            .http
+            .get(client.agent_avatar_url("agent-1", 64, AvatarState::Idle, AvatarTheme::Light))
+            .build()
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::GET);
+        assert!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .is_none()
+        );
+        assert!(
+            request
+                .url()
+                .as_str()
+                .ends_with("?size=64&state=idle&theme=light")
         );
     }
 

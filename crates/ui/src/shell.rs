@@ -24,6 +24,7 @@ use gpui::{
 use keiki_model::{AgentTemplateSummary, CreateAgentFromTemplate};
 use zeron_rpc::methods;
 
+use crate::avatars::{self, AvatarKey, AvatarSnapshot};
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
 use crate::icons::{self, icon};
@@ -942,6 +943,8 @@ pub struct Shell {
     /// Clears the jump hints when the window deactivates: a Cmd+Tab away
     /// swallows the key-up, so without this the chips stay on screen for good.
     activation_sub: Option<Subscription>,
+    avatar_loads: std::collections::HashMap<AvatarKey, Task<()>>,
+    avatar_retries: std::collections::HashMap<AvatarKey, Task<()>>,
     /// 1s heartbeat re-rendering the working indicator (elapsed + flavour word).
     _ticker: Task<()>,
     _state_observation: Subscription,
@@ -1140,6 +1143,8 @@ impl Shell {
             splash_task: None,
             focus_sub: None,
             activation_sub: None,
+            avatar_loads: std::collections::HashMap::new(),
+            avatar_retries: std::collections::HashMap::new(),
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
@@ -2944,8 +2949,120 @@ impl Shell {
     /// two, and source metadata below. Working uses the live thread glyph in
     /// the status corner. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
+    fn avatar_element(
+        &mut self,
+        agent_id: &str,
+        state: keiki_model::AvatarState,
+        rendered_px: f32,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let bucket = keiki_api::avatar_size_bucket((rendered_px * 2.0).round() as u32);
+        let key = AvatarKey::new(agent_id, state, avatars::avatar_theme(theme), bucket);
+        let snapshot = avatars::snapshot(&key);
+        match snapshot {
+            AvatarSnapshot::Loaded(image) => Some(
+                div()
+                    .size(px(rendered_px))
+                    .flex_none()
+                    .child(
+                        gpui::img(image)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    )
+                    .into_any_element(),
+            ),
+            AvatarSnapshot::Loading => {
+                if avatars::begin_load(&key) {
+                    self.spawn_avatar_load(key, cx);
+                }
+                None
+            }
+            AvatarSnapshot::Error { retry_in } => {
+                if avatars::begin_load(&key) {
+                    self.spawn_avatar_load(key.clone(), cx);
+                }
+                self.schedule_avatar_retry(key, retry_in, cx);
+                None
+            }
+        }
+    }
+
+    fn spawn_avatar_load(&mut self, key: AvatarKey, cx: &mut Context<Self>) {
+        let Some(client) = self.state.read(cx).keiki_client.clone() else {
+            avatars::store_error(&key);
+            return;
+        };
+        let task_key = key.clone();
+        let load_key = key.clone();
+        let cleanup_key = key.clone();
+        let generation = avatars::generation();
+        let task = cx.spawn(async move |this, cx| {
+            let request = cx.update(|cx| {
+                let request_client = client.clone();
+                let request_key = task_key.clone();
+                gpui_tokio::Tokio::spawn(cx, async move {
+                    request_client
+                        .agent_avatar(
+                            &request_key.agent_id,
+                            request_key.bucket,
+                            request_key.state,
+                            request_key.theme,
+                        )
+                        .await
+                })
+            });
+            match request.await {
+                Ok(Ok(bytes)) => {
+                    if avatars::generation() == generation {
+                        avatars::store_loaded(load_key.clone(), bytes);
+                    }
+                }
+                Ok(Err(error)) => {
+                    if avatars::generation() == generation {
+                        tracing::warn!(%error, agent_id = %load_key.agent_id, "Keiki avatar request failed");
+                        avatars::store_error(&load_key);
+                    }
+                }
+                Err(error) => {
+                    if avatars::generation() == generation {
+                        tracing::warn!(%error, agent_id = %load_key.agent_id, "Keiki avatar request task failed");
+                        avatars::store_error(&load_key);
+                    }
+                }
+            }
+            if let Err(error) = this.update(cx, |shell, cx| {
+                shell.avatar_loads.remove(&cleanup_key);
+                cx.notify();
+            }) {
+                tracing::debug!(%error, "Keiki avatar shell update skipped");
+            }
+        });
+        self.avatar_loads.insert(key, task);
+    }
+
+    fn schedule_avatar_retry(&mut self, key: AvatarKey, delay: Duration, cx: &mut Context<Self>) {
+        if delay == Duration::MAX || self.avatar_retries.contains_key(&key) {
+            return;
+        }
+        let wake = key.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(delay + Duration::from_millis(60))
+                .await;
+            if let Err(error) = this.update(cx, |shell, cx| {
+                shell.avatar_retries.remove(&wake);
+                cx.notify();
+            }) {
+                tracing::debug!(%error, "Keiki avatar retry update skipped");
+            }
+        });
+        self.avatar_retries.insert(key, task);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
-        &self,
+        &mut self,
         id: String,
         title: SharedString,
         time_ago: SharedString,
@@ -2971,6 +3088,17 @@ impl Shell {
         // ARCHIVE button (UNARCHIVE on rows in the sidebar's archived
         // accordion), t3code's settle-on-hover.
         let corner_hovered = self.chat_status_hover.as_deref() == Some(id.as_str());
+        let keiki_agent_id =
+            crate::keiki::conversation_locator(&id).and_then(|locator| locator.agent_id);
+        let keiki_avatar = keiki_agent_id.as_deref().and_then(|agent_id| {
+            self.avatar_element(
+                agent_id,
+                crate::avatars::avatar_state(status),
+                SIDEBAR_ACTIVE_HARNESS_ICON_SIZE,
+                theme,
+                cx,
+            )
+        });
         // Send-truth overrides: a send unadopted past the grace window is
         // FAILED (explicit, with the transcript's retry affordance); a send
         // whose delivery path is degraded is QUEUED, not Working — the
@@ -3243,8 +3371,12 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
+                    .when_some(keiki_avatar, |el, avatar| el.child(avatar))
                     .when_some(
-                        harness.map(crate::pickers::harness_brand_icon),
+                        keiki_agent_id
+                            .is_none()
+                            .then(|| harness.map(crate::pickers::harness_brand_icon))
+                            .flatten(),
                         |el, (path, tint)| {
                             el.child(
                                 icon(path)
@@ -5927,6 +6059,7 @@ impl Render for Shell {
         self.settings.theme_selection = crate::appearance::themes(cx);
         self.settings.accent = crate::appearance::accent(cx);
         self.settings.surface = crate::appearance::surface(cx);
+        avatars::flush_evicted(Some(window), cx);
         let theme = Theme::of(cx);
         // The shell tone (zeron `.frost`): the surface the sidebar sits on and
         // the main panel floats over as an inset rounded card. On macOS the

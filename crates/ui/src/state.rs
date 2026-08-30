@@ -688,6 +688,7 @@ impl AppState {
     }
 
     pub(crate) fn mark_keiki_signed_out(&mut self, error: Option<String>) {
+        crate::avatars::clear();
         self.clear_keiki_rows();
         self.keiki_token = None;
         self.keiki_credentials = None;

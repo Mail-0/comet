@@ -7,6 +7,42 @@ pub enum AgentRuntime {
     Local,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AvatarState {
+    Idle,
+    Thinking,
+    Running,
+    Error,
+}
+
+impl AvatarState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Thinking => "thinking",
+            Self::Running => "running",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AvatarTheme {
+    Light,
+    Dark,
+}
+
+impl AvatarTheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+}
+
 impl AgentRuntime {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -594,6 +630,16 @@ mod tests {
         .unwrap();
         assert_eq!(created.id, "agent-2");
         assert_eq!(created.missing_secrets[0].name, "GOOGLE_OAUTH_CLIENT_ID");
+    }
+
+    #[test]
+    fn avatar_contract_values_match_the_public_endpoint() {
+        assert_eq!(AvatarState::Idle.as_str(), "idle");
+        assert_eq!(AvatarState::Thinking.as_str(), "thinking");
+        assert_eq!(AvatarState::Running.as_str(), "running");
+        assert_eq!(AvatarState::Error.as_str(), "error");
+        assert_eq!(AvatarTheme::Light.as_str(), "light");
+        assert_eq!(AvatarTheme::Dark.as_str(), "dark");
     }
 
     #[test]
