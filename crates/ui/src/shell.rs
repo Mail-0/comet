@@ -2945,10 +2945,6 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row: context + status on line one, harness + title on line
-    /// two, and source metadata below. Working uses the live thread glyph in
-    /// the status corner. Click selects; right-click opens the context menu.
-    #[allow(clippy::too_many_arguments)]
     fn avatar_element(
         &mut self,
         agent_id: &str,
@@ -2956,34 +2952,32 @@ impl Shell {
         rendered_px: f32,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> AnyElement {
         let bucket = keiki_api::avatar_size_bucket((rendered_px * 2.0).round() as u32);
         let key = AvatarKey::new(agent_id, state, avatars::avatar_theme(theme), bucket);
         let snapshot = avatars::snapshot(&key);
         match snapshot {
-            AvatarSnapshot::Loaded(image) => Some(
-                div()
-                    .size(px(rendered_px))
-                    .flex_none()
-                    .child(
-                        gpui::img(image)
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
-                    .into_any_element(),
-            ),
+            AvatarSnapshot::Loaded(image) => div()
+                .size(px(rendered_px))
+                .flex_none()
+                .child(
+                    gpui::img(image)
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
+                .into_any_element(),
             AvatarSnapshot::Loading => {
                 if avatars::begin_load(&key) {
                     self.spawn_avatar_load(key, cx);
                 }
-                None
+                div().size(px(rendered_px)).flex_none().into_any_element()
             }
             AvatarSnapshot::Error { retry_in } => {
                 if avatars::begin_load(&key) {
                     self.spawn_avatar_load(key.clone(), cx);
                 }
                 self.schedule_avatar_retry(key, retry_in, cx);
-                None
+                div().size(px(rendered_px)).flex_none().into_any_element()
             }
         }
     }
@@ -3060,6 +3054,9 @@ impl Shell {
         self.avatar_retries.insert(key, task);
     }
 
+    /// One session row: context + status on line one, harness + title on line
+    /// two, and source metadata below. Working uses the live thread glyph in
+    /// the status corner. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
         &mut self,
@@ -3090,7 +3087,7 @@ impl Shell {
         let corner_hovered = self.chat_status_hover.as_deref() == Some(id.as_str());
         let keiki_agent_id =
             crate::keiki::conversation_locator(&id).and_then(|locator| locator.agent_id);
-        let keiki_avatar = keiki_agent_id.as_deref().and_then(|agent_id| {
+        let keiki_avatar = keiki_agent_id.as_deref().map(|agent_id| {
             self.avatar_element(
                 agent_id,
                 crate::avatars::avatar_state(status),
