@@ -2781,7 +2781,7 @@ impl Shell {
             .children(devices.into_iter().enumerate().map(|(ix, dev)| {
                 let is_active = device.as_ref().is_some_and(|d| d.id == dev.id);
                 let online = device_presence.get(ix).copied().unwrap_or(false);
-                // The Devices-page platform mapping (settings::devices).
+                // Keep platform labels consistent with the device row.
                 let platform_icon = match dev.platform.as_str() {
                     "macos" | "darwin" => icons::LAPTOP,
                     "web" => icons::GLOBAL,

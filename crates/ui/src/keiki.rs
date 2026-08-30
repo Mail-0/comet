@@ -16,6 +16,7 @@ use zeron_proto::{Chat, Device, Space};
 use zeron_rpc::methods;
 
 use crate::state::AppState;
+use crate::state::KeikiSessionInfo;
 
 pub const DEVICE_ID: &str = "keiki-cloud";
 pub const AGENT_PREFIX: &str = "keiki-agent:";
@@ -303,6 +304,9 @@ async fn refresh_keiki_token(
     persist_credentials(&client_id, &refreshed, entity, cx)
         .await
         .map_err(keiki_api::Error::Local)?;
+    let fetch_session = entity
+        .update(cx, |state, _| state.keiki_session.is_none())
+        .map_err(|error| request_task_error("Keiki session state read", error))?;
     entity
         .update(cx, |state, _| {
             state.keiki_token = Some(refreshed.clone());
@@ -310,7 +314,64 @@ async fn refresh_keiki_token(
         })
         .map_err(|error| request_task_error("Keiki token state update", error))?;
     sync_copilot_credentials(entity, &client, &refreshed, cx).await;
+    if fetch_session {
+        fetch_keiki_session(entity, client, refreshed.clone(), cx).await;
+    }
     Ok(refreshed)
+}
+
+async fn fetch_keiki_session(
+    entity: &WeakEntity<AppState>,
+    client: Client,
+    token: TokenSet,
+    cx: &mut AsyncApp,
+) {
+    let access_token = token.access_token().to_string();
+    let request = cx.update(|cx| {
+        gpui_tokio::Tokio::spawn(cx, async move { client.session(&access_token).await })
+    });
+    let result = match request.await {
+        Ok(result) => result,
+        Err(error) => Err(request_task_error("Keiki session request", error)),
+    };
+    match result {
+        Ok(response) => {
+            let active_org_id = response.user.active_org_id.as_deref();
+            let active_org_name = response
+                .user
+                .orgs
+                .iter()
+                .find(|org| Some(org.id.as_str()) == active_org_id)
+                .and_then(|org| org.name.clone())
+                .or_else(|| {
+                    response.user.org_id.as_deref().and_then(|org_id| {
+                        response
+                            .user
+                            .orgs
+                            .iter()
+                            .find(|org| org.id == org_id)
+                            .and_then(|org| org.name.clone())
+                    })
+                });
+            let info = KeikiSessionInfo {
+                display_name: response.user.name,
+                email: response.user.email,
+                active_org_name,
+                role: response.user.role,
+            };
+            if let Err(error) = entity.update(cx, |state, cx| {
+                if state.keiki_status == SessionStatus::SignedIn {
+                    state.keiki_session = Some(info);
+                    cx.notify();
+                }
+            }) {
+                tracing::warn!(%error, "Keiki session state update failed");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Keiki session fetch failed");
+        }
+    }
 }
 
 pub(crate) async fn sync_copilot_credentials(
@@ -816,10 +877,12 @@ pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
                     state.keiki_credentials = Some(credentials);
                     state.keiki_token = Some(tokens.clone());
                     state.keiki_status = SessionStatus::SignedIn;
+                    state.keiki_session = None;
                     state.keiki_error = None;
                     cx.notify();
                 });
                 sync_copilot_credentials(&boot_state.downgrade(), &client, &tokens, cx).await;
+                fetch_keiki_session(&boot_state.downgrade(), client.clone(), tokens, cx).await;
                 poll(boot_state.downgrade(), cx).await;
             }
             Ok(Err(error)) if error.is_invalid_refresh_token() => {
@@ -1147,7 +1210,8 @@ async fn complete_callback(
     }
     .await;
     let success = result.is_ok();
-    if let Ok((tokens, _)) = &result {
+    let fetched_tokens = result.as_ref().ok().map(|(tokens, _)| tokens.clone());
+    if let Some(tokens) = fetched_tokens.as_ref() {
         sync_copilot_credentials(&state, &client, tokens, cx).await;
     }
     state
@@ -1156,6 +1220,7 @@ async fn complete_callback(
                 state.keiki_token = Some(tokens);
                 state.keiki_credentials = Some(credentials);
                 state.keiki_status = SessionStatus::SignedIn;
+                state.keiki_session = None;
                 state.keiki_error = None;
                 cx.notify();
             }
@@ -1168,6 +1233,9 @@ async fn complete_callback(
         })
         .ok();
     if success {
+        if let Some(tokens) = fetched_tokens {
+            fetch_keiki_session(&state, client, tokens, cx).await;
+        }
         poll(state, cx).await;
     }
 }

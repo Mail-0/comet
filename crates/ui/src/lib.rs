@@ -25,7 +25,6 @@ pub mod frost;
 pub mod history;
 pub mod icons;
 pub mod keiki;
-pub mod links;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
@@ -152,7 +151,6 @@ pub fn run_app(config: UiConfig) {
         composer::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);
-        cx.register_url_scheme("zeron").detach();
         cx.spawn(
             async move |cx| match cx.update(|cx| cx.register_url_scheme("keiki")).await {
                 Ok(()) => {}
@@ -168,8 +166,6 @@ pub fn run_app(config: UiConfig) {
                 url_state.update(cx, |state, cx| {
                     if url.starts_with("keiki://") {
                         state.open_keiki_deep_link(&url, cx);
-                    } else {
-                        state.open_deep_link(&url, cx);
                     }
                 });
             }

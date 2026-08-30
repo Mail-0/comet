@@ -31,8 +31,8 @@ use crate::comments::DiffComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
 use zeron_proto::{
-    AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device,
-    EngineInfo, HarnessId, Session, Space, WorkspaceScope,
+    ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device, EngineInfo,
+    HarnessId, Session, Space, WorkspaceScope,
 };
 use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
 
@@ -42,6 +42,14 @@ use crate::change_requests::{
 use crate::keiki::{
     KeikiConversation, KeikiConversationPending, SessionStatus as KeikiSessionStatus,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeikiSessionInfo {
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub active_org_name: Option<String>,
+    pub role: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Engine handle
@@ -511,43 +519,6 @@ pub use zeron_proto::view::{
 };
 
 // ---------------------------------------------------------------------------
-// Org gate (pure)
-// ---------------------------------------------------------------------------
-
-/// One org membership row (tolerant local mirror of the engine's ListOrgs
-/// reply — `{orgs: [{id, organizationId, name}]}`).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrgRow {
-    pub organization_id: String,
-    pub name: String,
-}
-
-/// Parse a ListOrgs reply tolerantly (accepts a bare array too).
-pub fn parse_orgs(value: &serde_json::Value) -> Vec<OrgRow> {
-    let list = value.get("orgs").unwrap_or(value);
-    serde_json::from_value(list.clone()).unwrap_or_default()
-}
-
-/// Workspace names must be non-empty (trimmed) and reasonably short.
-pub fn org_name_valid(name: &str) -> bool {
-    let trimmed = name.trim();
-    !trimmed.is_empty() && trimmed.chars().count() <= 64
-}
-
-/// Memberships sorted by name (case-insensitive), deduped by organization id.
-pub fn sort_memberships(mut orgs: Vec<OrgRow>) -> Vec<OrgRow> {
-    orgs.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    orgs.dedup_by(|a, b| a.organization_id == b.organization_id);
-    orgs
-}
-
-// ---------------------------------------------------------------------------
 // AppState entity
 // ---------------------------------------------------------------------------
 
@@ -584,11 +555,6 @@ pub struct UploadProgress {
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
 pub struct AppState {
     pub connection: ConnectionStatus,
-    /// Fixed data boundary of the attached engine. Authentication may change
-    /// in place, but changing this scope requires assembling a new runtime.
-    pub workspace_scope: Option<WorkspaceScope>,
-    /// Auth stream value; `None` until the engine reports one (M4).
-    pub auth: Option<AuthState>,
     pub devices: Vec<Device>,
     /// Live edge posture (WatchConnectivity): drives the connection pill,
     /// composer honesty ("will queue"), and the Queued send badges.
@@ -619,8 +585,6 @@ pub struct AppState {
     /// judge by the empty pre-sync lists.
     pub chats_synced: bool,
     pub spaces_synced: bool,
-    pending_deep_link: Option<crate::links::ConversationDeepLink>,
-    deep_link_notice: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
     /// The selected chat's opening `WatchDocMessages` reset has landed. An
@@ -654,6 +618,7 @@ pub struct AppState {
     pub(crate) keiki_credentials: Option<keiki_api::StoredCredentials>,
     pub(crate) keiki_flow: Option<keiki_api::AuthorizationFlow>,
     pub(crate) keiki_status: KeikiSessionStatus,
+    pub(crate) keiki_session: Option<KeikiSessionInfo>,
     pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
     pub(crate) keiki_conversation: Option<KeikiConversation>,
@@ -684,8 +649,6 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             connection: ConnectionStatus::Connecting,
-            workspace_scope: None,
-            auth: None,
             devices: Vec::new(),
             connectivity: zeron_proto::Connectivity::default(),
             spaces: Vec::new(),
@@ -710,6 +673,7 @@ impl AppState {
             keiki_credentials: None,
             keiki_flow: None,
             keiki_status: KeikiSessionStatus::SignedOut,
+            keiki_session: None,
             keiki_error: None,
             keiki_task: None,
             keiki_conversation: None,
@@ -724,8 +688,6 @@ impl AppState {
             auto_selected: false,
             chats_synced: false,
             spaces_synced: false,
-            pending_deep_link: None,
-            deep_link_notice: None,
         }
     }
 
@@ -901,16 +863,6 @@ impl AppState {
                 })
                 .cloned(),
         );
-        // A local-only workspace has no remote device identity to distinguish.
-        // Keep the engine's legacy sentinel out of the UI while preserving real
-        // hostnames and user-assigned device names.
-        if self.workspace_scope == Some(WorkspaceScope::Local)
-            && let Some(local_id) = self.local_device_id.as_deref()
-            && let Some(device) = devices.iter_mut().find(|device| device.id == local_id)
-            && device.name == "unknown-device"
-        {
-            device.name = "Local".to_string();
-        }
         for device in &devices {
             self.change_requests
                 .clear_unsupported_on_version_change(&device.id, device.version.as_deref());
@@ -1030,6 +982,7 @@ impl AppState {
         self.keiki_token = None;
         self.keiki_credentials = None;
         self.keiki_flow = None;
+        self.keiki_session = None;
         self.keiki_status = KeikiSessionStatus::SignedOut;
         self.keiki_error = error;
     }
@@ -1064,26 +1017,6 @@ impl AppState {
 
     pub fn apply_update(&mut self, status: zeron_update::UpdateStatus) {
         self.update = Some(status);
-    }
-
-    pub fn apply_auth(&mut self, auth: AuthState) {
-        self.auth = Some(auth);
-    }
-
-    /// Tolerant AuthStatus frame reducer (see [`parse_auth_state`]).
-    pub fn apply_auth_value(&mut self, value: serde_json::Value) {
-        match parse_auth_state(&value) {
-            Some(auth) => self.apply_auth(auth),
-            None => tracing::warn!("dropping unrecognized AuthStatus frame"),
-        }
-    }
-
-    /// The signed-in user, if the engine reports one.
-    pub fn auth_user(&self) -> Option<&zeron_proto::UserProfile> {
-        match self.auth.as_ref()? {
-            AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
-            AuthState::SignedOut => None,
-        }
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
@@ -1411,7 +1344,9 @@ impl AppState {
             return true;
         }
         match self.devices.iter().find(|d| d.id == device_id) {
-            Some(d) => crate::settings::devices::device_online(d.last_seen_at, now),
+            Some(d) => d
+                .last_seen_at
+                .is_some_and(|at| now.signed_duration_since(at).num_seconds() <= 70),
             None => true,
         }
     }
@@ -1561,7 +1496,7 @@ impl AppState {
     }
 
     pub fn gate(&self) -> GatePhase {
-        gate_phase(&self.connection, self.workspace_scope, self.auth.as_ref())
+        gate_phase(&self.connection, None, None)
     }
 
     pub fn engine(&self) -> Option<&EngineHandle> {
@@ -1578,8 +1513,6 @@ impl AppState {
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
         self.connection = ConnectionStatus::Connecting;
-        self.workspace_scope = None;
-        self.auth = None;
         self.devices.clear();
         self.spaces.clear();
         self.chats.clear();
@@ -1611,8 +1544,6 @@ impl AppState {
         let data_dir = config.data_dir.clone();
         state.update(cx, |s, cx| {
             s.connection = ConnectionStatus::Connecting;
-            s.workspace_scope = None;
-            s.auth = None;
             s.data_dir = Some(data_dir);
             cx.notify();
         });
@@ -1643,7 +1574,6 @@ impl AppState {
     /// workspace doc in M4) fail their subscribe and are skipped gracefully.
     fn attach_engine(&mut self, handle: EngineHandle, cx: &mut Context<Self>) {
         let engine_info = handle.engine_info();
-        self.workspace_scope = Some(engine_info.workspace_scope);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.engine = Some(handle.clone());
         let mut watch_tasks = Vec::with_capacity(8);
@@ -1681,13 +1611,6 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
-            ),
-            // Auth frames parse tolerantly — engine and proto tags differ today.
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::AUTH_STATUS,
-                AppState::apply_auth_value,
             ),
             spawn_watch(
                 cx,
@@ -1752,49 +1675,8 @@ impl AppState {
         }
     }
 
-    pub fn open_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        match crate::links::parse_zeron_conversation_link(url) {
-            Ok(link) => {
-                self.pending_deep_link = Some(link);
-                self.apply_pending_deep_link(cx);
-            }
-            Err(error) => self.deep_link_notice = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
     pub fn open_keiki_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
         crate::keiki::handle_callback(self, url, cx);
-    }
-
-    fn apply_pending_deep_link(&mut self, cx: &mut Context<Self>) {
-        let Some(link) = self.pending_deep_link.clone() else {
-            return;
-        };
-        let Some(locator) = crate::links::workspace_locator(
-            self.workspace_scope,
-            self.auth.as_ref(),
-            self.local_device_id.as_deref(),
-        ) else {
-            return;
-        };
-        if locator != link.workspace {
-            self.pending_deep_link = None;
-            self.deep_link_notice =
-                Some("This conversation link belongs to another workspace".into());
-            return;
-        }
-        if self.chats.iter().any(|chat| chat.id == link.chat_id) {
-            self.pending_deep_link = None;
-            self.select_chat(Some(link.chat_id), cx);
-        } else if self.chats_synced {
-            self.pending_deep_link = None;
-            self.deep_link_notice = Some("The linked conversation was not found".into());
-        }
-    }
-
-    pub fn take_deep_link_notice(&mut self) -> Option<String> {
-        self.deep_link_notice.take()
     }
 
     /// Select a chat (or clear). Swaps the per-chat doc-transcript subscription:
@@ -1971,7 +1853,6 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
                 };
                 let alive = this.update(cx, |state, cx| {
                     state.apply_chats(parsed);
-                    state.apply_pending_deep_link(cx);
                     state.reconcile_change_request_watches(cx);
                     cx.notify();
                 });
@@ -2118,7 +1999,6 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
                 };
                 let alive = this.update(cx, |state, cx| {
                     apply(state, parsed);
-                    state.apply_pending_deep_link(cx);
                     if matches!(method, methods::WATCH_SPACES | methods::WATCH_DEVICES) {
                         state.reconcile_change_request_watches(cx);
                     }
@@ -2157,7 +2037,6 @@ fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) ->
         if let Some(id) = id {
             this.update(cx, |state, cx| {
                 state.local_device_id = Some(id);
-                state.apply_pending_deep_link(cx);
                 // Watches opened before this probe conservatively route through
                 // targetDeviceId. Recreate them now that local routing is known.
                 state.change_request_tasks.clear();
@@ -2314,7 +2193,7 @@ mod tests {
     use zeron_engine::{EngineCore, default_registry};
     // `SessionStatus` is only needed to build the fixtures below — the module
     // itself derives everything through `zeron_proto::view`.
-    use zeron_proto::{SessionStatus, UserProfile};
+    use zeron_proto::{AuthState, SessionStatus, UserProfile};
 
     /// A localhost port that was just free (bind :0, read, drop).
     async fn free_port() -> u16 {
@@ -2905,24 +2784,6 @@ mod tests {
             created_at: None,
             version: None,
         }
-    }
-
-    #[test]
-    fn local_workspace_hides_the_unknown_device_sentinel() {
-        let mut state = AppState::new();
-        state.workspace_scope = Some(WorkspaceScope::Local);
-        state.local_device_id = Some("local".into());
-
-        state.apply_devices(vec![
-            device("local", "unknown-device"),
-            device("remote", "unknown-device"),
-        ]);
-
-        assert_eq!(state.device_name("local"), Some("Local"));
-        assert_eq!(state.device_name("remote"), Some("unknown-device"));
-
-        state.apply_devices(vec![device("local", "José's MacBook Pro")]);
-        assert_eq!(state.device_name("local"), Some("José's MacBook Pro"));
     }
 
     #[test]
@@ -3758,34 +3619,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_changes_do_not_change_a_local_runtime_scope_or_watches() {
-        let mut state = AppState::new();
-        state.workspace_scope = Some(WorkspaceScope::Local);
-        state.watch_tasks.push(Task::ready(()));
-
-        state.apply_auth(AuthState::NeedsOrganization {
-            user: UserProfile {
-                id: "u".into(),
-                email: "w@example.com".into(),
-                name: None,
-            },
-        });
-        assert_eq!(state.workspace_scope, Some(WorkspaceScope::Local));
-        assert_eq!(state.watch_tasks.len(), 1);
-
-        state.apply_auth(AuthState::SignedIn {
-            user: UserProfile {
-                id: "u".into(),
-                email: "w@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-1".into()),
-        });
-        assert_eq!(state.workspace_scope, Some(WorkspaceScope::Local));
-        assert_eq!(state.watch_tasks.len(), 1);
-    }
-
-    #[test]
     fn auth_frames_parse_both_wire_shapes() {
         // Proto shape.
         let proto = serde_json::json!({ "state": "signedOut" });
@@ -3890,36 +3723,6 @@ mod tests {
         assert_eq!(chat_location(&c), None);
         c.branch = None;
         assert_eq!(chat_location(&c), None);
-    }
-
-    #[test]
-    fn org_gate_reducers() {
-        assert!(org_name_valid("Acme"));
-        assert!(org_name_valid("  padded  "));
-        assert!(!org_name_valid(""));
-        assert!(!org_name_valid("   "));
-        assert!(!org_name_valid(&"x".repeat(65)));
-
-        let rows = parse_orgs(&serde_json::json!({ "orgs": [
-            { "id": "m2", "organizationId": "o2", "name": "beta" },
-            { "id": "m1", "organizationId": "o1", "name": "Alpha" },
-            { "id": "m3", "organizationId": "o1", "name": "Alpha" },
-        ]}));
-        assert_eq!(rows.len(), 3);
-        let sorted = sort_memberships(rows);
-        let names: Vec<&str> = sorted.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["Alpha", "beta"],
-            "case-insensitive sort + dedupe by org id"
-        );
-        // Bare-array replies parse too; garbage yields empty.
-        assert_eq!(
-            parse_orgs(&serde_json::json!([{ "id": "m", "organizationId": "o", "name": "n" }]))
-                .len(),
-            1
-        );
-        assert!(parse_orgs(&serde_json::json!("nope")).is_empty());
     }
 
     #[test]

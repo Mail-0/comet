@@ -5,7 +5,8 @@ pub use keiki_model::{
     AgentInput, AgentSummary, AgentTemplateSummary, BlockConversationResponse,
     ClearConversationResponse, ConversationDetail, ConversationLocator, ConversationSearchHit,
     ConversationSummary, ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse,
-    SendConversationMessageResponse, SteerConversationResponse, TakeoverResponse,
+    SendConversationMessageResponse, SessionResponse, SessionUser, SteerConversationResponse,
+    TakeoverResponse,
 };
 use keiki_model::{
     AgentTemplatesResponse, AgentsResponse, ConversationTextInput, ConversationsResponse,
@@ -451,6 +452,17 @@ impl Client {
 
     pub fn list_agents_request(&self) -> reqwest::RequestBuilder {
         self.http.get(self.endpoint("/api/webapp/agents"))
+    }
+
+    pub fn session_authenticated_request(&self, access_token: &str) -> reqwest::RequestBuilder {
+        self.http
+            .get(self.endpoint("/api/webapp/auth/session"))
+            .bearer_auth(access_token)
+    }
+
+    pub async fn session(&self, access_token: &str) -> Result<SessionResponse, Error> {
+        self.send_json(self.session_authenticated_request(access_token))
+            .await
     }
 
     pub fn list_agents_authenticated_request(&self, access_token: &str) -> reqwest::RequestBuilder {
@@ -1154,6 +1166,25 @@ mod tests {
         let redirect_uri = loopback_redirect_uri(8976);
 
         assert_eq!(redirect_uri, "http://127.0.0.1:8976/oauth/callback");
+    }
+
+    #[test]
+    fn session_request_uses_authenticated_webapp_endpoint() {
+        let request = Client::new("https://keiki.example")
+            .session_authenticated_request("access-token")
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.url().as_str(),
+            "https://keiki.example/api/webapp/auth/session"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap(),
+            "Bearer access-token"
+        );
     }
 
     #[test]

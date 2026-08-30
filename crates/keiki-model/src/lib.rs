@@ -55,6 +55,31 @@ pub struct AgentsResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OrganizationSummary {
+    pub id: String,
+    pub name: Option<String>,
+    pub role: Option<String>,
+    pub logo_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUser {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub org_id: Option<String>,
+    pub role: Option<String>,
+    pub orgs: Vec<OrganizationSummary>,
+    pub active_org_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResponse {
+    pub user: SessionUser,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTemplateSecret {
     pub name: String,
     pub required: bool,
@@ -429,6 +454,35 @@ fn status_rank(status: AgentStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_response_matches_webapp_shape() {
+        let response: SessionResponse = serde_json::from_value(serde_json::json!({
+            "user": {
+                "name": "Ada Lovelace",
+                "email": "ada@example.com",
+                "orgId": "org-1",
+                "role": "owner",
+                "orgs": [{
+                    "id": "org-1",
+                    "name": "Analytical Engines",
+                    "role": "owner",
+                    "logoUrl": null
+                }],
+                "activeOrgId": "org-1"
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(response.user.name.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(response.user.email.as_deref(), Some("ada@example.com"));
+        assert_eq!(response.user.org_id.as_deref(), Some("org-1"));
+        assert_eq!(response.user.active_org_id.as_deref(), Some("org-1"));
+        assert_eq!(
+            response.user.orgs[0].name.as_deref(),
+            Some("Analytical Engines")
+        );
+    }
 
     fn agent(
         name: &str,
