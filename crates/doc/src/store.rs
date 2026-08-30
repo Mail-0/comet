@@ -30,20 +30,18 @@ const MIGRATIONS: &[&str] = &[
         command_id   TEXT PRIMARY KEY,
         processed_at INTEGER NOT NULL
      ) STRICT;",
-    // v2 — chat2 room cursor + doc epoch (docs/chat2-sync.md C2). The cursor
+    // v2 — local transcript cursor + doc epoch. The cursor
     // is persisted in the SAME transaction as the snapshot bytes, so content
-    // and cursor cannot diverge (restored backups / copied devices simply
-    // redownload from their honest cursor). `epoch` marks rebuild lineage
-    // (M1/M3): 2 = thin chat2 rebuild; NULL/0 = pre-migration s2 doc.
+    // and cursor cannot diverge. `epoch` is retained for compatibility with
+    // older snapshots.
     "ALTER TABLE snapshots ADD COLUMN cursor INTEGER;
      ALTER TABLE snapshots ADD COLUMN epoch INTEGER;",
 ];
 
 /// SQLite-backed store under a data directory (`{data_dir}/docs.sqlite3`).
 ///
-/// Holds warm-open doc snapshots (the DO room is authoritative; these make
-/// cold starts instant and offline restarts possible) and the command ledger
-/// that gives command execution mark-BEFORE-execute idempotence.
+/// Holds warm-open doc snapshots and the command ledger that gives command
+/// execution mark-BEFORE-execute idempotence.
 pub struct DocsStore {
     conn: Mutex<Connection>,
 }
@@ -86,9 +84,9 @@ impl DocsStore {
         Ok(())
     }
 
-    /// Save the snapshot together with its chat2 room cursor and doc epoch —
+    /// Save the snapshot together with its local transcript room cursor and doc epoch —
     /// ONE transaction, so bytes and cursor can never disagree (the C2 rule;
-    /// a divergent pair is exactly the restored-backup redownload bug).
+    /// a divergent pair is exactly the restored-backup consistency bug).
     pub fn save_snapshot_with_cursor(
         &self,
         doc_id: &str,
@@ -105,7 +103,7 @@ impl DocsStore {
         Ok(())
     }
 
-    /// Snapshot + chat2 cursor + epoch. Pre-migration rows (or rows written
+    /// Snapshot + local transcript cursor + epoch. Pre-migration rows (or rows written
     /// by [`Self::save_snapshot`]) read back as `(bytes, 0, 0)`.
     pub fn load_snapshot_with_cursor(
         &self,
@@ -147,31 +145,6 @@ impl DocsStore {
             )
             .optional()?;
         Ok(hit.is_some())
-    }
-
-    /// The full command ledger — profile-import reads the source's claims so
-    /// imported pending commands can never re-execute under the new profile.
-    pub fn processed_commands(&self) -> Result<Vec<(String, i64)>, StoreError> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT command_id, processed_at FROM processed_commands")?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// Merge foreign ledger claims (profile import). Existing claims win;
-    /// returns how many rows were newly inserted.
-    pub fn import_processed_commands(&self, rows: &[(String, i64)]) -> Result<usize, StoreError> {
-        let mut inserted = 0;
-        let conn = self.conn();
-        for (command_id, processed_at) in rows {
-            inserted += conn.execute(
-                "INSERT OR IGNORE INTO processed_commands (command_id, processed_at) VALUES (?1, ?2)",
-                params![command_id, processed_at],
-            )?;
-        }
-        Ok(inserted)
     }
 
     /// Whether `command_id` has already been claimed for execution.
@@ -273,7 +246,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = DocsStore::open(dir.path()).unwrap();
 
-        // Plain saves (pre-chat2 path) read back with cursor/epoch 0.
+        // Plain saves (pre-local transcript path) read back with cursor/epoch 0.
         store.save_snapshot("chat-1", b"v1").unwrap();
         assert_eq!(
             store.load_snapshot_with_cursor("chat-1").unwrap(),

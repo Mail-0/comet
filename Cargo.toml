@@ -7,7 +7,6 @@ members = [
     "crates/copilot",
     "crates/proto",
     "crates/doc",
-    "crates/sync",
     "crates/harness",
     "crates/engine",
     "crates/rpc",
@@ -29,7 +28,6 @@ keiki-api = { path = "crates/keiki-api" }
 zeron-proto = { path = "crates/proto" }
 zeron-copilot = { path = "crates/copilot" }
 zeron-doc = { path = "crates/doc" }
-zeron-sync = { path = "crates/sync" }
 zeron-harness = { path = "crates/harness" }
 zeron-engine = { path = "crates/engine" }
 zeron-rpc = { path = "crates/rpc" }

@@ -3869,12 +3869,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loro-protocol"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9f1697b501f505f286c411c38b062a73f080028157c766cd75f12e243239454"
-
-[[package]]
 name = "loro-rle"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9223,9 +9217,11 @@ version = "0.2.29"
 dependencies = [
  "chrono",
  "loro",
+ "rusqlite",
  "serde",
  "serde_json",
  "similar",
+ "tempfile",
  "thiserror 2.0.20",
  "tracing",
  "zeron-proto",
@@ -9255,7 +9251,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "tokio-tungstenite",
  "tokio-util",
  "tracing",
  "uuid",
@@ -9264,7 +9259,6 @@ dependencies = [
  "zeron-harness",
  "zeron-proto",
  "zeron-rpc",
- "zeron-sync",
  "zeron-update",
 ]
 
@@ -9307,30 +9301,6 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
- "zeron-doc",
- "zeron-proto",
- "zeron-sync",
-]
-
-[[package]]
-name = "zeron-sync"
-version = "0.2.29"
-dependencies = [
- "block2 0.6.2",
- "chrono",
- "futures",
- "loro",
- "loro-protocol",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
