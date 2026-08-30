@@ -12,7 +12,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::{AuthState, Chat, ChatIndicator, Session, SessionStatus, Space, WorkspaceScope};
+use crate::{Chat, ChatIndicator, Session, SessionStatus, Space};
 
 // ---------------------------------------------------------------------------
 // Connection + status
@@ -64,7 +64,7 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
 }
 
 /// The full display status for a chat row / tab dot: live states win, then the
-/// synced seen marker decides completed-vs-idle. Staleness gating rides on
+/// local seen marker decides completed-vs-idle. Staleness gating rides on
 /// [`effective_indicator`]; the derivation itself is [`crate::chat_indicator`].
 pub fn display_status(chat: &Chat, session: Option<&Session>, now: DateTime<Utc>) -> ChatIndicator {
     let live = session.filter(|s| effective_indicator(Some(s), now) != Indicator::None);
@@ -137,142 +137,20 @@ pub fn sort_chats(chats: &mut [Chat]) {
 
 // ---------------------------------------------------------------------------
 // Boot gate
-// ---------------------------------------------------------------------------
 
-/// The app gate (zeron's App.tsx phases). Pure.
+/// The app gate while attaching to the local engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatePhase {
-    /// Booting / probing — splash covers this.
     Loading,
-    /// Engine unreachable and embedding failed.
     Failed(String),
-    /// Engine up, but signed out — show the sign-in card.
-    SignIn,
-    /// Signed in but no organization selected — "Create your workspace".
-    OrgGate,
-    /// Render the shell.
     Ready,
 }
 
-/// Missing scope is treated as synced. Current engines always publish
-/// [`WorkspaceScope`] before becoming ready, while old daemons are deliberately
-/// kept behind the account gate instead of being mistaken for local runtimes.
-pub fn gate_phase(
-    connection: &ConnectionStatus,
-    workspace_scope: Option<WorkspaceScope>,
-    auth: Option<&AuthState>,
-) -> GatePhase {
+pub fn gate_phase(connection: &ConnectionStatus) -> GatePhase {
     match connection {
         ConnectionStatus::Connecting => GatePhase::Loading,
         ConnectionStatus::Failed(err) => GatePhase::Failed(err.clone()),
-        ConnectionStatus::Ready => match workspace_scope.unwrap_or(WorkspaceScope::Synced) {
-            WorkspaceScope::Local | WorkspaceScope::Development => GatePhase::Ready,
-            WorkspaceScope::Synced => match auth {
-                Some(AuthState::NeedsOrganization { .. }) => GatePhase::OrgGate,
-                Some(AuthState::SignedIn { .. }) => GatePhase::Ready,
-                Some(AuthState::SignedOut) | None => GatePhase::SignIn,
-            },
-        },
-    }
-}
-
-#[cfg(test)]
-mod gate_tests {
-    use super::*;
-    use crate::UserProfile;
-
-    fn user() -> UserProfile {
-        UserProfile {
-            id: "user-1".into(),
-            email: "user@example.com".into(),
-            name: None,
-        }
-    }
-
-    #[test]
-    fn workspace_scope_controls_the_auth_gate() {
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Local),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::Ready
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::NeedsOrganization { user: user() }),
-            ),
-            GatePhase::OrgGate
-        );
-    }
-
-    #[test]
-    fn development_and_local_never_use_the_workos_gate() {
-        for scope in [WorkspaceScope::Local, WorkspaceScope::Development] {
-            for auth in [
-                AuthState::SignedOut,
-                AuthState::NeedsOrganization { user: user() },
-                AuthState::SignedIn {
-                    user: user(),
-                    org_id: Some("org-1".into()),
-                },
-            ] {
-                assert_eq!(
-                    gate_phase(&ConnectionStatus::Ready, Some(scope), Some(&auth)),
-                    GatePhase::Ready
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn missing_scope_falls_back_to_a_synced_gate() {
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Ready, None, None),
-            GatePhase::SignIn
-        );
-    }
-}
-
-/// Parse an `AuthStatus` frame tolerantly. The engine currently serializes its
-/// own enum (`{"_tag": "SignedIn", ...}`) while the proto type expects
-/// `{"state": "signedIn", ...}` — accept both so either side can converge
-/// without breaking a viewport.
-pub fn parse_auth_state(value: &serde_json::Value) -> Option<AuthState> {
-    if let Ok(state) = serde_json::from_value::<AuthState>(value.clone()) {
-        return Some(state);
-    }
-    let tag = value.get("_tag").and_then(|t| t.as_str())?;
-    let user = || -> Option<crate::UserProfile> {
-        let u = value.get("user")?;
-        Some(crate::UserProfile {
-            id: u.get("id")?.as_str()?.to_string(),
-            email: u.get("email")?.as_str()?.to_string(),
-            name: u.get("name").and_then(|n| n.as_str()).map(str::to_string),
-        })
-    };
-    match tag {
-        "SignedOut" => Some(AuthState::SignedOut),
-        "NeedsOrganization" => Some(AuthState::NeedsOrganization { user: user()? }),
-        "SignedIn" => Some(AuthState::SignedIn {
-            user: user()?,
-            org_id: value
-                .get("orgId")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        }),
-        _ => None,
+        ConnectionStatus::Ready => GatePhase::Ready,
     }
 }
 

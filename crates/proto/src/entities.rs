@@ -1,7 +1,7 @@
-//! Synced entity rows (workspace doc) and local projections.
+//! Entity rows (workspace doc) and local projections.
 //!
-//! In zeron these were synced Postgres rows; in zeron they live in the per-org
-//! workspace Loro doc (see ARCHITECTURE.md §2.2) with the same field surface.
+//! These rows live in the device-local workspace Loro doc (see ARCHITECTURE.md
+//! §2.2) with a stable field surface for the UI and engine.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ pub struct Device {
     pub version: Option<String>,
 }
 
-/// A synced (device, folder) pair — the unit of organization in the sidebar.
+/// A local (device, folder) pair — the unit of organization in the sidebar.
 /// Sessions belong to exactly one space; the space fixes their host device and
 /// base cwd. Folders need not be git repos: `git_detected` is stamped by the
 /// owning device (SpacesSync) and gates branch pickers / the diff sidebar on
@@ -137,24 +137,11 @@ pub struct Chat {
     /// device's repair sweep deletes its own danglers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
-    /// Synced LWW seen marker — compared against `last_message_at` to derive
+    /// Local LWW seen marker — compared against `last_message_at` to derive
     /// the "completed (finished but unseen)" indicator. Reading a chat on any
     /// device clears the badge everywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<DateTime<Utc>>,
-    /// Which sync room generation serves this chat (docs/chat2-sync.md M2):
-    /// `None`/1 = legacy s2 loro room, 2 = chat2 dumb relay. The HOST flips
-    /// this in the same breath as seeding the chat2 checkpoint; every device
-    /// dials the room the registry names. Per-chat and instantly revertible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub room_gen: Option<u32>,
-}
-
-impl Chat {
-    /// True when this chat syncs over the chat2 dumb relay.
-    pub fn on_chat2(&self) -> bool {
-        self.room_gen.unwrap_or(1) >= 2
-    }
 }
 
 impl Chat {
@@ -353,7 +340,7 @@ pub struct DiffFileSummary {
     pub binary: bool,
 }
 
-/// Working-tree diff for a checkout — latest-only sidecar, 3MiB patch cap.
+/// Working-tree diff for a checkout — latest-only snapshot, 3MiB patch cap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckoutDiff {
@@ -445,28 +432,6 @@ pub struct CheckoutFileDiffText {
     pub stale: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserProfile {
-    pub id: String,
-    pub email: String,
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
-pub enum AuthState {
-    SignedOut,
-    NeedsOrganization {
-        user: UserProfile,
-    },
-    #[serde(rename_all = "camelCase")]
-    SignedIn {
-        user: UserProfile,
-        org_id: Option<String>,
-    },
-}
-
 /// An open PTY session on the owning device (`OpenTerminal` reply).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -491,70 +456,6 @@ pub enum TerminalEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signal: Option<String>,
     },
-}
-
-/// One in-flight queued-attachment transfer (the `WatchTransfers` stream):
-/// raw-byte progress of the engine-side relay leg pushing staged bytes to a
-/// remote host. An entry appears when a file's chunks start moving, updates
-/// per landed chunk, and disappears when the host commits it (or the attempt
-/// fails — the retry re-adds it). Keyed by the send-minted uploadId, so the
-/// sender's thumbnails can resolve their `pending://{uploadId}/…` refs to a
-/// real percent instead of an indeterminate spinner.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferProgress {
-    pub upload_id: String,
-    pub file_name: String,
-    /// Raw bytes the host has acknowledged so far.
-    pub done: u64,
-    /// Total raw bytes of the staged file.
-    pub total: u64,
-}
-
-/// Live edge-connectivity posture (the `WatchConnectivity` stream): the truth
-/// the connection pill, composer honesty, and queued-send badges render.
-/// Derived engine-side from the registry room's reconnect state, the OS
-/// network-path monitor, and each open chat room's stats.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Connectivity {
-    pub state: ConnectivityState,
-    /// Epoch ms of the next scheduled registry dial while reconnecting
-    /// (0 = none pending / dialing right now). The countdown renders
-    /// client-side from this.
-    #[serde(default)]
-    pub retry_at_ms: i64,
-    /// The failure that started the current outage — sticky through the next
-    /// attempt (no flicker back to a bare "connecting…"), cleared on rejoin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_failure: Option<String>,
-    /// Per-OPEN-chat room state; a chat absent here is unknown (consumers
-    /// fall back to the global state).
-    #[serde(default)]
-    pub chats: Vec<ChatConnectivity>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ConnectivityState {
-    /// No edge transports on this profile (local scope) — hide the pill.
-    #[default]
-    Disabled,
-    /// The OS reports no network path.
-    Offline,
-    /// Edge expected but the registry room is down (dialing/backing off).
-    Reconnecting,
-    Connected,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatConnectivity {
-    pub chat_id: String,
-    pub connected: bool,
-    /// Local update batches not yet acked by the chat's edge room.
-    #[serde(default)]
-    pub pending_pushes: u64,
 }
 
 #[cfg(test)]

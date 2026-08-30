@@ -994,9 +994,8 @@ impl Inner {
 // ── subagent docs ───────────────────────────────────────────────────────────
 
 /// The per-subagent doc id: `{chatId}--sub--{suffix}`. Constrained by the
-/// edge's `ID_RE` (`^[A-Za-z0-9_-]{1,128}$` — the same id names the ChatRoom
-/// `chat2/{id}/ws` and the frozen blob `blob/{chatId}/{id}`): a clean, short
-/// tool-use id rides verbatim; anything unclean or over budget hashes.
+/// A clean, short tool-use id rides verbatim; anything unclean or over budget
+/// is hashed.
 pub(crate) fn subagent_doc_id(chat_id: &str, tool_use_id: &str) -> String {
     let clean = tool_use_id
         .chars()
@@ -1015,9 +1014,8 @@ pub(crate) fn subagent_doc_id(chat_id: &str, tool_use_id: &str) -> String {
     format!("{chat_id}--sub--{hex}")
 }
 
-/// A live subagent transcript sink: its own doc (opened by id — the room
-/// `chat2/{docId}/ws` dials automatically, so viewers sync it like a chat),
-/// one streaming assistant entry folded from the tagged events. The held
+/// A live subagent transcript sink: its own local doc, one streaming assistant
+/// entry folded from the tagged events. The held
 /// doc Arc pins the doc warm for the LRU while the subagent runs.
 struct SubagentSink {
     doc_id: String,
@@ -1173,7 +1171,7 @@ fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
                 // Output summaries, diff stats, and sidecar refs are
                 // deliberately kept: unlike raw tool inputs they are the
                 // transcript's record of what happened, and the strip already
-                // bounded them (docs/chat2-sync.md A1).
+                // bounded them (local transcript/workspace persistence A1).
                 output: output.clone(),
                 diff: diff.clone(),
                 output_ref: output_ref.clone(),
@@ -1692,24 +1690,7 @@ async fn drive_run(
                         _ => MessageStatus::Complete,
                     };
                     let sink = subagents.remove(parent_tool_use_id).expect("checked");
-                    let doc_id = sink.doc_id.clone();
-                    // FREEZE: the finished transcript uploads as a static R2
-                    // blob (`blob/{chatId}/{subDocId}`) so viewers of
-                    // finished subagents never wake the doc's room; dropping
-                    // the sink unpins the doc for the LRU and the room
-                    // idles. The live doc remains the fallback.
-                    if let Some(json) = sink.finish(&device_id, status)
-                        && let Some(host) = inner.doc_host()
-                    {
-                        host.upload_tool_sidecar(
-                            &chat_id,
-                            zeron_doc::SidecarPayload {
-                                part_id: doc_id,
-                                output: Some(json),
-                                diff: None,
-                            },
-                        );
-                    }
+                    let _ = sink.finish(&device_id, status);
                 }
             }
             continue;
@@ -1989,12 +1970,6 @@ async fn drive_run(
         let skip_fold = matches!(&event, AgentEvent::SessionStarted { .. }) && !folded.is_empty();
         if !skip_fold {
             fold_event_into_parts(&mut folded, &event);
-            // R2 sidecar PARKED (2026-08-10, product call): the fold's
-            // summary/stats ARE the doc's whole record — no refs stamped, no
-            // uploads. Full outputs survive only in the host's local run
-            // journal. To reintroduce: `zeron_doc::sidecar_payload(&event)`
-            // → `apply_sidecar_refs` → `doc_host.upload_tool_sidecar`, all
-            // still in place and tested.
         }
 
         if let AgentEvent::Done { status, .. } = &event {
@@ -2087,20 +2062,8 @@ async fn drive_run(
     // Any subagent still streaming when the run ends freezes as-is: the
     // parent process is gone, so nothing more can arrive on this stream.
     for (parent_id, sink) in subagents.drain() {
-        let doc_id = sink.doc_id.clone();
         let _ = doc_ref.update_subagent_chip(&parent_id, None, Some("failed"), None);
-        if let Some(json) = sink.finish(&device_id, MessageStatus::Aborted)
-            && let Some(host) = inner.doc_host()
-        {
-            host.upload_tool_sidecar(
-                &chat_id,
-                zeron_doc::SidecarPayload {
-                    part_id: doc_id,
-                    output: Some(json),
-                    diff: None,
-                },
-            );
-        }
+        let _ = sink.finish(&device_id, MessageStatus::Aborted);
     }
 
     // Claim any accepted-but-unconfirmed steers BEFORE the handle goes away:

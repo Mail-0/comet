@@ -8,9 +8,8 @@
 //!   running process, kept until its tab is explicitly closed or the engine exits.
 //!   Only EXITED sessions expire (30min TTL on their inert replay buffers), and
 //!   [`MAX_TERMINALS`] bounds leakage from renderers that lost their tab state.
-//! - Ownership: M5 is single-user local — every IPC/relay caller is the device
-//!   owner, so the per-user owner re-checks from zeron's Router land with real
-//!   multi-account auth in M6.
+//! - Ownership: the engine is single-user local — every IPC caller is the
+//!   device owner.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};

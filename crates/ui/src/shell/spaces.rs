@@ -3251,7 +3251,6 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
-            room_gen: None,
         }
     }
 

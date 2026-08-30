@@ -150,8 +150,8 @@ pub struct RunRequest {
 
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
 /// by the HOST while draining the queued Run — not by the sender over a
-/// blocking CreateWorktree RPC — so the send path stays durable: a lost relay
-/// frame can't wedge the composer on "Sending…" while the session runs anyway
+/// blocking CreateWorktree RPC — so the send path stays durable and a slow
+/// filesystem operation cannot wedge the composer on "Sending…".
 /// (2026-08-18 user report).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

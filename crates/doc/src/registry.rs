@@ -1,18 +1,10 @@
-//! Workspace registry — the client side of the row-table sidebar sync that
-//! replaces the Loro workspace doc (docs/registry-sync.md).
+//! Local workspace index persisted alongside session documents.
 //!
-//! [`RegistryDoc`] is a local replica of the per-user registry room:
-//! - `authoritative` rows — the server's truth, replaced wholesale by `state`/
-//!   `rows` frames (the server merges; clients never re-merge server rows);
-//! - `pending` op batches — local writes not yet acked, replayed over the
-//!   authoritative rows for every read (optimistic overlay), re-pushed on
-//!   reconnect (idempotent by strict-`>` clock compare);
-//! - an HLC clock stamping every local write.
+//! [`RegistryDoc`] stores materialized rows and an HLC clock stamping every
+//! local write. Legacy pending batches are accepted while loading old
+//! snapshots and folded into the authoritative rows.
 //!
-//! The merge function [`apply_op`] mirrors `edge/src/registry-core.ts` 1:1 —
-//! the shared test vectors live in both files; change them together. The
-//! typed API mirrors the old `WorkspaceDoc` surface so `WorkspaceHost` is a
-//! drop-in swap.
+//! The typed API is used by `WorkspaceHost` for local sidebar persistence.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -20,10 +12,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use zeron_proto::{Chat, ChatConfig, Device, Session, Space};
+use zeron_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
 
 use crate::schema::DocError;
-use crate::workspace::{DeletedSpace, WorkspaceState};
 
 /// Row kinds — the four sidebar tables.
 pub const KIND_DEVICES: &str = "devices";
@@ -33,6 +24,195 @@ pub const KIND_SESSIONS: &str = "sessions";
 
 /// Snapshot row id in the local `DocsStore` for the persisted registry state.
 pub const REGISTRY_DOC_ID: &str = "registry1";
+
+/// Result of deleting a space and its indexed chats.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletedSpace {
+    pub existed: bool,
+    pub chat_ids: Vec<String>,
+}
+
+/// Materialized local workspace index state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceState {
+    pub devices: Vec<Device>,
+    pub spaces: Vec<Space>,
+    pub chats: Vec<Chat>,
+    pub sessions: Vec<Session>,
+}
+
+fn dt(ms: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp_millis(ms).unwrap_or(DateTime::UNIX_EPOCH)
+}
+
+// ── doc-resident row shapes (epoch-millis timestamps) ───────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RawDevice {
+    id: String,
+    name: String,
+    platform: String,
+    #[serde(default)]
+    last_seen_at: Option<i64>,
+    #[serde(default)]
+    created_at: Option<i64>,
+    #[serde(default)]
+    version: Option<String>,
+}
+
+impl From<RawDevice> for Device {
+    fn from(raw: RawDevice) -> Self {
+        Device {
+            id: raw.id,
+            name: raw.name,
+            platform: raw.platform,
+            last_seen_at: raw.last_seen_at.map(dt),
+            created_at: raw.created_at.map(dt),
+            version: raw.version,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RawSpace {
+    id: String,
+    device_id: String,
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    git_detected: bool,
+    #[serde(default)]
+    git_checked_at: Option<i64>,
+    #[serde(default)]
+    checkout_id: Option<String>,
+    #[serde(default)]
+    created_at: i64,
+}
+
+impl From<RawSpace> for Space {
+    fn from(raw: RawSpace) -> Self {
+        Space {
+            id: raw.id,
+            device_id: raw.device_id,
+            path: raw.path,
+            name: raw.name,
+            git_detected: raw.git_detected,
+            git_checked_at: raw.git_checked_at.map(dt),
+            checkout_id: raw.checkout_id,
+            created_at: dt(raw.created_at),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RawChat {
+    id: String,
+    device_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    archived: bool,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    checkout_id: Option<String>,
+    #[serde(default)]
+    source_context: Option<zeron_proto::ConversationSourceContext>,
+    /// LENIENT: a config this build can't decode (a harness/reasoning/sandbox
+    /// id from a NEWER peer — field incident: pre-v0.2.10 laptops dropped
+    /// every `"opencode"` chat row wholesale, so new sessions silently never
+    /// appeared in the sidebar) degrades to `None` instead of failing the
+    /// row. The chat stays visible and selectable with generic defaults;
+    /// up-to-date devices still see the real config.
+    #[serde(default, deserialize_with = "lenient_chat_config")]
+    config: Option<ChatConfig>,
+    #[serde(default)]
+    last_message_preview: Option<String>,
+    #[serde(default)]
+    last_message_at: Option<i64>,
+    #[serde(default)]
+    created_at: i64,
+    #[serde(default)]
+    harness_session_id: Option<String>,
+    #[serde(default)]
+    harness_session_cwd: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    #[serde(default)]
+    last_seen_at: Option<i64>,
+}
+
+/// Decode a chat row's `config` leniently: unknown enum values (a newer
+/// peer's harness id, reasoning level or sandbox mode) cost the CONFIG, not
+/// the row. Mirrors the transcript salvage rule: a missing field must cost
+/// at most what the field carried.
+fn lenient_chat_config<'de, D>(deserializer: D) -> Result<Option<ChatConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match serde_json::from_value::<ChatConfig>(value) {
+        Ok(config) => Some(config),
+        Err(err) => {
+            tracing::warn!(error = %err, "chat config from a newer peer; showing the row without it");
+            None
+        }
+    }))
+}
+
+impl From<RawChat> for Chat {
+    fn from(raw: RawChat) -> Self {
+        Chat {
+            id: raw.id,
+            device_id: raw.device_id,
+            title: raw.title,
+            archived: raw.archived,
+            cwd: raw.cwd,
+            branch: raw.branch,
+            checkout_id: raw.checkout_id,
+            source_context: raw.source_context,
+            config: raw.config,
+            last_message_preview: raw.last_message_preview,
+            last_message_at: raw.last_message_at.map(dt),
+            created_at: dt(raw.created_at),
+            harness_session_id: raw.harness_session_id,
+            harness_session_cwd: raw.harness_session_cwd,
+            space_id: raw.space_id,
+            last_seen_at: raw.last_seen_at.map(dt),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RawSession {
+    chat_id: String,
+    device_id: String,
+    status: SessionStatus,
+    #[serde(default)]
+    started_at: Option<i64>,
+    #[serde(default)]
+    updated_at: i64,
+}
+
+impl From<RawSession> for Session {
+    fn from(raw: RawSession) -> Self {
+        Session {
+            chat_id: raw.chat_id,
+            device_id: raw.device_id,
+            status: raw.status,
+            started_at: raw.started_at.map(dt),
+            updated_at: dt(raw.updated_at),
+        }
+    }
+}
 
 // ── HLC ─────────────────────────────────────────────────────────────────────
 
@@ -75,16 +255,13 @@ impl HlcClock {
     }
 }
 
-// ── rows and ops (wire-compatible with edge/src/registry-core.ts) ───────────
+// ── rows and ops ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegistryRow {
     pub kind: String,
     pub id: String,
-    /// Server seq of the batch that last touched this row (0 locally).
-    #[serde(default)]
-    pub seq: u64,
     #[serde(default)]
     pub deleted: bool,
     /// Tombstone clock — an upsert newer than this revives the row.
@@ -102,7 +279,6 @@ impl RegistryRow {
         Self {
             kind: kind.to_string(),
             id: id.to_string(),
-            seq: 0,
             deleted: true,
             del_hlc: Some(hlc),
             fields: BTreeMap::new(),
@@ -161,7 +337,7 @@ impl RowOp {
 }
 
 /// Apply one op to a row — the 1:1 mirror of `applyOp` in
-/// `edge/src/registry-core.ts`. Returns the new row (`None` only for an
+/// `local registry merge rules`. Returns the new row (`None` only for an
 /// `update` on a missing row) and whether anything changed.
 pub fn apply_op(row: Option<&RegistryRow>, op: &RowOp) -> (Option<RegistryRow>, bool) {
     if op.op == OpKind::Delete {
@@ -199,7 +375,6 @@ pub fn apply_op(row: Option<&RegistryRow>, op: &RowOp) -> (Option<RegistryRow>, 
             RegistryRow {
                 kind: op.kind.clone(),
                 id: op.id.clone(),
-                seq: 0,
                 deleted: false,
                 del_hlc: None,
                 fields: BTreeMap::new(),
@@ -215,7 +390,6 @@ pub fn apply_op(row: Option<&RegistryRow>, op: &RowOp) -> (Option<RegistryRow>, 
             RegistryRow {
                 kind: row.kind.clone(),
                 id: row.id.clone(),
-                seq: row.seq,
                 deleted: false,
                 del_hlc: row.del_hlc.clone(),
                 fields: BTreeMap::new(),
@@ -249,101 +423,31 @@ pub fn apply_op(row: Option<&RegistryRow>, op: &RowOp) -> (Option<RegistryRow>, 
     }
 }
 
-/// A row as a re-seed op (server-behind-client recovery): one upsert carrying
-/// the row's ORIGINAL per-field clocks, or a delete for tombstones.
-pub fn row_to_seed_op(row: &RegistryRow) -> RowOp {
-    if row.deleted {
-        return RowOp {
-            kind: row.kind.clone(),
-            id: row.id.clone(),
-            op: OpKind::Delete,
-            set: None,
-            hlc: row
-                .del_hlc
-                .clone()
-                .unwrap_or_else(|| encode_hlc(0, 0, "seed")),
-            clocks: None,
-        };
-    }
-    RowOp {
-        kind: row.kind.clone(),
-        id: row.id.clone(),
-        op: OpKind::Upsert,
-        set: Some(
-            row.fields
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        ),
-        hlc: row
-            .max_clock()
-            .map(str::to_string)
-            .unwrap_or_else(|| encode_hlc(0, 0, "seed")),
-        clocks: Some(row.clocks.clone()),
-    }
-}
-
-// ── pending batches ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingBatch {
-    pub batch: String,
-    pub ops: Vec<RowOp>,
-    /// True while the batch is in flight on the CURRENT connection (cleared
-    /// on disconnect so reconnects re-push). Not persisted meaningfully — a
-    /// restart implies a fresh connection.
-    #[serde(default, skip_serializing)]
-    pub in_flight: bool,
-}
-
 // ── the doc ─────────────────────────────────────────────────────────────────
-
-/// What [`RegistryDoc::apply_state`] decided about a `state` frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StateOutcome {
-    /// Delta applied over existing authoritative rows.
-    Delta,
-    /// Full state replaced local authoritative rows.
-    Replaced,
-    /// The server is BEHIND this client (wiped/reset storage): local rows were
-    /// kept and a re-seed batch was enqueued. The caller must push pending.
-    Reseeded,
-}
-
-/// Bump to force every client ONE full resync on its next boot (persisted
-/// snapshots below this epoch zero their cursor on load). 1 = the
-/// cursor-jump healing (ack/gap fixes below).
-const CURRENT_RESYNC_EPOCH: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedState {
     v: u32,
-    /// Cursor-integrity epoch: bumping [`CURRENT_RESYNC_EPOCH`] forces every
-    /// client one full resync on its first load after upgrading (heals
-    /// snapshots whose cursor jumped past unapplied rows). Additive —
-    /// pre-epoch snapshots default to 0.
-    #[serde(default)]
-    resync_epoch: u32,
     device_id: String,
-    server_seq: u64,
-    gc_floor: u64,
     clock: HlcClock,
     rows: Vec<RegistryRow>,
-    pending: Vec<PendingBatch>,
+    /// Retained only to read snapshots written before registry became local-only.
+    #[serde(default, skip_serializing)]
+    pending: Vec<LegacyPendingBatch>,
 }
 
-/// The local registry replica. Pure data — no I/O, no async; the transport
-/// (`zeron_sync::RegistryClient`) and the engine host drive it under a lock.
+#[derive(Deserialize)]
+struct LegacyPendingBatch {
+    ops: Vec<RowOp>,
+}
+
+/// The local registry. Pure data — no I/O or async work.
 pub struct RegistryDoc {
     device_id: String,
-    /// kind → id → row (server truth).
+    /// kind → id → row (persisted rows).
     authoritative: HashMap<String, HashMap<String, RegistryRow>>,
-    server_seq: u64,
-    gc_floor: u64,
     clock: HlcClock,
-    pending: Vec<PendingBatch>,
     /// Bumped on every mutation (local or applied) — the engine host converts
     /// this into watch-channel publishes and snapshot debounces.
     generation: u64,
@@ -354,10 +458,7 @@ impl RegistryDoc {
         Self {
             device_id: device_id.into(),
             authoritative: HashMap::new(),
-            server_seq: 0,
-            gc_floor: 0,
             clock: HlcClock::default(),
-            pending: Vec::new(),
             generation: 0,
         }
     }
@@ -366,23 +467,12 @@ impl RegistryDoc {
         &self.device_id
     }
 
-    /// Sync cursor: the last server seq this replica has fully applied.
-    pub fn cursor(&self) -> u64 {
-        self.server_seq
-    }
-
     /// Monotonic local change counter (any mutation bumps it).
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub fn pending_len(&self) -> usize {
-        self.pending.len()
-    }
-
-    // ── persistence ─────────────────────────────────────────────────────────
-
-    // (see PersistedState::resync_epoch)
+    // ── snapshot persistence ────────────────────────────────────────────────
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, DocError> {
         let rows = self
@@ -392,13 +482,10 @@ impl RegistryDoc {
             .collect();
         let state = PersistedState {
             v: 1,
-            resync_epoch: CURRENT_RESYNC_EPOCH,
             device_id: self.device_id.clone(),
-            server_seq: self.server_seq,
-            gc_floor: self.gc_floor,
             clock: self.clock.clone(),
             rows,
-            pending: self.pending.clone(),
+            pending: Vec::new(),
         };
         Ok(serde_json::to_vec(&state)?)
     }
@@ -412,157 +499,27 @@ impl RegistryDoc {
             )));
         }
         let mut doc = Self::new(device_id);
-        // One-shot healing resync: snapshots from before a cursor-integrity
-        // fix may have a cursor that JUMPED past rows this replica never
-        // applied (the ack/gap bugs above) — those rows are invisible and no
-        // amount of ordinary syncing refetches them. Zeroing the cursor once
-        // forces the next hello/pull to return full state; local rows are
-        // kept (and local-only ones re-seed through apply_state's full path).
-        if state.resync_epoch < CURRENT_RESYNC_EPOCH {
-            doc.server_seq = 0;
-        } else {
-            doc.server_seq = state.server_seq;
-        }
-        doc.gc_floor = state.gc_floor;
         doc.clock = state.clock;
-        doc.pending = state.pending;
         for row in state.rows {
             doc.authoritative
                 .entry(row.kind.clone())
                 .or_default()
                 .insert(row.id.clone(), row);
         }
-        Ok(doc)
-    }
-
-    // ── server frames ───────────────────────────────────────────────────────
-
-    /// Apply a hello `state` frame. See [`StateOutcome`] for the three shapes.
-    pub fn apply_state(
-        &mut self,
-        seq: u64,
-        full: bool,
-        gc_floor: u64,
-        rows: Vec<RegistryRow>,
-    ) -> StateOutcome {
-        self.generation += 1;
-        if !full {
-            for row in rows {
-                self.put_authoritative(row);
-            }
-            self.server_seq = seq;
-            self.gc_floor = gc_floor;
-            return StateOutcome::Delta;
-        }
-        if seq < self.server_seq {
-            // The server lost state (reset/wipe). Local rows are the only
-            // copy: keep them and re-seed the server with ORIGINAL clocks.
-            let seed: Vec<RowOp> = self
-                .authoritative
-                .values()
-                .flat_map(|m| m.values())
-                .map(row_to_seed_op)
-                .collect();
-            for row in rows {
-                self.put_authoritative(row);
-            }
-            self.server_seq = seq;
-            self.gc_floor = gc_floor;
-            if !seed.is_empty() {
-                self.enqueue_ops(seed);
-            }
-            return StateOutcome::Reseeded;
-        }
-        // Full replace — but local-only rows the server never saw (e.g. it
-        // GC-jumped our cursor while we held unseeded rows) re-seed too.
-        let mut incoming: HashMap<String, HashMap<String, RegistryRow>> = HashMap::new();
-        for row in rows {
-            incoming
-                .entry(row.kind.clone())
-                .or_default()
-                .insert(row.id.clone(), row);
-        }
-        let mut seed: Vec<RowOp> = Vec::new();
-        for (kind, by_id) in &self.authoritative {
-            for (id, row) in by_id {
-                if !incoming.get(kind).is_some_and(|m| m.contains_key(id)) {
-                    seed.push(row_to_seed_op(row));
+        // Apply mutations left in snapshots by the removed outbox.
+        for batch in state.pending {
+            for op in batch.ops {
+                let current = doc
+                    .authoritative
+                    .get(&op.kind)
+                    .and_then(|rows| rows.get(&op.id))
+                    .cloned();
+                if let (Some(next), true) = apply_op(current.as_ref(), &op) {
+                    doc.put_authoritative(next);
                 }
             }
         }
-        self.authoritative = incoming;
-        self.server_seq = seq;
-        self.gc_floor = gc_floor;
-        if seed.is_empty() {
-            StateOutcome::Replaced
-        } else {
-            self.enqueue_ops(seed);
-            StateOutcome::Reseeded
-        }
-    }
-
-    /// Apply a `rows` broadcast (merged truth for the touched rows).
-    /// Apply one broadcast batch. Returns `false` on a SEQ GAP — frames
-    /// between the cursor and this batch were missed (a hibernating DO, a
-    /// half-dead socket): the rows still apply (fresh data), but the cursor
-    /// holds so the caller can resync (reconnect → hello/pull from the true
-    /// cursor backfills the window). Advancing across a gap made the missed
-    /// rows permanently invisible.
-    #[must_use]
-    pub fn apply_rows(&mut self, seq: u64, rows: Vec<RegistryRow>) -> bool {
-        self.generation += 1;
-        for row in rows {
-            self.put_authoritative(row);
-        }
-        if seq > self.server_seq + 1 {
-            return false;
-        }
-        if seq > self.server_seq {
-            self.server_seq = seq;
-        }
-        true
-    }
-
-    /// Retire an acked batch; returns whether it existed.
-    ///
-    /// Deliberately does NOT advance the sync cursor: the ack's `seq` is OUR
-    /// batch's position, and other devices' batches may sit between the
-    /// cursor and it. Jumping the cursor skipped those forever — on the
-    /// HTTPS transport the very next pull used the jumped cursor, so a
-    /// device that pushed anything (a seen-marker was enough) while behind
-    /// permanently missed every row its peers wrote since its last sync
-    /// (field incident: new sessions never appeared in a laptop's sidebar
-    /// while updates to already-known rows kept flowing). The cursor only
-    /// advances with actual row payloads (state/pull/contiguous broadcasts);
-    /// re-pulling our own batch is an idempotent LWW no-op.
-    pub fn ack_batch(&mut self, batch: &str, _seq: u64) -> bool {
-        let before = self.pending.len();
-        self.pending.retain(|b| b.batch != batch);
-        if self.pending.len() != before {
-            self.generation += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Batches to push: everything not already in flight on this connection.
-    pub fn take_pushable(&mut self) -> Vec<PendingBatch> {
-        let mut out = Vec::new();
-        for batch in &mut self.pending {
-            if !batch.in_flight {
-                batch.in_flight = true;
-                out.push(batch.clone());
-            }
-        }
-        out
-    }
-
-    /// Connection dropped: everything unacked becomes pushable again.
-    pub fn mark_disconnected(&mut self) {
-        for batch in &mut self.pending {
-            batch.in_flight = false;
-        }
+        Ok(doc)
     }
 
     fn put_authoritative(&mut self, row: RegistryRow) {
@@ -583,105 +540,56 @@ impl RegistryDoc {
         self.clock.next(Self::now_ms(), &device)
     }
 
-    fn enqueue_ops(&mut self, mut ops: Vec<RowOp>) {
-        if ops.is_empty() {
-            return;
-        }
-        // The registry room rejects any batch over its op cap (500), and a
-        // rejected batch is a PERMANENT wedge: error frames carry no batch
-        // id, so the client can never retire it — it replays and fails on
-        // every reconnect, and every write queued behind it (session-status
-        // rows included) never propagates again. `delete_space` on a
-        // ≥250-chat space minted exactly such a batch. Chunk here so no
-        // writer can ever produce one; chunks apply in order, each
-        // atomically (only cross-chunk atomicity is given up).
-        const MAX_OPS_PER_BATCH: usize = 400;
-        self.generation += 1;
-        while !ops.is_empty() {
-            let tail = if ops.len() > MAX_OPS_PER_BATCH {
-                ops.split_off(MAX_OPS_PER_BATCH)
-            } else {
-                Vec::new()
-            };
-            // Batch ids only need device-lifetime uniqueness; the HLC of a
-            // fresh tick provides exactly that without a rng dependency.
-            let batch = format!("b-{}", self.next_hlc());
-            self.pending.push(PendingBatch {
-                batch,
-                ops,
-                in_flight: false,
-            });
-            ops = tail;
-        }
-    }
-
     fn write(&mut self, kind: &str, id: &str, op: OpKind, set: BTreeMap<String, Value>) {
-        let hlc = self.next_hlc();
-        self.enqueue_ops(vec![RowOp {
+        let operation = RowOp {
             kind: kind.to_string(),
             id: id.to_string(),
             op,
             set: Some(set),
-            hlc,
+            hlc: self.next_hlc(),
             clocks: None,
-        }]);
+        };
+        if let (Some(row), true) = apply_op(self.overlay_row(kind, id).as_ref(), &operation) {
+            self.put_authoritative(row);
+            self.generation += 1;
+        }
     }
 
     fn delete_row_ops(&mut self, keys: &[(&str, &str)]) {
         let hlc = self.next_hlc();
-        let ops = keys
-            .iter()
-            .map(|(kind, id)| RowOp {
+        for (kind, id) in keys {
+            let operation = RowOp {
                 kind: (*kind).to_string(),
                 id: (*id).to_string(),
                 op: OpKind::Delete,
                 set: None,
                 hlc: hlc.clone(),
                 clocks: None,
-            })
-            .collect();
-        self.enqueue_ops(ops);
+            };
+            if let (Some(row), true) = apply_op(self.overlay_row(kind, id).as_ref(), &operation) {
+                self.put_authoritative(row);
+                self.generation += 1;
+            }
+        }
     }
 
     // ── overlay reads ───────────────────────────────────────────────────────
 
-    /// The row as this device should display it: authoritative + pending ops.
+    /// The row as this device should display it.
     fn overlay_row(&self, kind: &str, id: &str) -> Option<RegistryRow> {
-        let mut row = self
-            .authoritative
+        self.authoritative
             .get(kind)
             .and_then(|m| m.get(id))
-            .cloned();
-        for batch in &self.pending {
-            for op in &batch.ops {
-                if op.kind == kind && op.id == id {
-                    let (next, _) = apply_op(row.as_ref(), op);
-                    if let Some(next) = next {
-                        row = Some(next);
-                    }
-                }
-            }
-        }
-        row.filter(|r| !r.deleted)
+            .cloned()
+            .filter(|r| !r.deleted)
     }
 
-    /// All live rows of `kind`, overlay applied.
+    /// All live rows of `kind`.
     fn overlay_rows(&self, kind: &str) -> Vec<RegistryRow> {
-        let mut ids: Vec<String> = self
-            .authoritative
+        self.authoritative
             .get(kind)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-        for batch in &self.pending {
-            for op in &batch.ops {
-                if op.kind == kind && !ids.iter().any(|id| id == &op.id) {
-                    ids.push(op.id.clone());
-                }
-            }
-        }
-        ids.iter()
-            .filter_map(|id| self.overlay_row(kind, id))
-            .collect()
+            .map(|rows| rows.values().filter(|row| !row.deleted).cloned().collect())
+            .unwrap_or_default()
     }
 
     fn read_kind<T: serde::de::DeserializeOwned>(&self, kind: &str) -> Vec<T> {
@@ -733,7 +641,7 @@ impl RegistryDoc {
     }
 
     /// Stamp `lastSeenAt` on an existing device row (boot/shutdown only —
-    /// periodic liveness rides presence frames, never rows).
+    /// periodic liveness is not persisted).
     pub fn set_device_last_seen(
         &mut self,
         device_id: &str,
@@ -753,7 +661,7 @@ impl RegistryDoc {
 
     pub fn read_devices(&self) -> Result<Vec<Device>, DocError> {
         let mut devices: Vec<Device> = self
-            .read_kind::<crate::workspace::RawDevice>(KIND_DEVICES)
+            .read_kind::<RawDevice>(KIND_DEVICES)
             .into_iter()
             .map(Device::from)
             .collect();
@@ -781,13 +689,13 @@ impl RegistryDoc {
     pub fn space(&self, space_id: &str) -> Result<Option<Space>, DocError> {
         Ok(self
             .overlay_row(KIND_SPACES, space_id)
-            .and_then(|row| row_to::<crate::workspace::RawSpace>(&row))
+            .and_then(|row| row_to::<RawSpace>(&row))
             .map(Space::from))
     }
 
     pub fn read_spaces(&self) -> Result<Vec<Space>, DocError> {
         let mut spaces: Vec<Space> = self
-            .read_kind::<crate::workspace::RawSpace>(KIND_SPACES)
+            .read_kind::<RawSpace>(KIND_SPACES)
             .into_iter()
             .map(Space::from)
             .collect();
@@ -837,7 +745,7 @@ impl RegistryDoc {
 
     /// Hard-delete a space and cascade to its chats: one batch tombstones the
     /// space row and every chat/session row whose `spaceId` matches — the
-    /// server applies the batch atomically. Returns the removed chat ids so
+    /// local snapshot stores the batch. Returns the removed chat ids so
     /// the engine can drop local state.
     pub fn delete_space(&mut self, space_id: &str) -> Result<DeletedSpace, DocError> {
         let existed = self.row_exists(KIND_SPACES, space_id);
@@ -897,10 +805,6 @@ impl RegistryDoc {
             ),
             ("spaceId", opt_str(chat.space_id.as_deref())),
             ("lastSeenAt", opt_ms(chat.last_seen_at)),
-            (
-                "roomGen",
-                chat.room_gen.map(|g| json!(g)).unwrap_or(Value::Null),
-            ),
         ]);
         self.write(KIND_CHATS, &chat.id.clone(), OpKind::Upsert, set);
         Ok(())
@@ -932,7 +836,7 @@ impl RegistryDoc {
         self.write(KIND_CHATS, chat_id, OpKind::Upsert, set);
     }
 
-    /// Synced seen marker (LWW) with a monotonic guard: no write when the
+    /// Seen marker (LWW) with a monotonic guard: no write when the
     /// stored stamp is already >= `at`.
     pub fn set_chat_seen(&mut self, chat_id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
         let Some(row) = self.overlay_row(KIND_CHATS, chat_id) else {
@@ -954,13 +858,13 @@ impl RegistryDoc {
     pub fn chat(&self, chat_id: &str) -> Result<Option<Chat>, DocError> {
         Ok(self
             .overlay_row(KIND_CHATS, chat_id)
-            .and_then(|row| row_to::<crate::workspace::RawChat>(&row))
+            .and_then(|row| row_to::<RawChat>(&row))
             .map(Chat::from))
     }
 
     pub fn read_chats(&self) -> Result<Vec<Chat>, DocError> {
         let mut chats: Vec<Chat> = self
-            .read_kind::<crate::workspace::RawChat>(KIND_CHATS)
+            .read_kind::<RawChat>(KIND_CHATS)
             .into_iter()
             .map(Chat::from)
             .collect();
@@ -990,23 +894,6 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("archived", json!(archived))]),
-        );
-        Ok(true)
-    }
-
-    /// Flip the chat's sync room generation (docs/chat2-sync.md M2). The
-    /// host calls this in the same breath as seeding the chat2 checkpoint;
-    /// LWW per-field like every registry write, so the flip is per-chat and
-    /// instantly revertible by writing 1 back.
-    pub fn set_chat_room_gen(&mut self, chat_id: &str, room_gen: u32) -> Result<bool, DocError> {
-        if !self.row_exists(KIND_CHATS, chat_id) {
-            return Ok(false);
-        }
-        self.write(
-            KIND_CHATS,
-            chat_id,
-            OpKind::Update,
-            fields([("roomGen", json!(room_gen))]),
         );
         Ok(true)
     }
@@ -1167,7 +1054,7 @@ impl RegistryDoc {
 
     pub fn read_sessions(&self) -> Result<Vec<Session>, DocError> {
         let mut sessions: Vec<Session> = self
-            .read_kind::<crate::workspace::RawSession>(KIND_SESSIONS)
+            .read_kind::<RawSession>(KIND_SESSIONS)
             .into_iter()
             .map(Session::from)
             .collect();
@@ -1184,125 +1071,6 @@ impl RegistryDoc {
             chats: self.read_chats()?,
             sessions: self.read_sessions()?,
         })
-    }
-
-    // ── migration ───────────────────────────────────────────────────────────
-
-    /// Seed from the legacy Loro workspace doc's materialized state (first
-    /// boot after the update). Every row becomes a pending upsert whose HLC
-    /// derives from the row's own newest timestamp — historical, so any
-    /// genuinely newer live write beats the migrated value; identical across
-    /// devices, so N devices seeding the same converged doc is idempotent
-    /// (equal values, deterministic device tie-break).
-    pub fn seed_from_workspace(&mut self, state: &WorkspaceState) -> Result<usize, DocError> {
-        let mut ops: Vec<RowOp> = Vec::new();
-        let mut seed = |kind: &str, id: &str, ms: i64, set: BTreeMap<String, Value>| {
-            ops.push(RowOp {
-                kind: kind.to_string(),
-                id: id.to_string(),
-                op: OpKind::Upsert,
-                set: Some(set),
-                hlc: encode_hlc(ms.max(1), 0, "migration"),
-                clocks: None,
-            });
-        };
-        for device in &state.devices {
-            let ms = newest(&[device.last_seen_at, device.created_at]);
-            seed(
-                KIND_DEVICES,
-                &device.id,
-                ms,
-                fields([
-                    ("id", json!(device.id)),
-                    ("name", json!(device.name)),
-                    ("platform", json!(device.platform)),
-                    ("lastSeenAt", opt_ms(device.last_seen_at)),
-                    ("createdAt", opt_ms(device.created_at)),
-                    ("version", opt_str(device.version.as_deref())),
-                ]),
-            );
-        }
-        for space in &state.spaces {
-            let ms = newest(&[space.git_checked_at, Some(space.created_at)]);
-            seed(
-                KIND_SPACES,
-                &space.id,
-                ms,
-                fields([
-                    ("id", json!(space.id)),
-                    ("deviceId", json!(space.device_id)),
-                    ("path", json!(space.path)),
-                    ("name", opt_str(space.name.as_deref())),
-                    ("gitDetected", json!(space.git_detected)),
-                    ("gitCheckedAt", opt_ms(space.git_checked_at)),
-                    ("checkoutId", opt_str(space.checkout_id.as_deref())),
-                    ("createdAt", json!(space.created_at.timestamp_millis())),
-                ]),
-            );
-        }
-        for chat in &state.chats {
-            let ms = newest(&[
-                chat.last_message_at,
-                chat.last_seen_at,
-                Some(chat.created_at),
-            ]);
-            let config = match &chat.config {
-                Some(config) => serde_json::to_value(config)?,
-                None => Value::Null,
-            };
-            seed(
-                KIND_CHATS,
-                &chat.id,
-                ms,
-                fields([
-                    ("id", json!(chat.id)),
-                    ("deviceId", json!(chat.device_id)),
-                    ("title", opt_str(chat.title.as_deref())),
-                    ("archived", json!(chat.archived)),
-                    ("cwd", opt_str(chat.cwd.as_deref())),
-                    ("branch", opt_str(chat.branch.as_deref())),
-                    ("checkoutId", opt_str(chat.checkout_id.as_deref())),
-                    ("config", config),
-                    (
-                        "lastMessagePreview",
-                        opt_str(chat.last_message_preview.as_deref()),
-                    ),
-                    ("lastMessageAt", opt_ms(chat.last_message_at)),
-                    ("createdAt", json!(chat.created_at.timestamp_millis())),
-                    (
-                        "harnessSessionId",
-                        opt_str(chat.harness_session_id.as_deref()),
-                    ),
-                    (
-                        "harnessSessionCwd",
-                        opt_str(chat.harness_session_cwd.as_deref()),
-                    ),
-                    ("spaceId", opt_str(chat.space_id.as_deref())),
-                    ("lastSeenAt", opt_ms(chat.last_seen_at)),
-                ]),
-            );
-        }
-        for session in &state.sessions {
-            let ms = newest(&[Some(session.updated_at), session.started_at]);
-            seed(
-                KIND_SESSIONS,
-                &session.chat_id,
-                ms,
-                fields([
-                    ("chatId", json!(session.chat_id)),
-                    ("deviceId", json!(session.device_id)),
-                    ("status", serde_json::to_value(session.status)?),
-                    ("startedAt", opt_ms(session.started_at)),
-                    ("updatedAt", json!(session.updated_at.timestamp_millis())),
-                ]),
-            );
-        }
-        let count = ops.len();
-        // Chunk so a huge legacy workspace never exceeds the server's batch cap.
-        for chunk in ops.chunks(400) {
-            self.enqueue_ops(chunk.to_vec());
-        }
-        Ok(count)
     }
 }
 
@@ -1327,15 +1095,6 @@ fn opt_ms(value: Option<DateTime<Utc>>) -> Value {
         Some(at) => json!(at.timestamp_millis()),
         None => Value::Null,
     }
-}
-
-fn newest(candidates: &[Option<DateTime<Utc>>]) -> i64 {
-    candidates
-        .iter()
-        .flatten()
-        .map(|at| at.timestamp_millis())
-        .max()
-        .unwrap_or(1)
 }
 
 fn row_to<T: serde::de::DeserializeOwned>(row: &RegistryRow) -> Option<T> {

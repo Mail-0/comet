@@ -176,7 +176,6 @@ pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Opti
         harness_session_cwd: None,
         space_id: Some(crate::keiki::agent_id(agent_id)),
         last_seen_at: None,
-        room_gen: None,
     })
 }
 

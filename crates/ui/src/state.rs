@@ -29,12 +29,12 @@ use serde::de::DeserializeOwned;
 
 use crate::comments::DiffComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
-use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
+use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock};
 use zeron_proto::{
     ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device, EngineInfo,
-    HarnessId, Session, Space, WorkspaceScope,
+    HarnessId, Session, Space,
 };
-use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
+use zeron_rpc::{RpcClient, RpcError, RpcService, connect_ws, memory_client, methods};
 
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
@@ -58,19 +58,9 @@ pub(crate) struct KeikiSessionInfo {
 /// Everything needed to reach (or start) an engine.
 #[derive(Debug, Clone)]
 pub struct EngineBootConfig {
-    /// Data directory for the embedded engine (`~/.zeron`).
     pub data_dir: PathBuf,
-    /// Localhost IPC port to probe / serve.
     pub ipc_port: u16,
-    /// Edge base URL for the embedded engine.
     pub edge_url: String,
-    /// Bearer for edge room joins; `None` runs offline.
-    pub edge_token: Option<String>,
-    /// Workspace org override for explicit dev-mode runs.
-    pub org_id: Option<String>,
-    /// WorkOS client id for production authentication.
-    pub workos_client_id: Option<String>,
-    /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
 }
 
@@ -127,77 +117,6 @@ impl EngineBackend for InProcessEngine {
     }
 }
 
-#[derive(Clone)]
-enum DeferredEngineState {
-    Waiting,
-    Ready,
-    Failed(String),
-}
-
-/// Serves engine identity and AuthRpc immediately, then holds data calls only
-/// while a captured synced profile still needs organization onboarding.
-/// Existing subscriptions attach to the assembled service without reconnecting.
-struct DeferredEngineRpc {
-    auth: AuthRpc,
-    engine_info: EngineInfo,
-    state: tokio::sync::watch::Receiver<DeferredEngineState>,
-    service: Arc<tokio::sync::OnceCell<Arc<dyn RpcService>>>,
-}
-
-#[async_trait]
-impl RpcService for DeferredEngineRpc {
-    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        if method == methods::ENGINE_INFO {
-            return RpcReply::value(&self.engine_info);
-        }
-        if method == methods::ENGINE_READY {
-            let mut state = self.state.clone();
-            return match wait_for_deferred_engine(&mut state).await {
-                Ok(()) => RpcReply::value(&serde_json::json!({ "ready": true })),
-                Err(message) => Err(RpcError::Failed(message)),
-            };
-        }
-        if AuthRpc::handles(method) {
-            return self.auth.handle(method, params).await;
-        }
-
-        let mut state = self.state.clone();
-        loop {
-            let current = { state.borrow().clone() };
-            match current {
-                DeferredEngineState::Waiting => {}
-                DeferredEngineState::Ready => {
-                    let service = self.service.get().ok_or_else(|| {
-                        RpcError::Failed(
-                            "embedded engine became ready without an RPC service".into(),
-                        )
-                    })?;
-                    return service.handle(method, params).await;
-                }
-                DeferredEngineState::Failed(message) => return Err(RpcError::Failed(message)),
-            }
-            state.changed().await.map_err(|_| RpcError::Closed)?;
-        }
-    }
-}
-
-async fn wait_for_deferred_engine(
-    state: &mut tokio::sync::watch::Receiver<DeferredEngineState>,
-) -> Result<(), String> {
-    loop {
-        let current = { state.borrow().clone() };
-        match current {
-            DeferredEngineState::Waiting => {}
-            DeferredEngineState::Ready => return Ok(()),
-            DeferredEngineState::Failed(message) => return Err(message),
-        }
-        state
-            .changed()
-            .await
-            .map_err(|_| "embedded engine assembly ended without a result".to_string())?;
-    }
-}
-
 /// External daemon over `ws://127.0.0.1:{port}`.
 struct RemoteEngine {
     client: Arc<RpcClient>,
@@ -228,7 +147,6 @@ impl EngineBackend for RemoteEngine {
 pub struct EngineHandle {
     inner: Arc<dyn EngineBackend>,
     engine_info: EngineInfo,
-    deferred_state: Option<tokio::sync::watch::Receiver<DeferredEngineState>>,
 }
 
 impl EngineHandle {
@@ -236,139 +154,34 @@ impl EngineHandle {
     /// Must run on the tokio runtime (`Tokio::spawn`): both transports spawn
     /// tokio tasks.
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
-        // Invariant: at most one bootstrap in this process runs probe+embed at
-        // a time. The winner binds the deferred IPC listener before releasing
-        // the gate, so a concurrent viewport's probe finds it and attaches as
-        // Remote instead of racing it for the data dir.
         static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _gate = BOOTSTRAP_GATE.lock().await;
-
         if let Some(handle) = Self::attach_to_daemon(config.ipc_port).await {
             return Ok(handle);
         }
-
-        tracing::info!(data_dir = %config.data_dir.display(), "no daemon on port; embedding engine");
         let engine_config = EngineConfig {
             data_dir: config.data_dir,
-            edge_url: config.edge_url,
-            edge_token: config.edge_token,
             ipc_port: config.ipc_port,
             default_harness: config.default_harness,
-            org_id: config.org_id,
-            workos_client_id: config.workos_client_id,
         };
-
-        // Own the data dir before opening anything under it or binding IPC —
-        // the lock, not the port bind, is the ownership decision. A failed
-        // acquire means an out-of-process engine holds the dir but was not
-        // serving IPC at probe time (a daemon mid-start): wait for its
-        // listener, re-trying the lock in case it dies instead.
         std::fs::create_dir_all(&engine_config.data_dir)?;
-        let lock_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let lock = loop {
-            match InstanceLock::acquire(&engine_config.data_dir) {
-                Ok(lock) => break lock,
-                Err(err) => {
-                    if std::time::Instant::now() >= lock_deadline {
-                        return Err(err.into());
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    if let Some(handle) = Self::attach_to_daemon(engine_config.ipc_port).await {
-                        return Ok(handle);
-                    }
-                }
-            }
-        };
-
-        let auth = Engine::build_auth(&engine_config).await;
-        let workspace_scope = Engine::initial_workspace_scope(&auth);
-        let initial_profile = Engine::resolve_profile(&engine_config, &auth, workspace_scope)?;
-        let profile_is_resolved = initial_profile.is_some();
-        let engine_info = Engine::engine_info(&engine_config, workspace_scope)?;
-        let refresh_task = auth.spawn_refresh_loop();
-        let (state_tx, mut state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        let assembled_service = Arc::new(tokio::sync::OnceCell::new());
-        let service: Arc<dyn RpcService> = Arc::new(DeferredEngineRpc {
-            auth: AuthRpc::new(auth.clone()),
-            engine_info: engine_info.clone(),
-            state: state_rx.clone(),
-            service: assembled_service.clone(),
-        });
+        let lock = InstanceLock::acquire(&engine_config.data_dir)?;
+        let profile = zeron_engine::EngineProfile::local(&engine_config.data_dir)?;
+        let engine_info = Engine::engine_info(&engine_config)?;
+        let runtime = Engine::assemble_runtime_with_lock(&engine_config, profile, lock).await?;
+        let service: Arc<dyn RpcService> = runtime.core().rpc_service();
         let client = memory_client(service.clone());
-
-        // Serve the same service on the IPC port so a terminal viewport can
-        // attach to this window's engine with no setup. Deliberately the
-        // *deferred* service, not the assembled one: a viewport that connects
-        // during cloud onboarding gets EngineInfo and AuthRpc immediately, and
-        // its data subscriptions wait exactly as this window's do.
-        //
-        // Best-effort — losing the bind race with another engine costs other
-        // viewports, not this one.
         let ipc_task = match zeron_engine::serve_ipc(engine_config.ipc_port, service).await {
             Ok(task) => Some(task),
             Err(err) => {
-                tracing::warn!(
-                    port = engine_config.ipc_port,
-                    error = %err,
-                    "IPC port unavailable; other viewports cannot attach to this window"
-                );
+                tracing::warn!(port = engine_config.ipc_port, error = %err, "IPC port unavailable");
                 None
             }
         };
-        let runtime = Arc::new(tokio::sync::Mutex::new(None));
-        let runtime_for_boot = runtime.clone();
-        let service_for_boot = assembled_service.clone();
-        // The instance lock rides into the boot task and is consumed by
-        // assembly — held through sign-in onboarding too, because this process
-        // owns the data dir from the moment it decided to embed.
-        let boot_task = tokio::spawn(async move {
-            let profile = match initial_profile {
-                Some(profile) => profile,
-                None => {
-                    let mut auth_state = auth.watch_state();
-                    while !auth_state.borrow().is_signed_in() {
-                        if auth_state.changed().await.is_err() {
-                            state_tx.send_replace(DeferredEngineState::Failed(
-                                "authentication state closed before workspace onboarding".into(),
-                            ));
-                            return;
-                        }
-                    }
-                    match Engine::resolve_profile(&engine_config, &auth, workspace_scope) {
-                        Ok(Some(profile)) => profile,
-                        Ok(None) => {
-                            state_tx.send_replace(DeferredEngineState::Failed(
-                                "workspace onboarding completed without an organization".into(),
-                            ));
-                            return;
-                        }
-                        Err(err) => {
-                            state_tx.send_replace(DeferredEngineState::Failed(err.to_string()));
-                            return;
-                        }
-                    }
-                }
-            };
-
-            match Engine::assemble_runtime_with_lock(&engine_config, auth, profile, lock).await {
-                Ok(engine_runtime) => {
-                    let service: Arc<dyn RpcService> = engine_runtime.core().rpc_service();
-                    *runtime_for_boot.lock().await = Some(engine_runtime);
-                    if service_for_boot.set(service).is_err() {
-                        state_tx.send_replace(DeferredEngineState::Failed(
-                            "embedded engine RPC service was assembled more than once".into(),
-                        ));
-                        return;
-                    }
-                    state_tx.send_replace(DeferredEngineState::Ready);
-                }
-                Err(err) => {
-                    tracing::error!(error = %err, "embedded engine assembly failed");
-                    state_tx.send_replace(DeferredEngineState::Failed(format!("{err:#}")));
-                }
-            }
-        });
-        let handle = EngineHandle {
+        let runtime = Arc::new(tokio::sync::Mutex::new(Some(runtime)));
+        let boot_task = tokio::spawn(async {});
+        let refresh_task = tokio::spawn(async {});
+        Ok(EngineHandle {
             inner: Arc::new(InProcessEngine {
                 runtime,
                 boot_task,
@@ -377,17 +190,7 @@ impl EngineHandle {
                 client,
             }),
             engine_info,
-            deferred_state: Some(state_rx.clone()),
-        };
-        // Local, development, and already-resolved synced profiles need no
-        // authentication UI while assembling. Keep the viewport Connecting
-        // until their stores and journals are actually open, and surface a
-        // boot failure through the existing bootstrap error path.
-        if profile_is_resolved && let Err(message) = wait_for_deferred_engine(&mut state_rx).await {
-            handle.shutdown().await;
-            return Err(anyhow::anyhow!(message));
-        }
-        Ok(handle)
+        })
     }
 
     /// Probe the IPC port and, if a live engine answers, attach as a remote
@@ -403,55 +206,23 @@ impl EngineHandle {
         if !matches!(probe, Ok(Ok(_))) {
             return None;
         }
-        tracing::info!(%url, "engine daemon detected; connecting");
         match connect_ws(&url).await {
             Ok(client) => match query_engine_info(&client).await {
-                Ok(engine_info) => {
-                    let client = Arc::new(client);
-                    let (state_tx, state_rx) =
-                        tokio::sync::watch::channel(DeferredEngineState::Waiting);
-                    let lifecycle_client = client.clone();
-                    let lifecycle_task = tokio::spawn(async move {
-                        let state = match lifecycle_client
-                            .call(methods::ENGINE_READY, serde_json::json!({}))
-                            .await
-                        {
-                            Ok(_) => DeferredEngineState::Ready,
-                            // EngineReady was added after EngineInfo. An older daemon
-                            // that does not expose the barrier is already assembled.
-                            Err(RpcError::UnknownMethod(method))
-                                if method == methods::ENGINE_READY =>
-                            {
-                                DeferredEngineState::Ready
-                            }
-                            Err(err) => DeferredEngineState::Failed(err.to_string()),
-                        };
-                        state_tx.send_replace(state);
-                    });
-                    Some(EngineHandle {
-                        inner: Arc::new(RemoteEngine {
-                            client,
-                            url,
-                            lifecycle_task: tokio::sync::Mutex::new(Some(lifecycle_task)),
-                        }),
-                        engine_info,
-                        deferred_state: Some(state_rx),
-                    })
-                }
+                Ok(engine_info) => Some(EngineHandle {
+                    inner: Arc::new(RemoteEngine {
+                        client: Arc::new(client),
+                        url,
+                        lifecycle_task: tokio::sync::Mutex::new(None),
+                    }),
+                    engine_info,
+                }),
                 Err(err) => {
-                    tracing::warn!(
-                        %url,
-                        error = %err,
-                        "listener did not provide engine identity; embedding instead"
-                    );
+                    tracing::debug!(%url, error = %err, "listener is not a zeron engine");
                     None
                 }
             },
-            // Something is on the port but it is not an engine (or it is
-            // wedged). Fall through and embed: a stranger holding 27654
-            // should cost other viewports, not this window.
             Err(err) => {
-                tracing::warn!(%url, error = %err, "not an engine; embedding instead");
+                tracing::debug!(%url, error = %err, "engine IPC connection failed");
                 None
             }
         }
@@ -467,10 +238,6 @@ impl EngineHandle {
 
     pub fn engine_info(&self) -> &EngineInfo {
         &self.engine_info
-    }
-
-    fn deferred_state(&self) -> Option<tokio::sync::watch::Receiver<DeferredEngineState>> {
-        self.deferred_state.clone()
     }
 
     pub async fn shutdown(&self) {
@@ -497,7 +264,6 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
                 .await?;
             Ok(EngineInfo {
                 device_id: legacy.device_id,
-                workspace_scope: WorkspaceScope::Synced,
             })
         }
         Err(err) => Err(err),
@@ -515,7 +281,7 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 pub use zeron_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
-    parse_auth_state, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+    project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
 };
 
 // ---------------------------------------------------------------------------
@@ -556,9 +322,6 @@ pub struct UploadProgress {
 pub struct AppState {
     pub connection: ConnectionStatus,
     pub devices: Vec<Device>,
-    /// Live edge posture (WatchConnectivity): drives the connection pill,
-    /// composer honesty ("will queue"), and the Queued send badges.
-    pub connectivity: zeron_proto::Connectivity,
     /// Sorted (see [`sort_spaces`]).
     pub spaces: Vec<Space>,
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
@@ -599,10 +362,6 @@ pub struct AppState {
     pending_sends: HashMap<String, PendingSend>,
     /// The in-flight send's attachment upload, when it has one.
     upload_progress: Option<UploadProgress>,
-    /// Engine-side queued-attachment transfers by uploadId (`WatchTransfers`
-    /// snapshots): real relay-leg progress for the sending thumbnail's
-    /// percent ring, present exactly while bytes are moving.
-    transfers: HashMap<String, (u64, u64)>,
     /// Written by the changes pane, read by the composer.
     diff_comments: HashMap<String, Vec<DiffComment>>,
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
@@ -650,7 +409,6 @@ impl AppState {
         Self {
             connection: ConnectionStatus::Connecting,
             devices: Vec::new(),
-            connectivity: zeron_proto::Connectivity::default(),
             spaces: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
@@ -663,7 +421,6 @@ impl AppState {
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
             upload_progress: None,
-            transfers: HashMap::new(),
             diff_comments: HashMap::new(),
             local_device_id: None,
             update: None,
@@ -807,49 +564,6 @@ impl AppState {
         }
     }
 
-    pub fn apply_connectivity(&mut self, connectivity: zeron_proto::Connectivity) {
-        self.connectivity = connectivity;
-    }
-
-    /// Is this chat's delivery path degraded — will a send QUEUE rather than
-    /// reach its executor promptly? Locally-hosted chats are never degraded
-    /// (a queued command executes on this device even fully offline). Remote
-    /// chats degrade when the OS says offline, when the chat's own edge room
-    /// is down, or when the host device has gone presence-dark.
-    pub fn chat_delivery_degraded(&self, chat_id: &str) -> bool {
-        use zeron_proto::ConnectivityState as S;
-        if self.connectivity.state == S::Disabled {
-            return false;
-        }
-        let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) else {
-            // Unknown chat (a just-minted canvas send): only the global
-            // state can speak.
-            return self.connectivity.state == S::Offline;
-        };
-        if Some(chat.device_id.as_str()) == self.local_device_id.as_deref() {
-            return false;
-        }
-        if self.connectivity.state == S::Offline {
-            return true;
-        }
-        let room_down = match self
-            .connectivity
-            .chats
-            .iter()
-            .find(|c| c.chat_id == chat_id)
-        {
-            Some(net) => !net.connected,
-            None => self.connectivity.state != S::Connected,
-        };
-        room_down || !self.device_online(&chat.device_id, Utc::now())
-    }
-
-    /// A send is queued: in flight AND its delivery path is degraded — the
-    /// honest badge is "Queued", not a Working spinner.
-    pub fn send_queued(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
-        self.send_pending(chat_id, now) && self.chat_delivery_degraded(chat_id)
-    }
-
     pub fn apply_devices(&mut self, mut devices: Vec<Device>) {
         let incoming_ids = devices
             .iter()
@@ -870,7 +584,7 @@ impl AppState {
         self.devices = devices;
     }
 
-    /// Replace the cloud provider snapshot without allowing its partial view
+    /// Replace the Keiki provider snapshot without allowing its partial view
     /// to overwrite rows owned by the local engine.
     pub fn apply_keiki_snapshot(&mut self, spaces: Vec<Space>, chats: Vec<Chat>) {
         self.devices
@@ -1164,29 +878,6 @@ impl AppState {
         Some(((done * 100) / progress.total).min(99) as u8)
     }
 
-    /// A `WatchTransfers` snapshot: the engine-side relay leg's in-flight
-    /// queued-attachment transfers, replacing the whole set each frame.
-    pub fn apply_transfers(&mut self, transfers: Vec<zeron_proto::TransferProgress>) {
-        self.transfers = transfers
-            .into_iter()
-            .map(|t| (t.upload_id, (t.done, t.total)))
-            .collect();
-    }
-
-    /// Percent of one queued attachment's relay transfer, by the uploadId
-    /// its `pending://{uploadId}/…` ref names. Same 99-clamp as
-    /// [`Self::upload_progress_percent`]: the last point belongs to the
-    /// commit, so "100% but still spinning" never shows. `None` when no
-    /// bytes are moving for that upload (staged-but-waiting, retry backoff,
-    /// or done) — the thumbnail falls back to its indeterminate spinner.
-    pub fn transfer_percent(&self, upload_id: &str) -> Option<u8> {
-        let (done, total) = self.transfers.get(upload_id)?;
-        if *total == 0 {
-            return None;
-        }
-        Some(((done.min(total) * 100) / total).min(99) as u8)
-    }
-
     /// Is a send still in flight for this chat (unacked)? Inside the grace
     /// window normally; while the chat's delivery path is degraded the
     /// overlay holds indefinitely — the truth IS "Queued", and silently
@@ -1195,7 +886,6 @@ impl AppState {
     pub fn send_pending(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
         self.pending_sends.get(chat_id).is_some_and(|p| {
             now.signed_duration_since(p.started).num_milliseconds() <= UNDELIVERED_GRACE_MS
-                || self.chat_delivery_degraded(chat_id)
         })
     }
 
@@ -1226,7 +916,6 @@ impl AppState {
             .get(chat_id)
             .filter(|p| {
                 now.signed_duration_since(p.started).num_milliseconds() <= UNDELIVERED_GRACE_MS
-                    || self.chat_delivery_degraded(chat_id)
             })
             .map(|p| p.started)
     }
@@ -1335,26 +1024,14 @@ impl AppState {
             .map(|d| d.name.as_str())
     }
 
-    /// Host-presence check: is this device's 15s presence heartbeat fresh?
-    /// Distinguishes "host offline" (its queued work syncs when it returns)
-    /// from slow sync. The local device is trivially online; unknown devices
-    /// get the benefit of the doubt (no evidence — don't cry wolf).
-    pub fn device_online(&self, device_id: &str, now: DateTime<Utc>) -> bool {
-        if self.local_device_id.as_deref() == Some(device_id) {
-            return true;
-        }
-        match self.devices.iter().find(|d| d.id == device_id) {
-            Some(d) => d
-                .last_seen_at
-                .is_some_and(|at| now.signed_duration_since(at).num_seconds() <= 70),
-            None => true,
-        }
+    /// Local device availability check. A local engine is always reachable
+    /// through the current process or its localhost daemon.
+    pub fn device_online(&self, _device_id: &str, _now: DateTime<Utc>) -> bool {
+        true
     }
 
     /// The "@ device" tag for a space — shared by the space pickers' rows,
-    /// the sidebar filter trigger, and the composer's space chip. Returns
-    /// `(tag, offline)`; staleness renders as a disconnected GLYPH at the
-    /// call sites (user request), never words in the tag.
+    /// the sidebar filter trigger, and the composer's space chip.
     pub fn space_device_tag(&self, space: &Space, now: DateTime<Utc>) -> (String, bool) {
         let offline = !self.device_online(&space.device_id, now);
         let device = self
@@ -1364,14 +1041,14 @@ impl AppState {
     }
 
     /// Does the selected space's folder have git? Drives the branch picker and
-    /// the diff sidebar (owner-stamped, synced — no RPC).
+    /// the diff sidebar (owner-stamped in the local workspace doc).
     pub fn selected_space_git(&self) -> bool {
         self.selected_space_row().is_some_and(|s| s.git_detected)
     }
 
     /// Full display status for a chat (tab dots, Active list). A send in
-    /// flight ([`Self::begin_pending_send`]) reads as Working — the queued
-    /// command is as good as running.
+    /// flight ([`Self::begin_pending_send`]) reads as Working while its local
+    /// command is being drained.
     pub fn display_status_for(&self, chat: &Chat, now: DateTime<Utc>) -> ChatIndicator {
         if self.send_pending(&chat.id, now) {
             return ChatIndicator::Working;
@@ -1496,16 +1173,16 @@ impl AppState {
     }
 
     pub fn gate(&self) -> GatePhase {
-        gate_phase(&self.connection, None, None)
+        gate_phase(&self.connection)
     }
 
     pub fn engine(&self) -> Option<&EngineHandle> {
         self.engine.as_ref()
     }
 
-    /// Drop every account-scoped view and subscription after its runtime has
-    /// stopped. The next bootstrap must never render rows from the previous
-    /// account while the local profile is opening.
+    /// Drop runtime views and subscriptions after the engine has stopped.
+    /// The next bootstrap must not render rows from the previous runtime while
+    /// the local profile is opening.
     pub fn prepare_runtime_replacement(&mut self, cx: &mut Context<Self>) {
         self.engine = None;
         self.watch_tasks.clear();
@@ -1530,7 +1207,6 @@ impl AppState {
         self.echoes.clear();
         self.pending_sends.clear();
         self.upload_progress = None;
-        self.transfers.clear();
         self.local_device_id = None;
         self.update = None;
         cx.notify();
@@ -1577,9 +1253,6 @@ impl AppState {
         self.local_device_id = Some(engine_info.device_id.clone());
         self.engine = Some(handle.clone());
         let mut watch_tasks = Vec::with_capacity(8);
-        if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
-            watch_tasks.push(task);
-        }
         watch_tasks.extend([
             spawn_watch(
                 cx,
@@ -1593,18 +1266,6 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_DEVICES,
                 AppState::apply_devices,
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_CONNECTIVITY,
-                AppState::apply_connectivity,
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_TRANSFERS,
-                AppState::apply_transfers,
             ),
             spawn_watch(
                 cx,
@@ -1749,25 +1410,6 @@ impl AppState {
         cx.notify();
     }
 
-    /// Synced seen marker: only fires when the chat is currently unseen
-    /// (idempotence — no mutate spam), stamps the local row optimistically so
-    /// the LWW round-trip is invisible, and fire-and-forgets the mutate.
-    /// Window-focus liveness sweep: ask the engine to probe every open room
-    /// (workspace + chat docs). Fire-and-forget; each room ignores the hint
-    /// unless it has been broadcast-quiet ≥30s, so spamming is harmless.
-    pub fn probe_sync(&mut self, cx: &mut Context<Self>) {
-        let Some(handle) = self.engine.clone() else {
-            return;
-        };
-        cx.spawn(async move |_, _| {
-            let params = serde_json::json!({});
-            if let Err(err) = handle.client().call(methods::PROBE_SYNC, params).await {
-                tracing::debug!(error = %err, "probe sync failed");
-            }
-        })
-        .detach();
-    }
-
     pub fn mark_chat_seen(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
@@ -1789,32 +1431,6 @@ impl AppState {
         })
         .detach();
     }
-}
-
-/// Observe assembly after an early attach (cloud onboarding or another viewport
-/// reaching the embedded engine over IPC). Data subscriptions wait on the same
-/// result, but their individual errors are not authoritative: older engines may
-/// legitimately omit a watch method. Only the assembly result may fail the
-/// whole connection.
-fn spawn_deferred_engine_watch(
-    cx: &mut Context<AppState>,
-    handle: EngineHandle,
-) -> Option<Task<()>> {
-    let mut deferred = handle.deferred_state()?;
-    Some(cx.spawn(async move |this, cx| {
-        let Err(failure) = wait_for_deferred_engine(&mut deferred).await else {
-            return;
-        };
-        tracing::error!(error = %failure, "engine assembly failed after attachment");
-        // Embedded handles release their IPC listener before exposing Retry;
-        // remote handles stop their completed readiness probe.
-        handle.shutdown().await;
-        this.update(cx, |state, cx| {
-            state.connection = ConnectionStatus::Failed(failure);
-            cx.notify();
-        })
-        .ok();
-    }))
 }
 
 /// Chats watch. Boot selection is the shell's job (it lands on the first
@@ -2191,112 +1807,12 @@ mod tests {
     use super::*;
     use chrono::TimeDelta;
     use zeron_engine::{EngineCore, default_registry};
-    // `SessionStatus` is only needed to build the fixtures below — the module
-    // itself derives everything through `zeron_proto::view`.
-    use zeron_proto::{AuthState, SessionStatus, UserProfile};
+    use zeron_proto::SessionStatus;
 
     /// A localhost port that was just free (bind :0, read, drop).
     async fn free_port() -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
-    }
-
-    struct LegacyIdentityRpc;
-
-    #[async_trait]
-    impl RpcService for LegacyIdentityRpc {
-        async fn handle(
-            &self,
-            method: &str,
-            _params: serde_json::Value,
-        ) -> Result<RpcReply, RpcError> {
-            match method {
-                methods::LOCAL_DEVICE => {
-                    RpcReply::value(&serde_json::json!({ "deviceId": "legacy-device" }))
-                }
-                other => Err(RpcError::UnknownMethod(other.into())),
-            }
-        }
-    }
-
-    struct DeferredIdentityRpc {
-        engine_info: EngineInfo,
-        state: tokio::sync::watch::Receiver<DeferredEngineState>,
-    }
-
-    #[async_trait]
-    impl RpcService for DeferredIdentityRpc {
-        async fn handle(
-            &self,
-            method: &str,
-            _params: serde_json::Value,
-        ) -> Result<RpcReply, RpcError> {
-            match method {
-                methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
-                methods::ENGINE_READY => {
-                    let mut state = self.state.clone();
-                    wait_for_deferred_engine(&mut state)
-                        .await
-                        .map_err(RpcError::Failed)?;
-                    RpcReply::value(&serde_json::json!({ "ready": true }))
-                }
-                other => Err(RpcError::UnknownMethod(other.into())),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_daemon_identity_falls_back_to_synced_scope() {
-        let client = memory_client(Arc::new(LegacyIdentityRpc));
-
-        let info = query_engine_info(&client).await.unwrap();
-
-        assert_eq!(info.device_id, "legacy-device");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(info.workspace_scope),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_viewport_treats_legacy_daemon_as_ready() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
-            listener,
-            Arc::new(LegacyIdentityRpc),
-        ));
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .expect("legacy daemon remains attachable");
-
-        let mut deferred = handle
-            .deferred_state()
-            .expect("remote viewport tracks readiness");
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            wait_for_deferred_engine(&mut deferred),
-        )
-        .await
-        .expect("legacy readiness fallback completes")
-        .expect("unknown EngineReady means the old daemon is assembled");
-
-        handle.shutdown().await;
-        server.abort();
     }
 
     #[tokio::test]
@@ -2305,23 +1821,12 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         })
         .await
         .unwrap();
         assert_eq!(handle.mode(), EngineMode::InProcess);
-        assert!(matches!(
-            handle
-                .deferred_state()
-                .expect("embedded lifecycle")
-                .borrow()
-                .clone(),
-            DeferredEngineState::Ready
-        ));
         // Same protocol over the in-memory transport: a real engine answers.
         let harnesses = handle
             .client()
@@ -2343,11 +1848,8 @@ mod tests {
         let error = match EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         })
         .await
         {
@@ -2368,65 +1870,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deferred_engine_failure_remains_observable_after_early_attach() {
-        let (state_tx, mut state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        state_tx.send_replace(DeferredEngineState::Failed("store failed".into()));
-
-        assert_eq!(
-            wait_for_deferred_engine(&mut state_rx).await,
-            Err("store failed".into())
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_viewport_observes_deferred_engine_failure() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (state_tx, state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
-            listener,
-            Arc::new(DeferredIdentityRpc {
-                engine_info: EngineInfo {
-                    device_id: "owner-device".into(),
-                    workspace_scope: WorkspaceScope::Local,
-                },
-                state: state_rx,
-            }),
-        ));
-
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .expect("second viewport attaches over IPC");
-        assert!(matches!(handle.mode(), EngineMode::Remote { .. }));
-
-        let mut deferred = handle
-            .deferred_state()
-            .expect("remote viewport tracks engine readiness");
-        state_tx.send_replace(DeferredEngineState::Failed("store failed".into()));
-        assert_eq!(
-            tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                wait_for_deferred_engine(&mut deferred),
-            )
-            .await
-            .expect("remote readiness probe completes"),
-            Err("store failed".into())
-        );
-
-        handle.shutdown().await;
-        server.abort();
-    }
-
-    #[tokio::test]
     async fn an_embedded_engine_serves_the_ipc_port_for_other_viewports() {
         // The whole point of embedding-and-serving: a second viewport (the
         // terminal app) can attach to this window's engine with no setup, no
@@ -2436,11 +1879,8 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         })
         .await
         .unwrap();
@@ -2478,11 +1918,8 @@ mod tests {
         let config = EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         };
         let (a, b) = tokio::join!(
             EngineHandle::bootstrap(config.clone()),
@@ -2509,17 +1946,6 @@ mod tests {
             "the other attaches over IPC: {modes:?}"
         );
 
-        for handle in [&a, &b] {
-            let mut deferred = handle.deferred_state().expect("lifecycle tracked");
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                wait_for_deferred_engine(&mut deferred),
-            )
-            .await
-            .expect("readiness resolves")
-            .expect("both viewports reach Ready");
-        }
-
         b.shutdown().await;
         a.shutdown().await;
     }
@@ -2538,11 +1964,8 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         })
         .await
         .expect("a taken port must not fail the boot");
@@ -2565,16 +1988,11 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         })
         .await
         .unwrap();
-
-        assert_eq!(handle.engine_info().workspace_scope, WorkspaceScope::Local);
         let info: EngineInfo = handle
             .client()
             .call_as(methods::ENGINE_INFO, serde_json::json!({}))
@@ -2582,15 +2000,6 @@ mod tests {
             .unwrap();
         assert_eq!(info, *handle.engine_info());
 
-        let mut auth = handle
-            .client()
-            .subscribe(methods::AUTH_STATUS, serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(
-            parse_auth_state(&auth.recv().await.unwrap()),
-            Some(AuthState::SignedOut)
-        );
         let harnesses = handle
             .client()
             .call(methods::LIST_HARNESSES, serde_json::json!({}))
@@ -2599,59 +2008,9 @@ mod tests {
         assert!(harnesses.as_array().is_some_and(|items| !items.is_empty()));
         assert!(
             !dir.path().join("orgs/dev-org/dev-user").exists(),
-            "production boot must not create dev-user data"
+            "production boot must not create account-scoped data"
         );
         assert!(dir.path().join("profiles/local").is_dir());
-        handle.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn engine_info_is_available_while_cloud_onboarding_is_deferred() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("session.json"),
-            r#"{"refreshToken":"saved","user":{"id":"user_1","email":"u@example.com"}}"#,
-        )
-        .unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .unwrap();
-
-        assert!(matches!(
-            handle
-                .deferred_state()
-                .expect("embedded lifecycle")
-                .borrow()
-                .clone(),
-            DeferredEngineState::Waiting
-        ));
-
-        let info: EngineInfo = handle
-            .client()
-            .call_as(methods::ENGINE_INFO, serde_json::json!({}))
-            .await
-            .expect("EngineInfo bypasses deferred cloud stores");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                handle
-                    .client()
-                    .call(methods::LIST_HARNESSES, serde_json::json!({})),
-            )
-            .await
-            .is_err(),
-            "cloud data waits for organization onboarding"
-        );
-        assert!(!dir.path().join("orgs").exists());
         handle.shutdown().await;
     }
 
@@ -2663,7 +2022,6 @@ mod tests {
             daemon_dir.path(),
             Arc::new(default_registry()),
             HarnessId::Mock,
-            None,
         )
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2674,11 +2032,8 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: ui_dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
+            edge_url: String::new(),
         })
         .await
         .unwrap();
@@ -2687,10 +2042,6 @@ mod tests {
             EngineMode::Remote {
                 url: format!("ws://127.0.0.1:{port}")
             }
-        );
-        assert_eq!(
-            handle.engine_info().workspace_scope,
-            WorkspaceScope::Development
         );
         let harnesses = handle
             .client()
@@ -2728,7 +2079,6 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
-            room_gen: None,
         }
     }
 
@@ -2802,63 +2152,6 @@ mod tests {
         state.apply_devices(vec![upgraded]);
         assert!(state.change_requests.is_supported("remote"));
     }
-
-    #[test]
-    fn transfer_percent_tracks_snapshots_by_upload_id() {
-        let mut s = AppState::new();
-        assert_eq!(s.transfer_percent("u1"), None);
-
-        let frame = |id: &str, done, total| zeron_proto::TransferProgress {
-            upload_id: id.into(),
-            file_name: "a.png".into(),
-            done,
-            total,
-        };
-        s.apply_transfers(vec![frame("u1", 430, 1_000), frame("u2", 0, 400)]);
-        assert_eq!(s.transfer_percent("u1"), Some(43));
-        assert_eq!(s.transfer_percent("u2"), Some(0));
-        assert_eq!(s.transfer_percent("other"), None);
-
-        // The last point belongs to the commit — never a stuck 100%; b64
-        // padding overshoot stays clamped too.
-        s.apply_transfers(vec![frame("u1", 1_000, 1_000), frame("u3", 12, 0)]);
-        assert_eq!(s.transfer_percent("u1"), Some(99));
-        // Zero-total renders indeterminate, not a division blowup.
-        assert_eq!(s.transfer_percent("u3"), None);
-        // Snapshots REPLACE: u2's transfer retired with its entry.
-        assert_eq!(s.transfer_percent("u2"), None);
-
-        s.apply_transfers(Vec::new());
-        assert_eq!(s.transfer_percent("u1"), None);
-    }
-
-    #[test]
-    fn upload_progress_percent_clamps_and_clears() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        let mut s = AppState::new();
-        assert_eq!(s.upload_progress_percent(), None);
-
-        let done = Arc::new(AtomicU64::new(0));
-        s.begin_upload_progress(1_000, done.clone());
-        assert_eq!(s.upload_progress_percent(), Some(0));
-        done.store(430, Ordering::Relaxed);
-        assert_eq!(s.upload_progress_percent(), Some(43));
-        // The last point belongs to commit+queue — never show a stuck 100%.
-        done.store(1_000, Ordering::Relaxed);
-        assert_eq!(s.upload_progress_percent(), Some(99));
-        // Overshoot (b64 padding rounding) stays clamped.
-        done.store(1_002, Ordering::Relaxed);
-        assert_eq!(s.upload_progress_percent(), Some(99));
-
-        s.end_upload_progress();
-        assert_eq!(s.upload_progress_percent(), None);
-
-        // A zero-byte total renders as plain "Sending…", not a percent.
-        s.begin_upload_progress(0, Arc::new(AtomicU64::new(0)));
-        assert_eq!(s.upload_progress_percent(), None);
-    }
-
     #[test]
     fn send_pending_overlays_working_until_the_grace_window() {
         let now = Utc::now();
@@ -3565,91 +2858,6 @@ mod tests {
         assert!(state.transcript_replayed);
     }
 
-    #[test]
-    fn gate_phases() {
-        let user = UserProfile {
-            id: "u".into(),
-            email: "w@example.com".into(),
-            name: None,
-        };
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Connecting, None, None),
-            GatePhase::Loading
-        );
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Failed("boom".into()), None, None),
-            GatePhase::Failed("boom".into())
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Local),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::Ready
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedIn {
-                    user: user.clone(),
-                    org_id: None
-                })
-            ),
-            GatePhase::Ready
-        );
-        // No org yet → org gate.
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::NeedsOrganization { user })
-            ),
-            GatePhase::OrgGate
-        );
-    }
-
-    #[test]
-    fn auth_frames_parse_both_wire_shapes() {
-        // Proto shape.
-        let proto = serde_json::json!({ "state": "signedOut" });
-        assert_eq!(parse_auth_state(&proto), Some(AuthState::SignedOut));
-        // Engine shape (`_tag`, PascalCase, orgId).
-        let engine = serde_json::json!({
-            "_tag": "SignedIn",
-            "user": { "id": "u1", "email": "w@example.com" },
-            "orgId": "org-1",
-        });
-        let Some(AuthState::SignedIn { user, org_id }) = parse_auth_state(&engine) else {
-            panic!("expected SignedIn");
-        };
-        assert_eq!(user.email, "w@example.com");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-        let needs = serde_json::json!({
-            "_tag": "NeedsOrganization",
-            "user": { "id": "u1", "email": "w@example.com", "name": "W" },
-        });
-        assert!(matches!(
-            parse_auth_state(&needs),
-            Some(AuthState::NeedsOrganization { .. })
-        ));
-        // Garbage → None (frame dropped, not a crash).
-        assert_eq!(
-            parse_auth_state(&serde_json::json!({ "_tag": "Wat" })),
-            None
-        );
-        assert_eq!(parse_auth_state(&serde_json::json!(42)), None);
-    }
-
     fn chat_with_cwd(id: &str, created_min: i64, cwd: Option<&str>) -> Chat {
         let mut c = chat(id, created_min, None);
         c.cwd = cwd.map(str::to_string);
@@ -3753,78 +2961,5 @@ mod tests {
             !s.device_version_at_least("d1", (0, 2, 12)),
             "unstamped version conservatively fails the gate"
         );
-    }
-
-    #[test]
-    fn delivery_degradation_and_queued_sends_tell_the_truth() {
-        use zeron_proto::{ChatConnectivity, ConnectivityState};
-        let now = Utc::now();
-        let mut s = AppState::default();
-        s.local_device_id = Some("local".into());
-        let mut remote = chat("c-remote", 0, None);
-        remote.device_id = "remote".into();
-        let mut local = chat("c-local", 0, None);
-        local.device_id = "local".into();
-        s.chats = vec![remote, local];
-        s.devices = vec![Device {
-            id: "remote".into(),
-            name: "vps".into(),
-            platform: "linux".into(),
-            last_seen_at: Some(now),
-            created_at: None,
-            version: None,
-        }];
-        s.connectivity.state = ConnectivityState::Connected;
-        s.connectivity.chats = vec![ChatConnectivity {
-            chat_id: "c-remote".into(),
-            connected: true,
-            pending_pushes: 0,
-        }];
-
-        // Healthy: nothing degraded.
-        assert!(!s.chat_delivery_degraded("c-remote"));
-        assert!(!s.chat_delivery_degraded("c-local"));
-
-        // The chat's own room down → degraded even while globally Connected.
-        s.connectivity.chats[0].connected = false;
-        assert!(s.chat_delivery_degraded("c-remote"));
-        s.connectivity.chats[0].connected = true;
-
-        // Host gone presence-dark → degraded (a send would queue at best).
-        s.devices[0].last_seen_at = Some(now - TimeDelta::minutes(10));
-        assert!(s.chat_delivery_degraded("c-remote"));
-        s.devices[0].last_seen_at = Some(now);
-
-        // OS offline: remote degrades; a locally-hosted chat NEVER does (the
-        // queued command executes on this device even fully offline).
-        s.connectivity.state = ConnectivityState::Offline;
-        assert!(s.chat_delivery_degraded("c-remote"));
-        assert!(!s.chat_delivery_degraded("c-local"));
-
-        // Local profile (Disabled): nothing degrades.
-        s.connectivity.state = ConnectivityState::Disabled;
-        assert!(!s.chat_delivery_degraded("c-remote"));
-
-        // Queued = pending send + degraded path — and degradation HOLDS the
-        // overlay past the grace window instead of silently expiring (the
-        // no-trace hole).
-        s.connectivity.state = ConnectivityState::Offline;
-        s.begin_pending_send("c-remote", "m1", now - TimeDelta::seconds(200));
-        assert!(s.send_pending("c-remote", now));
-        assert!(s.send_queued("c-remote", now));
-        // Past the grace: the explicit failed state surfaces alongside.
-        assert!(s.send_undelivered("c-remote", now));
-        // Retry restarts the clock: back to Queued, no longer failed.
-        s.retry_pending_send("c-remote", now);
-        assert!(!s.send_undelivered("c-remote", now));
-        assert!(s.send_queued("c-remote", now));
-        // Path healed with a stale unacked send: the overlay expires after
-        // the grace rather than holding forever.
-        s.retry_pending_send("c-remote", now - TimeDelta::seconds(200));
-        s.connectivity.state = ConnectivityState::Connected;
-        assert!(!s.send_pending("c-remote", now));
-        assert!(!s.send_queued("c-remote", now));
-        // …but the explicit undelivered flag still tells the truth.
-        assert!(s.send_undelivered("c-remote", now));
     }
 }

@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
+use zeron_doc::DocsStore;
 use zeron_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionDoc, SessionMessageEntry,
 };
@@ -29,7 +30,6 @@ use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
-use zeron_sync::DocsStore;
 
 const CHAT: &str = "chat-restart";
 
@@ -136,8 +136,7 @@ impl Harness for RecordingHarness {
 fn assemble(dir: &std::path::Path, harness: RecordingHarness) -> EngineCore {
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(harness));
-    EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock, None)
-        .expect("engine core assembles")
+    EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock).expect("engine core assembles")
 }
 
 fn queue_run(core: &EngineCore, prompt: &str, cwd: &str, message_id: &str) {
@@ -331,7 +330,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     //   the only copy of the harness session id (the debounced workspace-row
     //   write never landed).
     {
-        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let store = DocsStore::open(dir.join("profiles/local")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "msg-user-1".into(),
@@ -363,7 +362,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
 
-        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        let journal = RunJournal::open(dir.join("profiles/local/journals")).unwrap();
         journal
             .append(
                 CHAT,
@@ -403,7 +402,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[1].status, Some(MessageStatus::Aborted));
     // … and closed the stale journal with a synthetic Done.
-    let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+    let journal = RunJournal::open(dir.join("profiles/local/journals")).unwrap();
     assert!(matches!(
         journal.last_event(CHAT).unwrap(),
         Some((_, AgentEvent::Done { .. }))
@@ -527,7 +526,7 @@ async fn persistent_session_serves_multiple_turns_on_one_child() {
     registry.register(Arc::new(PersistentHarness {
         runs_started: runs_started.clone(),
     }));
-    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock, None)
+    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock)
         .expect("engine core assembles");
     pre_title(&core);
 
@@ -577,7 +576,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         .unwrap()
         .as_millis() as i64;
     {
-        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let store = DocsStore::open(dir.join("profiles/local")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "msg-user-1".into(),
@@ -609,7 +608,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
 
-        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        let journal = RunJournal::open(dir.join("profiles/local/journals")).unwrap();
         journal
             .append(
                 CHAT,

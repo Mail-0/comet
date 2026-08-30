@@ -163,13 +163,8 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
     let cwds: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(RecordingHarness { cwds: cwds.clone() }));
-    let core = EngineCore::assemble(
-        &tmp_path.join("data"),
-        Arc::new(registry),
-        HarnessId::Mock,
-        None,
-    )
-    .expect("engine core assembles");
+    let core = EngineCore::assemble(&tmp_path.join("data"), Arc::new(registry), HarnessId::Mock)
+        .expect("engine core assembles");
 
     // Mirror the composer: createChat lands first (cwd-less; the engine
     // resolves the project folder), then the queued Run carries the spec.

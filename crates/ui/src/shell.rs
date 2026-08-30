@@ -742,7 +742,7 @@ fn account_identity(
         crate::keiki::SessionStatus::SignedIn => {
             let name = session.and_then(|session| session.display_name.as_deref());
             let email = session.and_then(|session| session.email.as_deref());
-            let line = name.or(email).unwrap_or("Not signed in").into();
+            let line = name.or(email).unwrap_or("Keiki account").into();
             let subline = session
                 .and_then(|session| session.active_org_name.as_deref().or(email))
                 .map(Into::into);
@@ -766,8 +766,6 @@ struct SubagentTab {
     doc_id: String,
     title: SharedString,
     transcript: Entity<Transcript>,
-    /// Keeps a frozen-blob fetch alive (it falls back to a live doc watch).
-    _fetch: Option<Task<()>>,
     /// Spawn chips INSIDE the subagent transcript open their own tabs.
     _events: Subscription,
 }
@@ -905,8 +903,7 @@ pub struct Shell {
     /// Keys that just appeared in a live list (fade in, no glide).
     sidebar_new_keys: std::collections::HashSet<String>,
     resort_epoch: usize,
-    /// Last observed `window.is_window_active()` — rising edge fires a
-    /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
+    /// Last observed `window.is_window_active()`.
     was_window_active: bool,
     /// Dev/testing knobs (`ZERON_OPEN_DIALOG`, `ZERON_FORCE_GATE`,
     /// `ZERON_DEMO_UPLOAD`) — see [`Shell::new`].
@@ -1024,13 +1021,6 @@ impl Shell {
                         s.selected_chat
                             .as_deref()
                             .is_some_and(|id| s.indicator_for(id, Utc::now()) != Indicator::None)
-                            // The connection pill's retry countdown needs the
-                            // same per-second refresh while degraded.
-                            || matches!(
-                                s.connectivity.state,
-                                zeron_proto::ConnectivityState::Offline
-                                    | zeron_proto::ConnectivityState::Reconnecting
-                            )
                     };
                     if live {
                         cx.notify();
@@ -1081,7 +1071,7 @@ impl Shell {
         // ring) — display-only; a real upload can't be paused for a capture.
         let debug_upload = std::env::var("ZERON_DEMO_UPLOAD").ok();
         let debug_gate = match std::env::var("ZERON_FORCE_GATE").ok().as_deref() {
-            Some("signin") => Some(GatePhase::SignIn),
+            Some("signin") => None,
             Some("failed") => Some(GatePhase::Failed(
                 "Could not reach the Keiki engine on port 27901".into(),
             )),
@@ -1796,7 +1786,7 @@ impl Shell {
     /// subagents watch the doc directly.
     fn add_subagent_surface(
         &mut self,
-        chat_id: String,
+        _chat_id: String,
         doc_id: String,
         title: String,
         frozen: bool,
@@ -1822,20 +1812,14 @@ impl Shell {
         let transcript =
             cx.new(|cx| Transcript::for_doc(self.state.clone(), doc_id.clone(), !frozen, cx));
         let events = cx.subscribe(&transcript, Self::on_transcript_event);
-        let fetch = if frozen {
-            self.spawn_subagent_snapshot_fetch(&chat_id, &doc_id, cx)
-        } else {
-            self.state
-                .update(cx, |s, cx| s.watch_subagent_doc(doc_id.clone(), cx));
-            None
-        };
+        self.state
+            .update(cx, |s, cx| s.watch_subagent_doc(doc_id.clone(), cx));
         self.subagent_tabs.insert(
             id,
             SubagentTab {
                 doc_id,
                 title: title.into(),
                 transcript,
-                _fetch: fetch,
                 _events: events,
             },
         );
@@ -1845,46 +1829,6 @@ impl Shell {
             .or_default()
             .push(RightSurface::Subagent(id));
         self.set_right_active(RightSurface::Subagent(id), cx);
-    }
-
-    /// Fetch a finished subagent's frozen transcript blob
-    /// (`{chat_id}/{doc_id}`); on ANY failure fall back to watching the doc
-    /// — the blob upload is best-effort engine-side.
-    fn spawn_subagent_snapshot_fetch(
-        &self,
-        chat_id: &str,
-        doc_id: &str,
-        cx: &mut Context<Self>,
-    ) -> Option<Task<()>> {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.state
-                .update(cx, |s, cx| s.watch_subagent_doc(doc_id.to_string(), cx));
-            return None;
-        };
-        let blob_ref = format!("{chat_id}/{doc_id}");
-        let state = self.state.clone();
-        let doc_id = doc_id.to_string();
-        Some(cx.spawn(async move |_, cx| {
-            let reply = crate::attachments::call_with_timeout(
-                &engine,
-                cx.background_executor(),
-                methods::FETCH_TOOL_BLOB,
-                serde_json::json!({ "blobRef": blob_ref }),
-                Duration::from_secs(20),
-            )
-            .await;
-            let entries: Option<Vec<zeron_doc::SessionMessageEntry>> = reply.ok().and_then(|v| {
-                let text = v.get("text")?.as_str()?.to_owned();
-                serde_json::from_str(&text).ok()
-            });
-            state.update(cx, |s, cx| {
-                match entries {
-                    Some(entries) => s.set_subagent_snapshot(doc_id, entries),
-                    None => s.watch_subagent_doc(doc_id, cx),
-                }
-                cx.notify();
-            });
-        }))
     }
 
     /// A surface tab's ✕. The active fallback happens naturally through
@@ -3063,10 +3007,7 @@ impl Shell {
         let (queued, undelivered) = {
             let now = Utc::now();
             let state = self.state.read(cx);
-            (
-                state.send_queued(&id, now),
-                state.send_undelivered(&id, now),
-            )
+            (false, state.send_undelivered(&id, now))
         };
         let status_color = if undelivered {
             theme.danger
@@ -3404,53 +3345,12 @@ impl Shell {
     /// no border (v0.2.12 feedback): a bare spinner + faint caption while
     /// reconnecting; an amber dot only when the OS says offline. The
     /// transport error belongs in logs, not the sidebar.
-    fn render_connection_pill(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use zeron_proto::ConnectivityState as S;
-        let conn = self.state.read(cx).connectivity.clone();
-        let (label, glyph): (SharedString, AnyElement) = match conn.state {
-            S::Disabled | S::Connected => return None,
-            S::Offline => (
-                "Offline — sends are saved".into(),
-                div()
-                    .size(px(5.0))
-                    .rounded_full()
-                    .bg(theme.warning)
-                    .into_any_element(),
-            ),
-            S::Reconnecting => (
-                "Reconnecting…".into(),
-                loaders::mini_mono_spinner(
-                    "connection-spinner",
-                    2.0,
-                    theme.text_muted,
-                    cx.entity_id(),
-                    cx,
-                )
-                .into_any_element(),
-            ),
-        };
-        Some(
-            crate::motion::fade_in(
-                "connection-pill",
-                div()
-                    .id("connection-pill")
-                    .mx(px(Theme::SPACE_SM + 4.0))
-                    .mb(px(Theme::SPACE_SM))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(glyph)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(theme.text_faint)
-                            .child(label),
-                    ),
-            )
-            .into_any_element(),
-        )
+    fn render_connection_pill(
+        &self,
+        _theme: &Theme,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
     }
 
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -5868,7 +5768,6 @@ impl Shell {
                     // 0.5s entrance instead of mutating one animated element.
                     .child(motion::fade_in(
                         match phase {
-                            GatePhase::SignIn => "gate-card-signin",
                             _ => "gate-card-failed",
                         },
                         div().child(content),
@@ -6346,16 +6245,7 @@ impl Render for Shell {
 
         let root = match &gate {
             GatePhase::Ready => {
-                // Focus is a sync signal: on the rising edge of window
-                // activation, nudge every open room to verify liveness — a
-                // broadcast-deaf socket (accepted writes, runtime pongs,
-                // nothing delivered; 2026-08-04 incident) then heals within
-                // seconds of the user looking at the app rather than waiting
-                // out the background probe cadence.
                 let window_active = window.is_window_active();
-                if window_active && !self.was_window_active {
-                    self.state.update(cx, |s, cx| s.probe_sync(cx));
-                }
                 self.was_window_active = window_active;
                 // A run finishing while you're LOOKING at the session must not
                 // badge "completed" until you leave and return — mark it seen
@@ -6538,11 +6428,10 @@ impl Render for Shell {
                     .child(motion::fade_in("phase-app", page))
             }
             GatePhase::Loading => root, // splash overlay covers boot
-            phase @ (GatePhase::Failed(_) | GatePhase::SignIn) => {
+            phase @ GatePhase::Failed(_) => {
                 let card = self.render_gate_card(phase, cx);
                 root.child(card)
             }
-            GatePhase::OrgGate => root,
         };
         // A manually-driven tween is mid-flight: keep frames coming (the same
         // scheduling `with_animation` would have requested). Hover color fades
@@ -6668,6 +6557,14 @@ mod tests {
                 Some("ada@example.com".into()),
                 "ada@example.com".into()
             )
+        );
+    }
+
+    #[test]
+    fn account_identity_signed_in_before_session_info_arrives() {
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::SignedIn, None),
+            ("Keiki account".into(), None, "Keiki account".into())
         );
     }
 
