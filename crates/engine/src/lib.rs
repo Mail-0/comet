@@ -266,19 +266,19 @@ impl Engine {
         })
     }
     pub async fn assemble_runtime(
-        _config: &EngineConfig,
+        config: &EngineConfig,
         profile: EngineProfile,
     ) -> anyhow::Result<EngineRuntime> {
         Ok(EngineRuntime {
             core: EngineCore::assemble_with_profile(
                 profile,
                 Arc::new(default_registry()),
-                HarnessId::Mock,
+                config.default_harness,
             )?,
         })
     }
     pub async fn assemble_runtime_with_lock(
-        _config: &EngineConfig,
+        config: &EngineConfig,
         profile: EngineProfile,
         lock: InstanceLock,
     ) -> anyhow::Result<EngineRuntime> {
@@ -286,7 +286,7 @@ impl Engine {
             core: EngineCore::assemble_with_profile_locked(
                 profile,
                 Arc::new(default_registry()),
-                HarnessId::Mock,
+                config.default_harness,
                 lock,
             )?,
         })
@@ -309,8 +309,8 @@ impl Engine {
     }
 }
 
-/// Ctrl-C or SIGTERM. systemd/launchd stop (and the auto-updater's service
-/// restart) deliver SIGTERM — without catching it the daemon dies mid-write
+/// Ctrl-C or SIGTERM. systemd/launchd stop delivers SIGTERM — without catching
+/// it the daemon dies mid-write
 /// and every stop takes the crash-recovery path instead of the graceful drain.
 async fn shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
