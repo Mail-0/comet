@@ -618,6 +618,7 @@ const SIDEBAR_LIST_GAP: f32 = 2.0;
 /// keep identity close on the standard 8px rhythm, while the one-line archived
 /// shelf gives its larger mark a little more separation.
 const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
+const SIDEBAR_KEIKI_AVATAR_SIZE: f32 = 16.0;
 const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP: f32 = Theme::SPACE_SM;
 const SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE: f32 = 14.0;
 const SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP: f32 = 10.0;
@@ -2948,6 +2949,7 @@ impl Shell {
     fn avatar_element(
         &mut self,
         agent_id: &str,
+        element_id: SharedString,
         state: keiki_model::AvatarState,
         rendered_px: f32,
         theme: &Theme,
@@ -2962,6 +2964,7 @@ impl Shell {
                 .flex_none()
                 .child(
                     gpui::img(image)
+                        .id(element_id)
                         .size_full()
                         .object_fit(gpui::ObjectFit::Contain),
                 )
@@ -3090,8 +3093,9 @@ impl Shell {
         let keiki_avatar = keiki_agent_id.as_deref().map(|agent_id| {
             self.avatar_element(
                 agent_id,
+                format!("keiki-avatar-{id}").into(),
                 crate::avatars::avatar_state(status),
-                SIDEBAR_ACTIVE_HARNESS_ICON_SIZE,
+                SIDEBAR_KEIKI_AVATAR_SIZE,
                 theme,
                 cx,
             )

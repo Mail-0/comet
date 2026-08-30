@@ -1420,7 +1420,16 @@ impl Shell {
             let group_avatar = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
             {
                 key.strip_prefix(crate::keiki::AGENT_PREFIX)
-                    .map(|agent_id| self.avatar_element(agent_id, group_state, 18.0, theme, cx))
+                    .map(|agent_id| {
+                        self.avatar_element(
+                            agent_id,
+                            format!("keiki-avatar-{key}").into(),
+                            group_state,
+                            20.0,
+                            theme,
+                            cx,
+                        )
+                    })
             } else {
                 None
             };
