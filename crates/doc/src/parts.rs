@@ -74,8 +74,8 @@ pub enum MessagePart {
     /// Model thinking. Carries its body in a dedicated doc field (`reasoning`,
     /// never `text`) so pre-reasoning desktop builds — whose unknown-kind
     /// fallback renders `text` as prose — degrade to an invisible empty text
-    /// part instead of leaking raw thinking into the transcript. iOS drops
-    /// unknown kinds entirely.
+    /// part instead of leaking raw thinking into the transcript. Clients may
+    /// drop unknown kinds entirely.
     Reasoning {
         id: String,
         text: String,

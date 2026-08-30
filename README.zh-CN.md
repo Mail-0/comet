@@ -10,8 +10,13 @@
 
 ## 在本地安装运行（Linux）
 
+从 GitHub Release 下载 `zeron-<version>-linux-<arch>.tar.gz`，解压后运行其中
+附带的安装脚本：
+
 ```bash
-curl -fsSL https://zeron.sh/install.sh | sh
+tar -xzf zeron-<version>-linux-<arch>.tar.gz
+cd zeron-<version>-linux-<arch>
+./install.sh
 zeron status
 ```
 

@@ -10,8 +10,13 @@ Every device runs a small engine that stores sessions on that device. A new inst
 
 ## Install and run locally (Linux)
 
+Download the `zeron-<version>-linux-<arch>.tar.gz` asset from the GitHub
+Release, extract it, and run the bundled installer:
+
 ```bash
-curl -fsSL https://zeron.sh/install.sh | sh
+tar -xzf zeron-<version>-linux-<arch>.tar.gz
+cd zeron-<version>-linux-<arch>
+./install.sh
 zeron status
 ```
 
