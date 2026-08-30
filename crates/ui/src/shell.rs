@@ -3125,7 +3125,7 @@ impl Shell {
                 zeron_proto::ChatIndicator::Working => Some("Working"),
                 zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
                 zeron_proto::ChatIndicator::Errored => Some("Failed"),
-                zeron_proto::ChatIndicator::Completed => Some("Done"),
+                zeron_proto::ChatIndicator::Completed => None,
                 zeron_proto::ChatIndicator::Idle => None,
             }
         };
@@ -3197,49 +3197,52 @@ impl Shell {
                 )
                 .into_any_element()
         } else {
+            // Glyphs keep their own slot so completed rows can show the check
+            // without manufacturing a text gap or falling through to time.
+            let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
+                icon(icons::CHECK)
+                    .size(px(11.0))
+                    .flex_none()
+                    .text_color(status_color)
+                    .into_any_element()
+            } else if working {
+                loaders::mini_glyph_spinner(
+                    format!("chat-working-{id}"),
+                    2.0,
+                    theme.glyph,
+                    cx.entity_id(),
+                    cx,
+                )
+                .into_any_element()
+            } else {
+                div()
+                    .size(px(6.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(status_color)
+                    .into_any_element()
+            };
             match status_label {
-                Some(label) => {
-                    // Glyph slot: Working wears the preset's animated pixel
-                    // glyph beside its label, Done wears the check, and the
-                    // remaining statuses use a compact dot.
-                    let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
-                        icon(icons::CHECK)
-                            .size(px(11.0))
-                            .flex_none()
-                            .text_color(status_color)
-                            .into_any_element()
-                    } else if working {
-                        loaders::mini_glyph_spinner(
-                            format!("chat-working-{id}"),
-                            2.0,
-                            theme.glyph,
-                            cx.entity_id(),
-                            cx,
-                        )
-                        .into_any_element()
-                    } else {
+                Some(label) => div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(glyph)
+                    .child(
                         div()
-                            .size(px(6.0))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(status_color)
-                            .into_any_element()
-                    };
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(glyph)
-                        .child(
-                            div()
-                                .text_size(crate::typography::ui_rems(10.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(status_color)
-                                .child(SharedString::from(label)),
-                        )
-                        .into_any_element()
-                }
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(status_color)
+                            .child(SharedString::from(label)),
+                    )
+                    .into_any_element(),
+                None if status == zeron_proto::ChatIndicator::Completed => div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(glyph)
+                    .into_any_element(),
                 None => div()
                     .text_size(crate::typography::ui_rems(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
