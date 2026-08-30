@@ -325,7 +325,6 @@ pub struct EngineRpc {
     diff_sync: CheckoutDiffSync,
     uploads: Uploads,
     copilot_credentials: Option<crate::CopilotCredentialHolder>,
-    updater: Option<zeron_update::Updater>,
     engine_info: EngineInfo,
 }
 
@@ -356,7 +355,6 @@ impl EngineRpc {
             diff_sync,
             uploads,
             copilot_credentials: None,
-            updater: None,
             engine_info,
         }
     }
@@ -364,18 +362,6 @@ impl EngineRpc {
     pub fn with_copilot_credentials(mut self, holder: crate::CopilotCredentialHolder) -> Self {
         self.copilot_credentials = Some(holder);
         self
-    }
-
-    /// Attach the release checker (UpdateStatus stream + ApplyUpdate).
-    pub fn with_updater(mut self, updater: zeron_update::Updater) -> Self {
-        self.updater = Some(updater);
-        self
-    }
-
-    fn updater(&self) -> Result<&zeron_update::Updater, RpcError> {
-        self.updater
-            .as_ref()
-            .ok_or_else(|| RpcError::Failed("updates unavailable".into()))
     }
 
     /// Resolve a mention-search root from synced workspace rows. A client may
@@ -759,15 +745,6 @@ impl RpcService for EngineRpc {
             }
             methods::LOCAL_DEVICE => {
                 RpcReply::value(&serde_json::json!({ "deviceId": self.doc_host.device_id() }))
-            }
-            methods::UPDATE_STATUS => Ok(RpcReply::Stream(watch_stream(self.updater()?.watch()))),
-            methods::APPLY_UPDATE => {
-                let version = self
-                    .updater()?
-                    .apply()
-                    .await
-                    .map_err(|e| RpcError::Failed(format!("{e:#}")))?;
-                RpcReply::value(&serde_json::json!({ "ok": true, "version": version }))
             }
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;

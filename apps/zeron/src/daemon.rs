@@ -421,13 +421,13 @@ mod tests {
     fn launchd_plist_shape() {
         let plist = render_launchd_plist(
             Path::new("/Users/x/zeron & co/zeron"),
-            &[("ZERON_EDGE_URL".into(), "https://e?a=1&b=2".into())],
+            &[("ZERON_DATA_DIR".into(), "/tmp/zeron?a=1&b=2".into())],
             Path::new("/Users/x/.zeron/daemon.log"),
         );
         assert!(plist.contains("<key>Label</key><string>sh.zeron.app</string>"));
         // XML-escaped exe path and env value.
         assert!(plist.contains("<string>/Users/x/zeron &amp; co/zeron</string>"));
-        assert!(plist.contains("<string>https://e?a=1&amp;b=2</string>"));
+        assert!(plist.contains("<string>/tmp/zeron?a=1&amp;b=2</string>"));
         assert!(plist.contains("<string>headless</string>"));
         assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
         assert!(

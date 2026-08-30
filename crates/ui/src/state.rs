@@ -60,7 +60,6 @@ pub(crate) struct KeikiSessionInfo {
 pub struct EngineBootConfig {
     pub data_dir: PathBuf,
     pub ipc_port: u16,
-    pub edge_url: String,
     pub default_harness: HarnessId,
 }
 
@@ -367,8 +366,6 @@ pub struct AppState {
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
-    /// Latest `UpdateStatus` frame — drives the sidebar update strip.
-    pub update: Option<zeron_update::UpdateStatus>,
     /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
     /// bootstrap so child views can persist small preference files.
     pub data_dir: Option<PathBuf>,
@@ -423,7 +420,6 @@ impl AppState {
             upload_progress: None,
             diff_comments: HashMap::new(),
             local_device_id: None,
-            update: None,
             data_dir: None,
             keiki_client: None,
             keiki_token: None,
@@ -727,10 +723,6 @@ impl AppState {
             .and_then(|d| sorted.iter().find(|s| s.device_id == d).copied())
             .or_else(|| sorted.first().copied())
             .map(|s| s.id.clone())
-    }
-
-    pub fn apply_update(&mut self, status: zeron_update::UpdateStatus) {
-        self.update = Some(status);
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
@@ -1208,7 +1200,6 @@ impl AppState {
         self.pending_sends.clear();
         self.upload_progress = None;
         self.local_device_id = None;
-        self.update = None;
         cx.notify();
     }
 
@@ -1272,12 +1263,6 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::UPDATE_STATUS,
-                AppState::apply_update,
             ),
             spawn_local_device_probe(cx, handle.clone()),
         ]);
@@ -1822,7 +1807,6 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         })
         .await
         .unwrap();
@@ -1849,7 +1833,6 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         })
         .await
         {
@@ -1880,7 +1863,6 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         })
         .await
         .unwrap();
@@ -1919,7 +1901,6 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         };
         let (a, b) = tokio::join!(
             EngineHandle::bootstrap(config.clone()),
@@ -1965,7 +1946,6 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         })
         .await
         .expect("a taken port must not fail the boot");
@@ -1989,7 +1969,6 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         })
         .await
         .unwrap();
@@ -2033,7 +2012,6 @@ mod tests {
             data_dir: ui_dir.path().to_path_buf(),
             ipc_port: port,
             default_harness: HarnessId::Mock,
-            edge_url: String::new(),
         })
         .await
         .unwrap();

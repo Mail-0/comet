@@ -248,8 +248,7 @@ impl SessionsEngine {
         lock(&self.inner.statuses).get(chat_id).cloned()
     }
 
-    /// Any run currently working or blocked on input — the auto-updater's
-    /// "don't restart from under a session" gate.
+    /// Any run currently working or blocked on input.
     pub fn any_active(&self) -> bool {
         lock(&self.inner.statuses).values().any(|s| {
             matches!(

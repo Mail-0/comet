@@ -506,10 +506,7 @@ impl DocHost {
                     }
                     if ws.chat_config(chat_id).is_none() {
                         let config = zeron_proto::ChatConfig {
-                            harness: request
-                                .harness
-                                .clone()
-                                .unwrap_or_else(|| self.harness_for(chat_id)),
+                            harness: request.harness.unwrap_or_else(|| self.harness_for(chat_id)),
                             model: request.model.clone(),
                             reasoning: request.reasoning,
                             model_options: request.model_options.clone(),

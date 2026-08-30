@@ -136,7 +136,7 @@ export default {
       if (key.length === 0 || key.includes("..")) return json({ error: "bad request" }, 400);
       const object = await env.RELEASES.get(key);
       if (!object) return json({ error: "not_found" }, 404);
-      // latest.txt / manifest.json flip on release; artifacts are immutable by name.
+      // latest.txt flips on release; artifacts are immutable by name.
       const mutable = key.endsWith(".txt") || key.endsWith(".json");
       const headers = new Headers({
         "content-type": key.endsWith(".txt")

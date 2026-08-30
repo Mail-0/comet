@@ -59,8 +59,6 @@ pub struct UiConfig {
     pub data_dir: PathBuf,
     /// Localhost IPC port: connect if an engine daemon is listening, embed if not.
     pub ipc_port: u16,
-    /// Update manifest endpoint.
-    pub edge_url: String,
     /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
     /// Conversation URL passed by the OS on a cold launch.
@@ -74,7 +72,6 @@ impl UiConfig {
         EngineBootConfig {
             data_dir: self.data_dir.clone(),
             ipc_port: self.ipc_port,
-            edge_url: self.edge_url.clone(),
             default_harness: self.default_harness,
         }
     }

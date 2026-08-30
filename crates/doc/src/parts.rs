@@ -9,61 +9,6 @@ use zeron_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInput
 
 use crate::constants::MSG_INLINE_MAX;
 
-/// Char cap for the tool-output SUMMARY persisted into the doc: first
-/// non-empty line, nothing more. The per-part 4KB cap (c951c3e) bounded each
-/// part but not the session — chat 1b65e93d measured 917KB (85%) of a 1MB doc
-/// in capped outputs across 426 tool parts (local transcript/workspace
-/// persistence). Historical full outputs lived behind `output_ref`; t3code
-/// ships an 84-char summary, so 160 is generous.
-pub const TOOL_OUTPUT_SUMMARY_MAX: usize = 160;
-
-/// The doc-resident form of a tool output. This is the whole record in the
-/// doc; the full text survives only in the host's local run journal:
-///
-/// - Markdown code fences are stripped first — some clients fence every
-///   output, so the fence is transport wrapping, never content (pre-fix,
-///   every summary read "```console…").
-/// - Outputs that fit [`TOOL_OUTPUT_SUMMARY_MAX`] chars ride whole — a
-///   summary of a two-line output is more UI than the output.
-/// - Bigger outputs keep the first non-empty line, capped, with a `…`
-///   marker meaning "there was more".
-///
-/// `None` for blank output.
-pub fn summarize_tool_output(text: &str) -> Option<String> {
-    let kept: Vec<&str> = text
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("```"))
-        .collect();
-    let stripped = kept.join("\n");
-    let stripped = stripped.trim();
-    if stripped.is_empty() {
-        return None;
-    }
-    if stripped.chars().count() <= TOOL_OUTPUT_SUMMARY_MAX {
-        return Some(stripped.to_owned());
-    }
-    // Too big to inline: first non-empty line, capped. There is always more
-    // than the summary here (whole output exceeded the budget), so the
-    // marker is unconditional.
-    let line = stripped
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or(stripped)
-        .trim_end();
-    let mut chars = 0usize;
-    let mut end = line.len();
-    for (i, _) in line.char_indices() {
-        if chars == TOOL_OUTPUT_SUMMARY_MAX {
-            end = i;
-            break;
-        }
-        chars += 1;
-    }
-    let mut out = line[..end].to_owned();
-    out.push('…');
-    Some(out)
-}
-
 /// Per-file diff stats persisted in place of inline diff text (t3's shape).
 /// The inline diff was the bigger bomb than outputs — 32KB/edit, unexercised
 /// only because some clients emit none. Full diff text lived behind the
@@ -144,9 +89,7 @@ pub enum MessagePart {
         /// True once a ToolResult arrived.
         #[serde(default)]
         resolved: bool,
-        /// One-line tool output summary ([`summarize_tool_output`]). Old
-        /// entries (pre-strip) still carry up to 4KB here; old app versions
-        /// render this field either way, so the strip is invisible to them.
+        /// Legacy inline tool output retained so old snapshots still load.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
         /// Inline file diff — written by pre-strip app versions only; new
@@ -903,43 +846,6 @@ mod tests {
         assert_eq!(continuation_id("m1", 1), "m1#c1");
     }
 
-    // ── A1 strip (local transcript/workspace persistence) ───────────────────────────────────────
-
-    #[test]
-    fn summarize_inlines_small_outputs_and_marks_big_cuts() {
-        assert_eq!(summarize_tool_output(""), None);
-        assert_eq!(summarize_tool_output("  \n\t\n"), None);
-        assert_eq!(summarize_tool_output("one line"), Some("one line".into()));
-        // Small multi-line outputs ride whole — no summary, no "…".
-        assert_eq!(
-            summarize_tool_output("\n\nfirst real\nsecond"),
-            Some("first real\nsecond".into())
-        );
-        assert_eq!(
-            summarize_tool_output("only line\n\n  \n"),
-            Some("only line".into())
-        );
-        // Markdown fences are transport wrapping, never content: stripped
-        // even when they'd otherwise be the first line, and a fence-only
-        // output is blank.
-        assert_eq!(
-            summarize_tool_output("```console\nreal content\n```"),
-            Some("real content".into())
-        );
-        assert_eq!(summarize_tool_output("```\n```"), None);
-        // Big outputs: first non-empty (post-fence) line + unconditional "…".
-        let big = format!("```console\nhead line\n{}\n```", "x".repeat(300));
-        assert_eq!(summarize_tool_output(&big), Some("head line…".into()));
-        let long = "x".repeat(TOOL_OUTPUT_SUMMARY_MAX + 40);
-        let summary = summarize_tool_output(&long).unwrap();
-        assert_eq!(summary.chars().count(), TOOL_OUTPUT_SUMMARY_MAX + 1);
-        assert!(summary.ends_with('…'));
-        // Char-boundary safety on multibyte input.
-        let wide = "é".repeat(TOOL_OUTPUT_SUMMARY_MAX + 5);
-        let summary = summarize_tool_output(&wide).unwrap();
-        assert_eq!(summary.chars().count(), TOOL_OUTPUT_SUMMARY_MAX + 1);
-    }
-
     #[test]
     fn diff_stat_counts_line_changes() {
         let stat = diff_stat(&ToolDiff {
@@ -1001,59 +907,6 @@ mod tests {
                 let stats = diff_stats.as_ref().unwrap();
                 assert_eq!(stats.len(), 1);
                 assert_eq!((stats[0].additions, stats[0].deletions), (1, 1));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sidecar_refs_stamp_once_and_only_where_content_exists() {
-        let mut parts = Vec::new();
-        fold_event_into_parts(
-            &mut parts,
-            &AgentEvent::ToolCall {
-                id: "t1".into(),
-                call: ToolCall::Exec {
-                    command: "ls".into(),
-                },
-            },
-        );
-        // Unresolved: no refs yet.
-        apply_sidecar_refs("chat-9", &mut parts);
-        assert!(matches!(
-            &parts[0],
-            MessagePart::Tool {
-                output_ref: None,
-                diff_ref: None,
-                ..
-            }
-        ));
-        fold_event_into_parts(
-            &mut parts,
-            &AgentEvent::ToolResult {
-                id: "t1".into(),
-                is_error: false,
-                output: Some("hello".into()),
-                diff: Some(ToolDiff {
-                    path: "/w/a".into(),
-                    old_text: None,
-                    new_text: "x\n".into(),
-                }),
-            },
-        );
-        apply_sidecar_refs("chat-9", &mut parts);
-        apply_sidecar_refs("chat-9", &mut parts); // idempotent
-        match &parts[0] {
-            MessagePart::Tool {
-                output_ref,
-                diff_ref,
-                ..
-            } => {
-                // One-liner fold: outputs never reach the doc, so there is
-                // no output content to key even after resolution; diff
-                // STATS exist, so the diff ref still stamps.
-                assert_eq!(output_ref.as_deref(), None);
-                assert_eq!(diff_ref.as_deref(), Some("chat-9/t1.diff"));
             }
             other => panic!("unexpected {other:?}"),
         }

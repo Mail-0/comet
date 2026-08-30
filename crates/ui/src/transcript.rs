@@ -281,13 +281,6 @@ pub struct ToolItem {
     /// to one truncated line. Rendered above `detail` in the open card.
     /// Precomputed for the same reason as `detail`.
     pub invocation: Option<Arc<ToolDetail>>,
-    /// Sidecar key of the full output (chat2-sync A3) — the doc carries only
-    /// a one-line summary; expanding offers a lazy "Show full output" fetch.
-    pub output_ref: Option<SharedString>,
-    /// Full-output size, for the affordance label ("Show full output (12 KB)").
-    pub output_bytes: Option<u64>,
-    /// Sidecar key of the full diff (doc carries only per-file stats).
-    pub diff_ref: Option<SharedString>,
     /// The spawned SUBAGENT's doc id — the chip IS the index (there is no
     /// listing endpoint); with it the chip offers "Open subagent".
     pub subagent_ref: Option<SharedString>,
@@ -646,9 +639,6 @@ fn thought_item(tree: &BlockTree, live: bool) -> ToolItem {
             })
         }),
         invocation: None,
-        output_ref: None,
-        output_bytes: None,
-        diff_ref: None,
         subagent_ref: None,
         subagent_status: None,
         subagent_tail: None,
@@ -680,9 +670,7 @@ pub enum ToolDetail {
         old_text: Option<Arc<str>>,
         new_text: Option<Arc<str>>,
     },
-    /// Per-file `+N −N` stat rows — what the thin doc keeps of an edit
-    /// (chat2-sync A1). The full diff upgrades this to [`ToolDetail::Diff`]
-    /// via the sidecar fetch.
+    /// Per-file `+N −N` stat rows — what the thin doc keeps of an edit.
     Stats {
         stats: Arc<Vec<zeron_doc::ToolDiffStat>>,
     },
@@ -1077,9 +1065,6 @@ fn tool_fingerprint(tools: &[ToolItem], auto_open: bool) -> u64 {
             }
             acc.extend_from_slice(&(*truncated_by as u32).to_le_bytes());
         }
-        // Sidecar refs arriving after the resolve tick must re-splice too —
-        // they add the fetch affordance without changing the detail payload.
-        acc.push(t.output_ref.is_some() as u8 | (t.diff_ref.is_some() as u8) << 1);
         // Subagent lifecycle mutates the chip in place (status flips, the
         // live tail grows) — hash it so the row re-splices on every change.
         acc.push(
@@ -1213,9 +1198,6 @@ pub fn rows_for_entry(
                 resolved,
                 output,
                 diff,
-                output_ref,
-                output_bytes,
-                diff_ref,
                 diff_stats,
                 subagent_ref,
                 subagent_status,
@@ -1229,9 +1211,6 @@ pub fn rows_for_entry(
                     detail: tool_detail(output.as_deref(), diff.as_ref(), diff_stats.as_deref())
                         .map(Arc::new),
                     invocation: call_block(call).map(Arc::new),
-                    output_ref: output_ref.clone().map(SharedString::from),
-                    output_bytes: *output_bytes,
-                    diff_ref: diff_ref.clone().map(SharedString::from),
                     subagent_ref: subagent_ref.clone().map(SharedString::from),
                     subagent_status: *subagent_status,
                     subagent_tail: subagent_tail.clone().map(SharedString::from),
@@ -6934,9 +6913,6 @@ mod tests {
             resolved: true,
             detail: None,
             invocation: None,
-            output_ref: None,
-            output_bytes: None,
-            diff_ref: None,
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
@@ -6952,9 +6928,6 @@ mod tests {
             resolved: true,
             detail: None,
             invocation: None,
-            output_ref: None,
-            output_bytes: None,
-            diff_ref: None,
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
@@ -6986,9 +6959,6 @@ mod tests {
                 resolved: true,
                 detail: None,
                 invocation: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
@@ -7002,9 +6972,6 @@ mod tests {
                 resolved: true,
                 detail: None,
                 invocation: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
@@ -7016,9 +6983,6 @@ mod tests {
                 resolved: true,
                 detail: None,
                 invocation: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,

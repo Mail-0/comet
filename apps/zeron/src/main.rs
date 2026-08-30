@@ -2,7 +2,6 @@
 //! the same device-local workspace profile.
 
 mod daemon;
-mod update_cli;
 
 use clap::{Parser, Subcommand};
 
@@ -25,11 +24,6 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Check for a newer release and apply it.
-    Update {
-        #[arg(long)]
-        check: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -40,16 +34,6 @@ enum DaemonCommand {
     Stop,
     Restart,
     Status,
-}
-
-/// Update manifest host (the workspace itself has no Comet cloud transport).
-const DEFAULT_EDGE_URL: &str = "https://edge.zeron.sh";
-
-fn edge_url_from_env() -> String {
-    std::env::var("ZERON_EDGE_URL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_EDGE_URL.into())
 }
 
 /// mimalloc: system malloc (macOS libmalloc especially) never returns the
@@ -115,10 +99,6 @@ fn main() -> anyhow::Result<()> {
                 engine.run().await
             })
         }
-        Some(Command::Update { check }) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(update_cli::update(&edge_url_from_env(), check))
-        }
         Some(Command::Daemon { command }) => match command {
             DaemonCommand::Install => daemon::install(&engine_config_from_env().data_dir),
             DaemonCommand::Uninstall => daemon::uninstall(),
@@ -138,7 +118,6 @@ fn main() -> anyhow::Result<()> {
                     .ok()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(27654),
-                edge_url: edge_url_from_env(),
                 default_harness: zeron_ui::HarnessId::Copilot,
                 initial_url: cli.open_url,
                 keiki_api_url: std::env::var("KEIKI_API_URL")

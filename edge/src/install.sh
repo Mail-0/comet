@@ -6,11 +6,11 @@
 # Installs the self-contained native binary (no runtime deps) to
 # ~/.zeron/app, puts `zeron` on PATH, and runs it as a local-only
 # systemd user service that survives reboots. Signing in is optional and
-# enables sync after a restart. Re-running
+# enables Keiki agent access. Re-running
 # upgrades in place; ~/.zeron state is preserved.
 #
-# The binary ships with production endpoints baked in: no ZERON_EDGE_URL or
-# client-id configuration needed. Overrides (if any) go in ~/.zeron/env.
+# The binary uses its built-in production endpoints. Overrides (if any) go in
+# ~/.zeron/env.
 set -eu
 
 BASE="${ZERON_BASE_URL:-https://zeron.sh}"
@@ -63,8 +63,7 @@ mkdir -p "$HOME/.local/bin"
 ln -sf "$app_root/current/zeron" "$HOME/.local/bin/zeron"
 
 # --- service -----------------------------------------------------------------
-# The daemon is useful before auth: without a saved session it serves the local
-# profile. Login only changes which profile the next daemon start selects.
+# The daemon serves the local profile without requiring an account.
 
 service=manual
 if command -v systemctl >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
@@ -97,10 +96,6 @@ else
   echo "warn: systemd user session not available — run the engine manually with: zeron headless"
 fi
 
-# --- agent CLIs ---------------------------------------------------------------
-command -v claude >/dev/null 2>&1 || \
-  echo "note: Claude Code CLI not found — install it with: curl -fsSL https://claude.ai/install.sh | bash"
-
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) path_hint="" ;;
   *) path_hint=' (add ~/.local/bin to your PATH)' ;;
@@ -111,16 +106,10 @@ echo "✓ zeron $ver installed$path_hint"
 echo ""
 case "$service" in
   running)
-    echo "the engine is running with the new version (local-only unless sync is enabled)."
+    echo "the local engine is running with the new version."
     echo "  systemctl --user status zeron    check the service"
-    echo ""
-    echo "optional sync (local sessions stay local):"
-    echo "  systemctl --user stop zeron"
-    echo "  zeron login"
-    echo "  systemctl --user restart zeron"
     ;;
   manual)
     echo "next: run the local-only engine with \`zeron headless\`."
-    echo "optional sync: run \`zeron login\` before starting the engine."
     ;;
 esac

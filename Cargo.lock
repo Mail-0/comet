@@ -9195,7 +9195,6 @@ dependencies = [
  "zeron-engine",
  "zeron-rpc",
  "zeron-ui",
- "zeron-update",
 ]
 
 [[package]]
@@ -9259,7 +9258,6 @@ dependencies = [
  "zeron-harness",
  "zeron-proto",
  "zeron-rpc",
- "zeron-update",
 ]
 
 [[package]]
@@ -9395,22 +9393,6 @@ dependencies = [
  "zeron-rpc",
  "zeron-syntax",
  "zeron-theme",
- "zeron-update",
-]
-
-[[package]]
-name = "zeron-update"
-version = "0.2.29"
-dependencies = [
- "anyhow",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
