@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "keiki-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "keiki-model",
@@ -3519,7 +3519,7 @@ dependencies = [
 
 [[package]]
 name = "keiki-model"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -9182,7 +9182,7 @@ dependencies = [
 
 [[package]]
 name = "zeron"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -9200,7 +9200,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-copilot"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures",
  "reqwest",
@@ -9213,7 +9213,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-doc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "loro",
@@ -9229,7 +9229,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9263,7 +9263,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-harness"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9283,7 +9283,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-proto"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "serde",
@@ -9293,7 +9293,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-rpc"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9311,7 +9311,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-syntax"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
@@ -9345,7 +9345,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-theme"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -9360,7 +9360,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-ui"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
