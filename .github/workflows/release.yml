@@ -1,11 +1,11 @@
 name: release
 
 # Build release artifacts and attach them to a GitHub Release:
-#   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
+#   - Linux tarballs, Debian packages, and AppImages (x86_64 + aarch64) via
+#     scripts/package-linux.sh
 #   - macOS dmg (Apple silicon) via scripts/package-macos.sh
-# The Release is the only distribution channel — install Linux builds by
-# downloading the versioned tarball, extracting it, and running its bundled
-# install.sh.
+# The Release is the only distribution channel — Linux builds are available as
+# tarballs, Debian packages, and AppImages.
 #
 # Trigger: push a tag `v<version>` matching the workspace version in
 # Cargo.toml (bump it in the same commit), or run manually via
@@ -46,7 +46,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ runner.arch }}
-          path: target/package/*.tar.gz
+          path: |
+            target/package/*.tar.gz
+            target/package/*.deb
+            target/package/*.AppImage
           if-no-files-found: error
 
   # Heads-up: the macOS cfg paths (Keychain in agent_accounts.rs) have never

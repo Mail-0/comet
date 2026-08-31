@@ -268,4 +268,5 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
     // `WindowOptions` value is applied during creation, before the view is
     // attached; re-pushing it here means a window is never left opaque.
     appearance::reapply_window_background(cx);
+    tracing::info!("main window opened");
 }
