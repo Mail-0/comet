@@ -175,12 +175,36 @@ fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f
     }
 }
 
-fn composer_visible(has_selection: bool, has_spaces: bool) -> bool {
-    has_selection || has_spaces
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyStateVariant {
+    SignIn,
+    Loading,
+    Ready,
 }
 
-fn no_spaces_onboarding_visible(has_selection: bool, has_spaces: bool, no_project: bool) -> bool {
-    !has_selection && !has_spaces && !no_project
+fn empty_state_variant(status: crate::keiki::SessionStatus) -> EmptyStateVariant {
+    match status {
+        crate::keiki::SessionStatus::Loading => EmptyStateVariant::Loading,
+        crate::keiki::SessionStatus::SignedIn => EmptyStateVariant::Ready,
+        crate::keiki::SessionStatus::SignedOut | crate::keiki::SessionStatus::Error => {
+            EmptyStateVariant::SignIn
+        }
+    }
+}
+
+fn empty_state_copy(variant: EmptyStateVariant) -> (&'static str, &'static str, &'static str) {
+    match variant {
+        EmptyStateVariant::SignIn | EmptyStateVariant::Loading => (
+            "Sign in to Keiki",
+            "Your agents and conversations live in your Keiki account.",
+            "Sign in to Keiki",
+        ),
+        EmptyStateVariant::Ready => (
+            "Nothing selected",
+            "Pick a conversation, or start a Copilot chat.",
+            "New Copilot chat",
+        ),
+    }
 }
 
 /// Open the session at `slot` (zero-based) of the sidebar's active list. One
@@ -434,8 +458,8 @@ pub struct ChatPanels {
     pub right_active: RightSurface,
 }
 
-/// The session-scoped panel map. Keys are chat ids; the new-chat canvas uses
-/// the empty key. Not persisted — a fresh app starts with everything closed.
+/// The session-scoped panel map. Keys are chat ids; no selection uses the
+/// empty key. Not persisted — a fresh app starts with everything closed.
 #[derive(Debug, Default)]
 pub struct SessionPanels {
     map: std::collections::HashMap<String, ChatPanels>,
@@ -470,7 +494,7 @@ impl SessionPanels {
 /// history — every route the user visited, browser-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavEntry {
-    /// A chat route; the id of the selected chat ("" = the new-chat canvas).
+    /// A chat route; the id of the selected chat, when any.
     Chat(String),
     Settings(SettingsSection),
 }
@@ -871,7 +895,7 @@ pub struct Shell {
     /// Session-scoped panel open flags (terminal / changes per chat; §1.10-1.11
     /// parity — heights stay in [`UiSettings`]).
     panels: SessionPanels,
-    /// The panel key of the chat currently shown ("" = new-chat canvas).
+    /// The panel key of the chat currently shown.
     active_chat: String,
     /// Last rendered sidebar order (key + estimated height) — the FLIP baseline
     /// for the §1.6 resort glide.
@@ -1033,7 +1057,7 @@ impl Shell {
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
-            // `new` pins the new-chat canvas (suppresses boot auto-select).
+            // `new` suppresses boot auto-select and leaves the empty-state card.
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
                 Route::Chat
@@ -1352,7 +1376,7 @@ impl Shell {
             self.space_boot_applied = true;
             if state.read(cx).selected_chat.is_none() {
                 // A set sidebar filter is an explicit standing choice — the
-                // canvas defaults (project AND its device) follow it, even
+                // sidebar context (project AND its device) follows it, even
                 // over a remembered "no project" opt-out. Otherwise the last
                 // selected project stands, unless opted out.
                 let exists = |id: &String| state.read(cx).space_row(id).is_some();
@@ -1395,7 +1419,7 @@ impl Shell {
         if selected != self.active_chat {
             self.active_chat = selected;
             // Route history: a chat switch is a navigation. The very first
-            // selection off the untouched boot canvas REPLACES that entry —
+            // selection off the untouched empty state REPLACES that entry —
             // zeron's `/` route redirected into the last-used chat, leaving no
             // dead Back target. Walking history lands here too, but the
             // destination already equals `current()`, so the push dedups.
@@ -1463,9 +1487,8 @@ impl Shell {
     /// The current chat's changes-pane flag (per-session, in-memory), gated on
     /// the space having git at all: a stale per-chat open flag must not reopen
     /// the pane after switching into a non-git space.
-    /// The per-session panel key. The new-chat canvas (no selection) keys per
-    /// SPACE — one shared "" key made a canvas toggle read as global state
-    /// (user report).
+    /// The per-session panel key. No selection keys per space so panel state
+    /// remains scoped to the visible sidebar context.
     fn panel_key(&self, cx: &App) -> String {
         if self.active_chat.is_empty() {
             let space = self
@@ -1482,9 +1505,8 @@ impl Shell {
 
     /// Whether the right pane shows. NOT gated on git any more: the pane is
     /// a surface HOST now (terminals work in any space), so only the Git
-    /// surface rows check `space_git_detected`. Still hidden on the
-    /// new-session canvas, where the titlebar carries no toggle to close it
-    /// again (an earlier user request).
+    /// surface rows check `space_git_detected`. Still hidden when no chat is
+    /// selected because there is no session to inspect.
     fn right_pane_open(&self, cx: &App) -> bool {
         !self.active_chat.is_empty() && self.panels.get(&self.panel_key(cx)).changes_open
     }
@@ -2289,14 +2311,10 @@ impl Shell {
         self.open_chat(chat_id, cx);
     }
 
-    /// Whether an overlay that owns the keyboard is up — the add-space
-    /// palette or a composer picker popover (model selector, traits, repo,
-    /// branch…). Session-nav shortcuts (cycle/jump/archive) go quiet
-    /// underneath one: gpui runs a matched binding before any `on_key_down`,
-    /// so an unguarded jump would switch sessions UNDER the open popover,
-    /// stranding it over a session the user never picked.
+    /// Whether an overlay that owns the keyboard is up.
     pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
-        self.add_space.is_some() || self.composer.read(cx).pickers().read(cx).is_open()
+        let _ = cx;
+        self.add_space.is_some()
     }
 
     /// Track the held modifiers so the sidebar can show its jump hints. Only a
@@ -2550,10 +2568,8 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
-        // The titlebar is the single owner of the new-session action in both
-        // sidebar states. Hide it on the new-session canvas: opening another
-        // blank canvas from an already blank canvas has no effect and used to
-        // leave two competing + placements across the responsive variants.
+        // The titlebar owns Copilot session creation. Hide it when no chat is
+        // selected because the empty-state card provides the same action.
         let plus_alpha = self.titlebar_plus_alpha(cx);
         let show_plus = plus_alpha > 0.01;
         div()
@@ -2619,8 +2635,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The titlebar owns new-session creation regardless of sidebar state. It
-    /// is useful only while an existing session is selected.
+    /// The titlebar owns Copilot session creation while a chat is selected.
     pub(super) fn titlebar_plus_alpha(&self, cx: &App) -> f32 {
         titlebar_new_session_alpha(
             matches!(self.route, Route::Chat),
@@ -4498,7 +4513,7 @@ impl Shell {
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme_owned = Theme::of(cx).clone();
         let theme = &theme_owned;
-        let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
+        let (border, text) = (theme.border, theme.text);
 
         // Settings route: just the section outlet — the section label lives in
         // the unified window titlebar now (render_title_bar). Settings never
@@ -4518,19 +4533,44 @@ impl Shell {
 
         let _ = (text, border);
         let has_selection = self.state.read(cx).selected_chat.is_some();
-        let has_spaces = !self.state.read(cx).spaces.is_empty();
-        let no_project = self.state.read(cx).no_project;
 
-        // Content outlet: selected chat → transcript; nothing selected → a
-        // bare canvas (the composer stack carries the affordances); no spaces
-        // at all → the onboarding card. The composer sits below the first two
-        // (new-chat mode mints the chat id on first send).
+        // Content outlet: selected chat → transcript; nothing selected →
+        // the empty-state card.
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
-        } else if no_spaces_onboarding_visible(has_selection, has_spaces, no_project) {
-            // Onboarding (first boot / after the destructive wipe): no folders
-            // to work in yet — one clear affordance.
-            let _ = faint;
+        } else {
+            let variant = empty_state_variant(self.state.read(cx).keiki_status);
+            let (title, subtitle, action) = empty_state_copy(variant);
+            let loading = variant == EmptyStateVariant::Loading;
+            let action_button = div()
+                .id("no-selection-action")
+                .w(px(240.0))
+                .h(px(36.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .bg(theme.text)
+                .text_size(crate::typography::ui_rems(14.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(theme.on_solid)
+                .when(!loading && variant == EmptyStateVariant::SignIn, |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.9))
+                        .on_click(cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)))
+                })
+                .when(!loading && variant == EmptyStateVariant::Ready, |button| {
+                    button
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.9))
+                        .on_click(cx.listener(|this, _, _, cx| this.new_copilot_chat(cx)))
+                })
+                .child(SharedString::from(if loading {
+                    "Opening Keiki…"
+                } else {
+                    action
+                }));
             div()
                 .size_full()
                 .flex()
@@ -4538,8 +4578,16 @@ impl Shell {
                 .items_center()
                 .justify_center()
                 .child(motion::fade_in(
-                    "no-spaces-canvas",
+                    "no-selection-canvas",
                     div()
+                        .w(px(360.0))
+                        .px(px(32.0))
+                        .py(px(40.0))
+                        .rounded(px(12.0))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.surface_card)
+                        .shadow_lg()
                         .flex()
                         .flex_col()
                         .items_center()
@@ -4552,43 +4600,31 @@ impl Shell {
                         .child(
                             div()
                                 .mt(px(24.0))
-                                .text_size(crate::typography::ui_rems(16.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_size(crate::typography::ui_rems(18.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(theme.text)
-                                .child(SharedString::from("Add an agent to get started")),
+                                .child(SharedString::from(title)),
                         )
                         .child(
                             div()
                                 .mt(px(6.0))
+                                .mb(px(24.0))
                                 .text_size(crate::typography::ui_rems(13.0))
-                                .text_color(theme.text_muted.opacity(0.7))
-                                .child(SharedString::from(
-                                    "An agent is a folder on one of your devices.",
-                                )),
+                                .line_height(px(19.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(subtitle)),
                         )
-                        .child(
-                            popover::btn_primary(&theme_owned, "Add an agent")
-                                .id("onboarding-add-space")
-                                .mt(px(20.0))
-                                .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx))),
-                        ),
+                        .child(action_button),
                 ))
                 .into_any_element()
-        } else {
-            // New-chat canvas: intentionally bare (user request — no logo, no
-            // helper line). The device + project selectors live above the
-            // composer pill (composer.rs renders them via
-            // `render_target_selectors`).
-            div().size_full().into_any_element()
         };
 
         let status = self.render_status_strip(cx);
-        // File dropzone over the ENTIRE conversation column (transcript +
+        // File dropzone over the selected conversation column (transcript +
         // composer, not just the pill): dragging OS files anywhere across the
-        // chat area shows the "Drop images to attach" veil; a drop stages the
-        // files in the composer. GPUI derives the veil's visibility from the
-        // active payload type: an internal drag such as a pane resize must
-        // never be able to resurrect stale external-file hover state.
+        // chat area shows the "Drop images to attach" veil. GPUI derives the
+        // veil's visibility from the active payload type: an internal drag
+        // such as a pane resize must never resurrect stale external-file state.
         div()
             .id("chat-dropzone")
             .relative()
@@ -4668,31 +4704,31 @@ impl Shell {
                         .inset_0(),
                     )
                     .child(status)
-                    .when(composer_visible(has_selection, has_spaces), |el| {
-                        el.child(self.composer.clone())
-                    })
+                    .when(has_selection, |el| el.child(self.composer.clone()))
                     .child(self.render_terminal_container(cx))
             })
-            .child(
-                div()
-                    .invisible()
-                    .absolute()
-                    .inset_0()
-                    .bg(theme.scrim().opacity(0.4 / 0.6))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .text_color(theme.text)
-                    .child("Drop images to attach")
-                    .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.visible())
-                    .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
-                        let paths = paths.paths().to_vec();
-                        this.composer
-                            .update(cx, |composer, cx| composer.add_paths(paths, cx));
-                        cx.notify();
-                    })),
-            )
+            .when(has_selection, |element| {
+                element.child(
+                    div()
+                        .invisible()
+                        .absolute()
+                        .inset_0()
+                        .bg(theme.scrim().opacity(0.4 / 0.6))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(crate::typography::ui_rems(13.0))
+                        .text_color(theme.text)
+                        .child("Drop images to attach")
+                        .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.visible())
+                        .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                            let paths = paths.paths().to_vec();
+                            this.composer
+                                .update(cx, |composer, cx| composer.add_paths(paths, cx));
+                            cx.notify();
+                        })),
+                )
+            })
             .into_any_element()
     }
 
@@ -6123,7 +6159,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::Appearance, cx)
             }))
-            // Chat-scoped, unlike new-session — `cycle_session` holds the guard
+            // Chat-scoped; `cycle_session` holds the guard
             // and says why.
             .on_action(cx.listener(|this, _: &NextSession, _, cx| this.cycle_session(true, cx)))
             .on_action(cx.listener(|this, _: &PrevSession, _, cx| this.cycle_session(false, cx)))
@@ -6703,7 +6739,7 @@ mod tests {
         assert!(!panels.get("a").terminal_open);
         assert!(!panels.get("a").changes_open);
         assert_eq!(panels.get("a").right_active, RightSurface::Picker);
-        // The new-chat canvas ("" key) is its own session, also closed.
+        // With no selected chat there is no session to close.
         assert!(!panels.get("").terminal_open);
     }
 
@@ -6911,7 +6947,7 @@ mod tests {
 
     #[test]
     fn nav_replace_swaps_in_place() {
-        // The boot auto-select replaces the untouched canvas entry, so Back
+        // The boot auto-select replaces the untouched empty-state entry, so Back
         // stays disabled after landing in the last-used chat.
         let mut nav = NavHistory::new(chat(""));
         nav.replace(chat("boot"));
@@ -6955,17 +6991,50 @@ mod tests {
     }
 
     #[test]
-    fn selected_chat_keeps_composer_visible_without_spaces() {
-        assert!(composer_visible(true, false));
-        assert!(composer_visible(true, true));
+    fn empty_state_variant_matches_keiki_session_status() {
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::SignedOut),
+            EmptyStateVariant::SignIn
+        );
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::Error),
+            EmptyStateVariant::SignIn
+        );
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::Loading),
+            EmptyStateVariant::Loading
+        );
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::SignedIn),
+            EmptyStateVariant::Ready
+        );
     }
 
     #[test]
-    fn no_selection_without_spaces_keeps_onboarding_without_composer() {
-        assert!(!composer_visible(false, false));
-        assert!(no_spaces_onboarding_visible(false, false, false));
-        assert!(!no_spaces_onboarding_visible(true, false, false));
-        assert!(!no_spaces_onboarding_visible(false, true, false));
-        assert!(!no_spaces_onboarding_visible(false, false, true));
+    fn empty_state_copy_matches_each_variant() {
+        assert_eq!(
+            empty_state_copy(EmptyStateVariant::SignIn),
+            (
+                "Sign in to Keiki",
+                "Your agents and conversations live in your Keiki account.",
+                "Sign in to Keiki"
+            )
+        );
+        assert_eq!(
+            empty_state_copy(EmptyStateVariant::Loading),
+            (
+                "Sign in to Keiki",
+                "Your agents and conversations live in your Keiki account.",
+                "Sign in to Keiki"
+            )
+        );
+        assert_eq!(
+            empty_state_copy(EmptyStateVariant::Ready),
+            (
+                "Nothing selected",
+                "Pick a conversation, or start a Copilot chat.",
+                "New Copilot chat"
+            )
+        );
     }
 }

@@ -418,9 +418,8 @@ impl Shell {
     }
     // ---- space filter ----
 
-    /// Set the sidebar's session filter (`None` = All spaces). On the
-    /// new-session canvas the space context follows the filter — the canvas
-    /// default is "the space you're looking at".
+    /// Set the sidebar's session filter (`None` = All spaces). With nothing
+    /// selected, the empty-state card remains independent of the filter.
     pub(super) fn set_space_filter(&mut self, filter: Option<String>, cx: &mut Context<Self>) {
         self.settings.space_filter = filter.clone();
         if let Some(space_id) = filter
@@ -444,8 +443,8 @@ impl Shell {
         }
     }
 
-    /// Land in a just-added space: filter the sidebar to it and open the
-    /// new-session canvas there.
+    /// Land in a just-added space: filter the sidebar to it and show the
+    /// empty-state card.
     pub(super) fn land_in_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         self.route = Route::Chat;
         self.settings.space_filter = Some(space_id.clone());

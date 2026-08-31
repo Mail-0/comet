@@ -41,23 +41,20 @@ use crate::theme::Theme;
 // Constants + pure decision logic
 // ---------------------------------------------------------------------------
 
-/// Expanded-mode textarea vertical padding: `pt-4 pb-1` (zeron composer.tsx
-/// line 578) = 16 + 4.
+/// Expanded-mode textarea vertical padding: `pt-4 pb-1` = 16 + 4.
 pub const TEXTAREA_PAD_V: f32 = 20.0;
 /// The expanded textarea BOX (content + padding) is clamped by the original's
 /// auto-grow effect: `ta.style.height = Math.min(Math.max(scrollHeight, 76),
-/// 260)` (zeron composer.tsx line 235). The 76px floor applies even when
-/// empty — it's what makes the always-expanded new-chat composer tall.
+/// 260)`.
 pub const TEXTAREA_MIN: f32 = 76.0;
 pub const TEXTAREA_MAX: f32 = 260.0;
-/// Expanded actions row: `pt-1` (4) + h-8 picker chips (32 — the tallest
-/// children; composer/styles.tsx pickerChip) + `pb-2.5` (10) — zeron
-/// composer-actions.tsx line 60.
+/// Expanded actions row: `pt-1` (4) + the action controls (32) + `pb-2.5`
+/// (10).
 pub const ACTIONS_ROW_HEIGHT: f32 = 46.0;
 /// The pill's 1px hairline, top + bottom (`rounded-[26px] border`).
 pub const PILL_BORDER_V: f32 = 2.0;
-/// Expanded composer bounds, border-box: 76 + 46 + 2 = 124 when empty (the
-/// new-chat canvas), 260 + 46 + 2 = 308 at the content cap.
+/// Expanded composer bounds, border-box: 76 + 46 + 2 = 124 when empty,
+/// 260 + 46 + 2 = 308 at the content cap.
 pub const COMPOSER_MIN_HEIGHT: f32 = TEXTAREA_MIN + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
 pub const COMPOSER_MAX_HEIGHT: f32 = TEXTAREA_MAX + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
 /// Compact pill, border-box: one-line textarea `py-3` (24) + one 22.75px line
@@ -3359,14 +3356,12 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 pub struct Composer {
     state: Entity<AppState>,
     input: Entity<ComposerInput>,
-    /// Composer actions row: repo/branch and checkout controls (§1.7).
-    /// Shared with the shell's new-session canvas, which renders the
-    /// device/project target selectors ([`Pickers::render_target_selectors`]).
+    /// Composer actions row and selected-session checkout/ref footer (§1.7).
     pickers: Entity<Pickers>,
-    /// Draft text per chat key ("" = new-chat canvas), surviving navigation.
+    /// Draft text per chat key, surviving navigation.
     drafts: HashMap<String, String>,
-    /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
-    /// navigating away and back restores them; memory-only, like the original.
+    /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`).
+    /// Navigating away and back restores them; memory-only, like the original.
     attachments: HashMap<String, Vec<StagedAttachment>>,
     /// The staged attachment being viewed full-size (click a thumbnail).
     preview: Option<attachments::PreviewImage>,
@@ -3374,7 +3369,7 @@ pub struct Composer {
     /// gets focus back on close.
     preview_focus: FocusHandle,
     /// Focus grab deferred to the next render (open sites don't all have a
-    /// `Window` — the `ZERON_ATTACH_PREVIEW` boot knob opens in `new`).
+    /// `Window`).
     preview_focus_pending: bool,
     /// In-flight file-picker prompt (paperclip).
     picker_task: Option<Task<()>>,
@@ -3447,18 +3442,12 @@ pub struct Composer {
     /// SNAP instead of morphing (see [`ROUTE_SNAP_MS`]).
     route_snap_until: Option<Instant>,
     _observe: Subscription,
-    _pickers_observe: Subscription,
     _input_events: Subscription,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
-    /// The picker entity, for the shell's canvas target selectors.
-    pub fn pickers(&self) -> &Entity<Pickers> {
-        &self.pickers
-    }
-
     pub(crate) fn has_steer_text(&self, cx: &App) -> bool {
         !self.input.read(cx).text().trim().is_empty()
     }
@@ -3488,10 +3477,6 @@ impl Composer {
             input
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
-        // The footer toolbar (checkout kind + ref picker) is rendered INLINE
-        // by the composer from picker state — a pickers-side notify (refs
-        // loaded, popover toggled, pick made) must repaint the composer too.
-        let pickers_observe = cx.observe(&pickers, |_, _, cx| cx.notify());
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.on_state_changed(cx));
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.on_submit(cx),
@@ -3533,7 +3518,7 @@ impl Composer {
             ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
         });
         let current_key = state.read(cx).selected_chat.clone().unwrap_or_default();
-        let mut composer = Self {
+        let composer = Self {
             state,
             input,
             pickers,
@@ -3574,43 +3559,8 @@ impl Composer {
             morph_clock: Instant::now(),
             route_snap_until: None,
             _observe: observe,
-            _pickers_observe: pickers_observe,
             _input_events: input_events,
         };
-        // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
-        // a rig) — `ZERON_ATTACH=/path/a.png[,/path/b.png]`, and
-        // `ZERON_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
-        if let Ok(spec) = std::env::var("ZERON_ATTACH") {
-            let staged: Vec<StagedAttachment> = spec
-                .split(',')
-                .filter(|s| !s.trim().is_empty())
-                .filter_map(|path| {
-                    match attachments::stage_file(std::path::Path::new(path.trim())) {
-                        Ok(att) => Some(att),
-                        Err(err) => {
-                            tracing::warn!(%path, error = %err, "ZERON_ATTACH stage failed");
-                            None
-                        }
-                    }
-                })
-                .collect();
-            if std::env::var("ZERON_ATTACH_PREVIEW").is_ok_and(|v| v == "1")
-                && let Some(first) = staged.first()
-            {
-                composer.preview = Some(attachments::PreviewImage {
-                    name: first.name.clone().into(),
-                    image: first.image.clone(),
-                });
-                composer.preview_focus_pending = true;
-            }
-            if !staged.is_empty() {
-                composer
-                    .attachments
-                    .entry(composer.current_key.clone())
-                    .or_default()
-                    .extend(staged);
-            }
-        }
         composer
     }
 
@@ -3912,10 +3862,6 @@ impl Composer {
             cx.notify();
             return;
         };
-        let selected_worktree = match self.pickers.read(cx).checkout_plan() {
-            crate::pickers::CheckoutPlan::ReuseWorktree { path, .. } => Some(path),
-            _ => None,
-        };
         let (params, target) = {
             let state = self.state.read(cx);
             let mut params = serde_json::Map::new();
@@ -3923,12 +3869,6 @@ impl Composer {
             let target = if let Some(chat) = state.selected_chat_row() {
                 params.insert("chatId".into(), chat.id.clone().into());
                 Some(chat.device_id.clone())
-            } else if let Some(space) = state.selected_space_row() {
-                params.insert("spaceId".into(), space.id.clone().into());
-                if let Some(path) = selected_worktree {
-                    params.insert("path".into(), path.into());
-                }
-                Some(space.device_id.clone())
             } else {
                 None
             };
@@ -4222,13 +4162,11 @@ impl Composer {
             self.slash.loading = false;
             return;
         };
-        let target = {
-            let state = self.state.read(cx);
-            state
-                .selected_chat_row()
-                .map(|chat| chat.device_id.clone())
-                .or_else(|| state.selected_space_row().map(|s| s.device_id.clone()))
-        };
+        let target = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .map(|chat| chat.device_id.clone());
         let request = self.slash.request;
         self.slash_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::json!({ "harness": harness });
@@ -4593,16 +4531,18 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
-        let (key, pending) = {
+        let (selected_chat, pending) = {
             let s = self.state.read(cx);
             (
-                s.selected_chat.clone().unwrap_or_default(),
+                s.selected_chat.clone(),
                 pending_input_request(&s.transcript),
             )
         };
 
         // Draft swap on chat navigation — the input entity itself survives.
-        if key != self.current_key {
+        if let Some(key) = selected_chat
+            && key != self.current_key
+        {
             let old_text = self.input.read(cx).text().to_string();
             if old_text.is_empty() {
                 self.drafts.remove(&self.current_key);
@@ -4687,10 +4627,6 @@ impl Composer {
         )
     }
 
-    /// New-chat sends need a project: with none picked (empty device, or a
-    /// selection healed away) the send button dims and submit is a no-op —
-    /// project-less `~`-cwd sessions are no longer mintable from the canvas.
-    /// Existing chats carry their own project, so they always send.
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         if let Some(selected_chat) = state.selected_chat.as_deref() {
@@ -4701,8 +4637,7 @@ impl Composer {
             }
             return false;
         }
-        // New-chat canvas needs a project.
-        state.selected_space_row().is_none()
+        true
     }
 
     fn button_mode(&self, cx: &App) -> SendButtonMode {
@@ -4775,67 +4710,28 @@ impl Composer {
         cx.notify();
     }
 
-    /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
-    /// thread the picked config in: worktree creation (when the isolated toggle
-    /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
-    /// reasoning / options on the Run request itself (§1.7).
+    /// Queue a Run (or Steer) doc command with an optimistic echo (§1.7).
     fn send(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
             self.failure_key = None; // global — meaningful on every chat
             cx.notify();
             return;
         };
-        // Chat id: existing selection, or client-minted for the new-chat canvas
-        // (the chat then appears from the doc host once the doc materializes).
-        let (chat_id, is_new) = match self.state.read(cx).selected_chat.clone() {
-            Some(id) => (id, false),
-            None => (uuid::Uuid::new_v4().to_string(), true),
-        };
-        // Where the new session runs (Current checkout / reuse an existing
-        // worktree / fresh worktree off the picked base) — resolved NOW so
-        // the async block needs no picker access.
-        let plan = self.pickers.read(cx).checkout_plan();
         // Fully-resolved model/reasoning/options — concrete values (chat config
         // or defaults), so the engine never has to guess a "default".
         let resolved = self.pickers.read(cx).resolved(cx);
-        let existing_cwd = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.cwd.clone());
-        // The PROJECT fixes the new chat's device + base folder — sessions are
-        // minted onto the project's device, not necessarily this one. With no
-        // project ("Don't work in a project") the composer's device pick is
-        // the host and the session runs from `~` there.
-        let space = self.state.read(cx).selected_space_row().cloned();
-        let local_device_id = self.state.read(cx).local_device_id.clone();
-        let target_device_id = self.state.read(cx).effective_device_id();
-        let device_id = if is_new {
-            target_device_id
-                .clone()
-                .unwrap_or_else(|| "local".to_string())
-        } else {
-            self.state
-                .read(cx)
-                .selected_chat_row()
-                .map(|c| c.device_id.clone())
-                .or_else(|| local_device_id.clone())
-                .unwrap_or_else(|| "local".to_string())
+        let Some(selected_chat) = self.state.read(cx).selected_chat_row().cloned() else {
+            return;
         };
+        let device_id = selected_chat.device_id.clone();
         // Uploads/read-backs target the chat's local engine.
-        let host_device_id = if is_new {
-            target_device_id
-                .clone()
-                .filter(|id| local_device_id.as_deref() != Some(id.as_str()))
-        } else {
-            self.state
-                .read(cx)
-                .selected_chat_row()
-                .map(|c| c.device_id.clone())
-        };
-        let space_id = space.as_ref().map(|s| s.id.clone());
-        let space_path = space.as_ref().map(|s| s.path.clone());
+        let host_device_id = Some(device_id.clone());
+        let local_device_id = self.state.read(cx).local_device_id.clone();
+        let existing_cwd = selected_chat.cwd.clone();
         // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
         // strip empties the instant you hit send; a failure hands the files
         // back into the chat's stash.
@@ -4897,9 +4793,6 @@ impl Composer {
             continuation_of: None,
         };
         self.state.update(cx, |s, cx| {
-            if is_new {
-                s.select_chat(Some(chat_id.clone()), cx);
-            }
             s.push_echo(&chat_id, echo);
             // Working overlay until the host executes the queued command —
             // without it a remote send flashed Completed (and could ring the
@@ -4918,19 +4811,12 @@ impl Composer {
         });
         cx.notify();
 
-        let steer_cmd = steer && !is_new;
+        let steer_cmd = steer;
         let restore_text = typed;
         let err_chat_id = chat_id.clone();
         let err_message_id = message_id.clone();
         self.send_task = Some(cx.spawn(async move |this, cx| {
             let result: Result<(), String> = async {
-                // Attachments stage FIRST — before the chat row or anything
-                // else exists. Staging is chat-independent (keyed by
-                // uploadId), and ordering it first makes a new-chat send
-                // atomic: a staging failure aborts with NOTHING created,
-                // instead of stranding a just-minted empty chat (v0.2.12
-                // "failed to stage → empty transcript" report).
-                //
                 let mut content = text.clone();
                 let mut attachment_paths: Vec<String> = Vec::new();
                 if !staged.is_empty() {
@@ -5004,126 +4890,7 @@ impl Composer {
                     .ok();
                 }
 
-                // Resolve the working directory: existing chats keep theirs;
-                // new chats run per the checkout plan (t3code env-mode): the
-                // space's folder as-is, an EXISTING worktree of the picked ref
-                // (a plain cwd override — multiple sessions share one
-                // worktree), or a fresh isolated worktree created off the
-                // picked base ref (CreateWorktree on send, targeted at the
-                // space's device; the RPC relay-forwards).
-                let mut cwd = if is_new {
-                    // Project-less sessions run from the host's home dir —
-                    // "~" is expanded on the host when the run spawns.
-                    space_path.clone().or_else(|| Some("~".to_string()))
-                } else {
-                    existing_cwd
-                }
-                .unwrap_or_else(|| ".".to_string());
-                let mut worktree_cwd: Option<String> = None;
-                // Fresh-worktree plans ride the QUEUED Run command (a
-                // WorktreeSpec the HOST materializes at drain time) instead of
-                // a blocking CreateWorktree relay RPC here: the RPC had no
-                // timeout, so a lost relay frame wedged the send on "Sending…"
-                // forever while the session ran remotely anyway (2026-08-18).
-                let mut run_worktree: Option<zeron_proto::WorktreeSpec> = None;
-                // The picked ref rides createChat so the session footer names
-                // it from the first frame (it read "Select ref" until the
-                // host's diff reconciler got around to stamping the branch).
-                let mut chat_branch: Option<String> = None;
-                if is_new {
-                    match &plan {
-                        crate::pickers::CheckoutPlan::CurrentCheckout { branch } => {
-                            chat_branch = branch.clone();
-                        }
-                        crate::pickers::CheckoutPlan::ReuseWorktree { path, branch } => {
-                            cwd = path.clone();
-                            worktree_cwd = Some(path.clone());
-                            chat_branch = Some(branch.clone());
-                        }
-                        crate::pickers::CheckoutPlan::NewWorktree { base } => {
-                            // Footer shows the base until the host stamps the
-                            // actual zeron/<name> branch post-creation. cwd
-                            // stays the repo folder — an old host that doesn't
-                            // know the spec degrades to the main checkout
-                            // instead of failing the run.
-                            chat_branch = base.clone();
-                            if let Some(repo_path) = &space_path {
-                                // A remote repo's branch list loads over the
-                                // relay — on a bad link it may never arrive
-                                // and the picker has no base. That must NOT
-                                // silently drop the isolation the user picked
-                                // (2026-08-19: "New worktree" ran in the main
-                                // checkout): default to HEAD, which git — any
-                                // host version — resolves as the repo's
-                                // current checkout state.
-                                let base =
-                                    base.clone().unwrap_or_else(|| "HEAD".to_string());
-                                run_worktree = Some(zeron_proto::WorktreeSpec {
-                                    repo_path: repo_path.clone(),
-                                    base,
-                                });
-                            }
-                        }
-                    }
-                }
-
-                // Best-effort Mutate createChat with the picked config: the
-                // engine resolves device + cwd from the PROJECT row when one
-                // is picked; project-less chats name the host device outright
-                // (idempotent; the doc host would materialize the chat on
-                // first command anyway, so failures are non-fatal).
-                if is_new {
-                    let mut mutate = serde_json::json!({
-                        "op": "createChat",
-                        "chatId": chat_id,
-                    });
-                    if let Some(object) = mutate.as_object_mut() {
-                        match &space_id {
-                            Some(space_id) => {
-                                object.insert(
-                                    "spaceId".into(),
-                                    serde_json::Value::String(space_id.clone()),
-                                );
-                            }
-                            None => {
-                                object.insert(
-                                    "deviceId".into(),
-                                    serde_json::Value::String(device_id.clone()),
-                                );
-                            }
-                        }
-                    }
-                    if let Some(object) = mutate.as_object_mut() {
-                        if let Some(worktree_cwd) = &worktree_cwd {
-                            object.insert(
-                                "cwd".into(),
-                                serde_json::Value::String(worktree_cwd.clone()),
-                            );
-                        }
-                        if let Some(branch) = &chat_branch {
-                            object.insert(
-                                "branch".into(),
-                                serde_json::Value::String(branch.clone()),
-                            );
-                        }
-                        if let Some(config) = resolved.chat_config()
-                            && let Ok(config) = serde_json::to_value(&config)
-                        {
-                            object.insert("config".into(), config);
-                        }
-                    }
-                    if let Err(err) = attachments::call_with_timeout(
-                        &engine,
-                        cx.background_executor(),
-                        methods::MUTATE,
-                        mutate,
-                        std::time::Duration::from_secs(30),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
-                    }
-                }
+                let cwd = existing_cwd.unwrap_or_else(|| ".".to_string());
 
                 let command = if steer_cmd {
                     SessionCommandPayload::Steer {
@@ -5143,7 +4910,7 @@ impl Composer {
                             auto_approve: false,
                             resume: None,
                             attachments: attachment_paths,
-                            worktree: run_worktree,
+                            worktree: None,
                         },
                         message_id: message_id.clone(),
                     }
@@ -5166,22 +4933,6 @@ impl Composer {
                 Ok(())
             }
             .await;
-            if result.is_err() && is_new {
-                // A failed new-chat send must not strand a just-minted empty
-                // chat in the sidebar (v0.2.12 "empty transcript" report).
-                // Staging now runs before CreateChat, so usually nothing was
-                // created — but a post-mutate failure (QueueCommand) still
-                // leaves a row. Best-effort delete; a no-op if the chat was
-                // never materialized.
-                let _ = attachments::call_with_timeout(
-                    &engine,
-                    cx.background_executor(),
-                    methods::MUTATE,
-                    serde_json::json!({ "op": "deleteChat", "chatId": err_chat_id }),
-                    std::time::Duration::from_secs(5),
-                )
-                .await;
-            }
             this.update(cx, |composer, cx| {
                 composer.sending = false;
                 composer
@@ -5189,57 +4940,29 @@ impl Composer {
                     .update(cx, |s, _| s.end_upload_progress());
                 if let Err(message) = result {
                     // Failure: red banner, echo removed, prompt back in the
-                    // draft, staged files back in the stash. A failed NEW
-                    // chat restores to the CANVAS (key "") and navigates back
-                    // there — the minted chat is gone (deleted above), so
-                    // nothing may restore under its key.
-                    let restore_key = if is_new {
-                        String::new()
-                    } else {
-                        err_chat_id.clone()
-                    };
+                    // draft, staged files back in the stash.
+                    let restore_key = err_chat_id.clone();
                     composer.failure = Some(message.into());
                     composer.failure_key = Some(restore_key.clone());
                     composer.state.update(cx, |s, cx| {
                         s.remove_echo(&err_chat_id, &err_message_id);
                         s.end_pending_send(&err_chat_id, &err_message_id);
-                        if is_new && s.selected_chat.as_deref() == Some(err_chat_id.as_str()) {
-                            // Back to the canvas; the navigation draft-swap
-                            // loads the restored draft below.
-                            s.select_chat(None, cx);
-                        }
                         for comment in &comments {
                             s.add_diff_comment(&restore_key, comment.clone());
                         }
                         cx.notify();
                     });
-                    if is_new && composer.current_key != restore_key {
-                        // A re-key swap to the canvas is pending (the
-                        // select_chat(None) above); it loads this draft into
-                        // the input on flush — setting the input directly
-                        // here would be clobbered by that same swap.
-                        composer.drafts.insert(restore_key.clone(), restore_text.clone());
-                    } else {
-                        // Already keyed to the restore target (either an
-                        // existing chat, or the deleted row's watch event
-                        // re-keyed to the canvas before this handler ran —
-                        // no further swap will fire). Set the input directly.
-                        composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
-                    }
+                    composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
                     if !staged.is_empty() {
                         // Merge by id (stashAttachments): files the user staged
-                        // while the send was in flight survive the hand-back —
-                        // draining the minted chat's slot too when the restore
-                        // target is the canvas.
+                        // while the send was in flight survive the hand-back.
                         let mut merged = staged.clone();
-                        for key in [err_chat_id.clone(), restore_key.clone()] {
-                            if let Some(slot) = composer.attachments.get_mut(&key) {
-                                let fresh: Vec<_> = slot
-                                    .drain(..)
-                                    .filter(|e| !merged.iter().any(|f| f.id == e.id))
-                                    .collect();
-                                merged.extend(fresh);
-                            }
+                        if let Some(slot) = composer.attachments.get_mut(&restore_key) {
+                            let fresh: Vec<_> = slot
+                                .drain(..)
+                                .filter(|e| !merged.iter().any(|f| f.id == e.id))
+                                .collect();
+                            merged.extend(fresh);
                         }
                         composer.attachments.insert(restore_key, merged);
                     }
@@ -5813,9 +5536,6 @@ impl Render for Composer {
             // an interactive resize.
             self.last_seen_width = 0.0;
         }
-        // New chats render expanded regardless of `expanded_mode` (see below),
-        // so a mode flip there changes nothing visible — never morph it.
-        let new_chat = self.state.read(cx).selected_chat.is_none();
         // Morph clock in ms; dividing by the measurement knob stretches the
         // timeline exactly like shell.rs eval_tween's scaled duration.
         let now_ms = self.morph_clock.elapsed().as_secs_f32() * 1000.0 / motion::speed_scale();
@@ -5824,7 +5544,7 @@ impl Render for Composer {
             .is_some_and(|until| Instant::now() < until);
         self.flip_morph = flip_morph_step(
             self.flip_morph,
-            committed_flip && !new_chat,
+            committed_flip,
             self.last_rendered_height,
             now_ms,
             motion::reduced_motion(cx),
@@ -6044,11 +5764,6 @@ impl Render for Composer {
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
 
-        // New chats always use the expanded layout: the repo/branch pickers
-        // need the full-width actions row (zeron composer-actions.tsx
-        // `mustExpand = isNew || …`).
-        let expanded = expanded || new_chat;
-
         // Committed-height morph: the layout below is already the NEW mode's;
         // only the pill's height (and the entrance fade/text glide driven by
         // `morph_t`) animates. Steady state renders exactly the target.
@@ -6257,18 +5972,6 @@ impl Render for Composer {
                         ),
                 )
         };
-        // New sessions: the TARGET row (device + project chips) sits ABOVE
-        // the pill, left-aligned like the checkout toolbar below it (user
-        // request — moved off the canvas). Existing sessions name their
-        // target in the titlebar instead.
-        let container = if new_chat {
-            let selectors = self
-                .pickers
-                .update(cx, |pickers, cx| pickers.render_target_selectors(cx));
-            container.child(selectors)
-        } else {
-            container
-        };
         // The file dropzone lives in the shell (the whole conversation column,
         // not just the pill — shell.rs `chat-dropzone`); drops land back here
         // via `add_paths`.
@@ -6287,12 +5990,8 @@ impl Render for Composer {
                 .children(self.render_file_mention_popup(&theme, cx))
                 .children(self.render_slash_popup(&theme, cx)),
         );
-        // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
-        // checkout-kind selector + ref picker for new sessions, read-only
-        // labels once the session exists. Git spaces only.
-        let footer = self
-            .pickers
-            .update(cx, |pickers, cx| pickers.render_footer(cx));
+        // Read-only branch/worktree information for the selected session.
+        let footer = self.pickers.read(cx).render_footer(cx);
         let container = match footer {
             Some(footer) => container.child(footer),
             None => container,
@@ -6708,7 +6407,7 @@ mod tests {
         assert_eq!(COMPOSER_MAX_HEIGHT, 308.0);
         // One line sits at the floor: the textarea BOX (content + `pt-4 pb-1`)
         // clamps UP to 76 exactly like `Math.max(scrollHeight, 76)` — this is
-        // what makes the always-expanded new-chat composer 124px tall.
+        // what makes the expanded composer 124px tall.
         assert_eq!(
             composer_total_height(input_content_height(1)),
             COMPOSER_MIN_HEIGHT
@@ -6858,7 +6557,7 @@ mod tests {
     #[test]
     fn route_change_never_arms_the_morph() {
         // A flip committed inside the route-snap window must NOT animate —
-        // switching sessions (chat↔chat or chat↔new-session) snaps the
+        // switching sessions snaps the
         // composer straight to the target mode, like the header (round 6).
         assert_eq!(flip_morph_step(None, true, 49.0, 0.0, false, true), None);
         // The route change also kills anything already in flight…

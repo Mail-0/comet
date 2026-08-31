@@ -154,8 +154,7 @@ impl<T> Popup<T> {
     }
 
     /// [`Self::note_trigger_press`] for popups whose state distinguishes
-    /// which trigger owns them (e.g. one `Popup<PickerKind>` shared by
-    /// several triggers): only a press on the OWNING trigger counts, so
+    /// which trigger owns them: only a press on the OWNING trigger counts, so
     /// clicking a different trigger switches menus instead of swallowing.
     pub fn note_trigger_press_matching(&mut self, owns: impl FnOnce(&T) -> bool) {
         self.pressed_while_open = self.inner.as_ref().is_some_and(|(value, _)| owns(value));

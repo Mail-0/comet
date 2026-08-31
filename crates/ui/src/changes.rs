@@ -4423,8 +4423,8 @@ impl Render for Changes {
         let active = self.active_diff(cx);
         let scope = self.scope;
         let base = self.base_ref.clone();
-        // With no session selected (new-chat canvas) there is nothing to
-        // prepare — show the quiet empty state, not an endless spinner.
+        // With no session selected there is nothing to prepare — show the
+        // quiet empty state, not an endless spinner.
         let no_chat = self.state.read(cx).selected_chat_row().is_none();
         let phase = if no_chat {
             DiffPhase::Clean

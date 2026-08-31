@@ -1,6 +1,6 @@
 //! Session navigation — the horizontal tab strip is gone (wing 2026-08-10):
 //! the activity sidebar IS the session list, and the titlebar names the
-//! selected session (harness brand icon + title). A `+` new-session button
+//! selected session (harness brand icon + title). A `+` Copilot-session button
 //! lives in the titlebar's left control cluster while an existing session is
 //! selected. `UiSettings.open_tabs` is legacy — no longer read or written.
 
@@ -9,9 +9,9 @@ use super::*;
 /// The chat one step from `selected` in the sidebar `order`, wrapping at both
 /// ends. Pure.
 ///
-/// With nothing selected — the new-session canvas — cycling enters the list at
-/// the end it would have wrapped to: the first row going forward, the last
-/// going back. A selection that has since left the list (archived from another
+/// With nothing selected, cycling enters the list at the end it would have
+/// wrapped to: the first row going forward, the last going back. A selection
+/// that has since left the list (archived from another
 /// device mid-cycle) is treated the same way rather than dead-ending.
 pub(super) fn cycle_target(
     order: &[String],
@@ -65,7 +65,7 @@ impl Shell {
 
     /// Boot landing: the most recently active visible chat once the first
     /// chats frame has synced (manual selection wins; no chats → the
-    /// new-session canvas shows).
+    /// empty-state card shows).
     pub(super) fn boot_select_chat(&mut self, cx: &mut Context<Self>) {
         let first = {
             let state = self.state.read(cx);
@@ -151,13 +151,13 @@ impl Shell {
     }
 
     /// The unified titlebar in chat mode:
-    /// `[new-session +] [harness icon + session title] … [toggle-changes]`.
+    /// `[Copilot +] [harness icon + session title] … [toggle-changes]`.
     /// Replaces the tab strip; inherits its titlebar duties (drag region,
     /// animated left inset, the toggle-changes button on git projects).
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        // The canvas titles as NOTHING (user request — a "New session"
-        // header over the empty canvas was noise); the bar keeps its height,
+        // Nothing selected leaves the title empty; the empty-state card owns
+        // the explanatory copy while the bar keeps its height,
         // drag region, and buttons. A session appends its target as a muted
         // "project @ device" tag right of the title (the composer footer no
         // longer carries it).
@@ -204,8 +204,7 @@ impl Shell {
             )
         });
 
-        // The new-session `+` renders in the WINDOW-CONTROL CLUSTER whenever a
-        // session is selected (`render_titlebar_cluster`).
+        // The titlebar `+` creates a Copilot session in the sidebar folder.
         let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         let plus_inset = TITLEBAR_ACTION_SLOT_WIDTH * self.titlebar_plus_alpha(cx);
 
@@ -221,8 +220,8 @@ impl Shell {
         // entity; expand + close shell-side). It lives up here because the
         // titlebar overlay owns this band's hit-testing: controls mounted in
         // the pane itself would sit under the drag region and never see a
-        // click. Closed, it is just the stable open/close toggle. Hidden on
-        // the new-session canvas (user request) — nothing to diff yet.
+        // click. Closed, it is just the stable open/close toggle. Hidden when
+        // no session is selected — nothing to diff yet.
         let takeover = !on_canvas && self.right_pane_open(cx) && self.right_pane_expanded;
         // In takeover the title hides and the strip owns the whole band, so
         // the row's left inset pulls back to the sidebar seam — the title

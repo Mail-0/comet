@@ -326,12 +326,10 @@ pub struct AppState {
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
-    /// The project the new-session canvas mints into. Healed by
-    /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
-    /// its project.
+    /// The currently selected project. Healed by [`Self::apply_spaces`] when
+    /// the row vanishes; selecting a chat implies its project.
     pub selected_space: Option<String>,
-    /// Deliberate "Don't work in a project" pick: while set, the canvas mints
-    /// project-less sessions (cwd `~` on the picked device) and
+    /// Deliberate "Don't work in a project" selection. While set,
     /// [`Self::selected_space_row`] reads as `None` — healing must NOT
     /// re-select a project underneath it.
     pub no_project: bool,
@@ -444,9 +442,7 @@ impl AppState {
         }
     }
 
-    /// The selected chat, or `""` on the new-chat canvas. Identical to the
-    /// composer's own attachment/draft key, so a comment written before the
-    /// first send survives the chat being minted.
+    /// The selected chat key, or an empty key for unscoped diff comments.
     pub fn composer_key(&self) -> String {
         self.selected_chat.clone().unwrap_or_default()
     }
@@ -536,16 +532,15 @@ impl AppState {
         // the first project; its chats died with it, so a matching chat
         // selection is healed by the accompanying chats frame (`apply_chats`).
         // The picker lists projects per-device, so healing prefers one on the
-        // picked device — a global fallback would silently re-aim the canvas
+        // picked device — a global fallback would silently re-aim the selection
         // at another machine.
         if let Some(selected) = &self.selected_space
             && !self.spaces.iter().any(|s| &s.id == selected)
         {
             self.selected_space = self.first_space_on_picked_device();
         }
-        // First frame with no selection yet: pick the first project so the
-        // canvas never boots project-less by accident — unless the user
-        // deliberately opted out.
+        // First frame with no selection yet: pick the first project unless the
+        // user deliberately opted out.
         if self.selected_space.is_none() && !self.no_project {
             self.selected_space = self.first_space_on_picked_device();
         }
@@ -711,9 +706,8 @@ impl AppState {
             .is_some_and(|v| v >= min)
     }
 
-    /// First project on the composer's picked device (falling back through
-    /// the local device, then any project at all — better a cross-device
-    /// project than a surprise project-less canvas). Display order.
+    /// First project on the selected device (falling back through the local
+    /// device, then any project at all). Display order.
     fn first_space_on_picked_device(&self) -> Option<String> {
         let device = self
             .selected_device
@@ -949,8 +943,8 @@ impl AppState {
         self.spaces.iter().find(|s| s.id == id)
     }
 
-    /// The device the new-session canvas targets: the picked project's host
-    /// when one is selected, else the explicit device pick, else this device.
+    /// The device associated with the selected project or explicit device
+    /// selection, falling back to this device.
     pub fn effective_device_id(&self) -> Option<String> {
         if let Some(space) = self.selected_space_row() {
             return Some(space.device_id.clone());
@@ -1345,8 +1339,7 @@ impl AppState {
         self.transcript_replayed = false;
         self.transcript_task = None;
         if let Some(id) = chat_id.as_deref() {
-            // A chat implies its project (or the lack of one); `select_chat(None)`
-            // (the new-session canvas) keeps the current project pick.
+            // A chat implies its project (or the lack of one).
             if let Some(chat) = self.chats.iter().find(|c| c.id == id) {
                 match chat.space_id.clone() {
                     Some(space_id) => {
