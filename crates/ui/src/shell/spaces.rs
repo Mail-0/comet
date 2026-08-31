@@ -1355,7 +1355,7 @@ impl Shell {
                 transcript::single_line(&title.unwrap_or_else(|| "New session".into())).into(),
                 format_time_ago(last_message_at, now).into(),
                 "~".into(),
-                jump_label,
+                None,
                 None,
                 self.settings
                     .sidebar_show_harness
@@ -1363,7 +1363,7 @@ impl Shell {
                 status,
                 is_selected,
                 false,
-                None,
+                jump_label,
                 theme,
                 cx,
             );
@@ -1391,12 +1391,13 @@ impl Shell {
             .items_center()
             .justify_center()
             .rounded(px(5.0))
-            .when(copilot_available, |el| {
-                el.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
-                    cx.stop_propagation();
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                if this.state.read(cx).keiki_token.is_some() {
                     this.new_copilot_chat(cx);
-                }))
-            })
+                }
+            }))
+            .when(copilot_available, |el| el.cursor_pointer())
             .when(!copilot_available, |el| el.opacity(0.35))
             .child(
                 icon(icons::PLUS)
