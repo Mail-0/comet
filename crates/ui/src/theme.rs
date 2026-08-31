@@ -606,7 +606,7 @@ pub struct Theme {
     // let `border` + shadow carry the separation instead — the standard light-UI
     // answer, and the reason this is a ladder of tokens rather than an arithmetic
     // offset applied to one.
-    /// Inline card resting on the main panel (auth gate, empty-state cards).
+    /// Inline card resting on the main panel, such as the auth gate.
     pub surface_card: Hsla,
     /// Modal dialog, floating over a [`Theme::scrim`].
     pub surface_dialog: Hsla,

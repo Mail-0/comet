@@ -192,23 +192,11 @@ fn empty_state_variant(status: crate::keiki::SessionStatus) -> EmptyStateVariant
     }
 }
 
-fn empty_state_copy(variant: EmptyStateVariant) -> (&'static str, &'static str, &'static str) {
+fn empty_state_action_label(variant: EmptyStateVariant) -> Option<&'static str> {
     match variant {
-        EmptyStateVariant::SignIn => (
-            "Sign in to Keiki",
-            "Your agents and conversations live in your Keiki account.",
-            "Sign in to Keiki",
-        ),
-        EmptyStateVariant::Loading => (
-            "Connecting to Keiki",
-            "Restoring your Keiki session…",
-            "Opening Keiki…",
-        ),
-        EmptyStateVariant::Ready => (
-            "Nothing selected",
-            "Pick a conversation, or start a Copilot chat.",
-            "New Copilot chat",
-        ),
+        EmptyStateVariant::SignIn => Some("Sign in to Keiki"),
+        EmptyStateVariant::Loading => Some("Opening Keiki…"),
+        EmptyStateVariant::Ready => None,
     }
 }
 
@@ -1062,7 +1050,7 @@ impl Shell {
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
-            // `new` suppresses boot auto-select and leaves the empty-state card.
+            // `new` suppresses boot auto-select and leaves the empty state.
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
                 Route::Chat
@@ -2575,7 +2563,7 @@ impl Shell {
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
         // The titlebar owns Copilot session creation. Hide it when no chat is
-        // selected because the empty-state card provides the same action.
+        // selected because the titlebar is unavailable in the empty state.
         let plus_alpha = self.titlebar_plus_alpha(cx);
         let show_plus = plus_alpha > 0.01;
         div()
@@ -4541,87 +4529,49 @@ impl Shell {
         let has_selection = self.state.read(cx).selected_chat.is_some();
 
         // Content outlet: selected chat → transcript; nothing selected →
-        // the empty-state card.
+        // centered empty-state content.
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
         } else {
             let variant = empty_state_variant(self.state.read(cx).keiki_status);
-            let (title, subtitle, action) = empty_state_copy(variant);
-            let loading = variant == EmptyStateVariant::Loading;
-            let action_button = div()
-                .id("no-selection-action")
-                .w(px(240.0))
-                .h(px(36.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(6.0))
-                .bg(theme.text)
-                .text_size(crate::typography::ui_rems(14.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(theme.on_solid)
-                .when(!loading && variant == EmptyStateVariant::SignIn, |button| {
-                    button
-                        .cursor_pointer()
-                        .hover(|s| s.opacity(0.9))
-                        .on_click(cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)))
-                })
-                .when(!loading && variant == EmptyStateVariant::Ready, |button| {
-                    button
-                        .cursor_pointer()
-                        .hover(|s| s.opacity(0.9))
-                        .on_click(cx.listener(|this, _, _, cx| this.new_copilot_chat(cx)))
-                })
-                .child(SharedString::from(if loading {
-                    "Opening Keiki…"
-                } else {
-                    action
-                }));
+            let mut content = div().flex().items_center().justify_center();
+            if let Some(action_label) = empty_state_action_label(variant) {
+                let loading = variant == EmptyStateVariant::Loading;
+                content = content.child(
+                    div()
+                        .id("no-selection-action")
+                        .w(px(240.0))
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .bg(theme.text)
+                        .text_size(crate::typography::ui_rems(14.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.on_solid)
+                        .when(!loading, |button| {
+                            button.cursor_pointer().hover(|s| s.opacity(0.9)).on_click(
+                                cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)),
+                            )
+                        })
+                        .child(SharedString::from(action_label)),
+                );
+            } else {
+                content = content.child(
+                    icon(icons::ZERON_LOGO)
+                        .w(px(41.9))
+                        .h(px(48.0))
+                        .text_color(theme.text.opacity(0.09)),
+                );
+            }
             div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .child(motion::fade_in(
-                    "no-selection-canvas",
-                    div()
-                        .w(px(360.0))
-                        .px(px(32.0))
-                        .py(px(40.0))
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.surface_card)
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .child(
-                            icon(icons::ZERON_LOGO)
-                                .w(px(41.9))
-                                .h(px(48.0))
-                                .text_color(theme.text.opacity(0.09)),
-                        )
-                        .child(
-                            div()
-                                .mt(px(24.0))
-                                .text_size(crate::typography::ui_rems(18.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(theme.text)
-                                .child(SharedString::from(title)),
-                        )
-                        .child(
-                            div()
-                                .mt(px(6.0))
-                                .mb(px(24.0))
-                                .text_size(crate::typography::ui_rems(13.0))
-                                .line_height(px(19.0))
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from(subtitle)),
-                        )
-                        .child(action_button),
-                ))
+                .child(motion::fade_in("no-selection-canvas", content))
                 .into_any_element()
         };
 
@@ -7017,30 +6967,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_state_copy_matches_each_variant() {
+    fn empty_state_action_label_matches_each_variant() {
         assert_eq!(
-            empty_state_copy(EmptyStateVariant::SignIn),
-            (
-                "Sign in to Keiki",
-                "Your agents and conversations live in your Keiki account.",
-                "Sign in to Keiki"
-            )
+            empty_state_action_label(EmptyStateVariant::SignIn),
+            Some("Sign in to Keiki")
         );
         assert_eq!(
-            empty_state_copy(EmptyStateVariant::Loading),
-            (
-                "Connecting to Keiki",
-                "Restoring your Keiki session…",
-                "Opening Keiki…"
-            )
+            empty_state_action_label(EmptyStateVariant::Loading),
+            Some("Opening Keiki…")
         );
-        assert_eq!(
-            empty_state_copy(EmptyStateVariant::Ready),
-            (
-                "Nothing selected",
-                "Pick a conversation, or start a Copilot chat.",
-                "New Copilot chat"
-            )
-        );
+        assert_eq!(empty_state_action_label(EmptyStateVariant::Ready), None);
     }
 }

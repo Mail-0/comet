@@ -65,7 +65,7 @@ impl Shell {
 
     /// Boot landing: the most recently active visible chat once the first
     /// chats frame has synced (manual selection wins; no chats → the
-    /// empty-state card shows).
+    /// empty state shows).
     pub(super) fn boot_select_chat(&mut self, cx: &mut Context<Self>) {
         let first = {
             let state = self.state.read(cx);
@@ -156,8 +156,8 @@ impl Shell {
     /// animated left inset, the toggle-changes button on git projects).
     pub(super) fn render_session_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        // Nothing selected leaves the title empty; the empty-state card owns
-        // the explanatory copy while the bar keeps its height,
+        // Nothing selected leaves the title empty; the empty state owns its
+        // content while the bar keeps its height,
         // drag region, and buttons. A session appends its target as a muted
         // "project @ device" tag right of the title (the composer footer no
         // longer carries it).
