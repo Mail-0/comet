@@ -305,3 +305,68 @@ repeat clicks are inert by design (only one tab opens). Denying consent returns
 - A Keiki account (email + password) for signed-in testing; `KEIKI_API_URL` defaults to
   `https://onkeiki.com`. Type passwords with `xdotool type --file <path>` so they never appear in
   logs or screenshots.
+
+## The no-selection "empty state" pane
+
+- **Reach it at boot with `ZERON_OPEN_ROUTE=new`** (`shell.rs`, route match): it sets
+  `auto_selected = true` so `boot_select_chat` never picks a chat, landing you on the chat route with
+  nothing selected. This supersedes the older, fiddlier recipes (deleting the selected chat, or
+  archiving everything) — no data mutation needed just to see the empty state. The row-context-menu
+  `Delete…` route still works as a backup (`delete_chat` → `select_chat(None)`).
+- Its content is variant-driven by the Keiki session status (`empty_state_variant` /
+  `empty_state_action_label`): signed-in `Ready` renders **only** a `ZERON_LOGO` watermark
+  (41.9×48 at `text.opacity(0.09)`), `SignIn` renders **only** a 240×36 button, `Loading` renders
+  only an inert `Opening Keiki…` button. Don't expect titles/subtitles/cards — that copy and all card
+  chrome (border, shadow, `surface_card`, rounded corners, fixed width/padding) were removed in
+  `943fff6`, so asserting on old strings will produce false failures.
+- The `Loading` variant is effectively unobservable at boot (the session restores before/while chats
+  land). Don't burn time on burst captures; assert it from the variant table and say so.
+
+### Proving "watermark only / no chrome" objectively instead of eyeballing
+
+A 9%-opacity mark is nearly invisible in a screenshot, and "no card" is easy to claim wrongly. Use
+Pillow (there is **no numpy** on this box) on a full-resolution `import -window <id>` capture:
+
+```python
+bg = im.getpixel((1400, 300))          # pane bg sampled far from centre
+# collect every pixel != bg inside the pane (skip titlebar/sidebar/window controls:
+# x > 270, 60 < y < H-60), then report:
+#   - ink bounding box  -> must be ~42x48 and centred on the pane centre
+#   - ink pixel count   -> distinguishes "faint watermark" from "blank pane" (0 px)
+#   - contiguous vertical ink bands -> the number of stacked elements
+```
+
+Bands are the strongest assertion: the signed-in state must yield **exactly one** ~48px-tall band
+(logo), the signed-out state **exactly one** 36px-tall / 240px-wide band (button) with **no** band
+above it. A surviving card would add border rows and change the modal colour of the centre crop.
+Measured baselines: Light pane bg `(255,255,255)` with darkest watermark ink `234`; Dark pane bg
+`(15,15,15)` with brightest ink `35` — i.e. ~8% contrast in both themes, which is worth reporting
+verbatim when a human has to judge whether the watermark reads as intentional.
+
+### Switching theme by clicking (for light/dark capture pairs)
+
+Sidebar account chip → `Settings` → Appearance → the `System` / `Light` / `Dark` mode cards, then the
+`←` at the bottom-left / titlebar returns to the chat route **with the no-selection state intact**.
+There is no appearance keybinding, and `ZERON_OPEN_ROUTE=settings/appearance` needs a relaunch, so
+the click path is the one to use mid-recording.
+
+## Titlebar `+` (Copilot session creation)
+
+- Gating is now **route-only**: `titlebar_new_session_alpha(is_chat_route)` — visible on the chat
+  route even with nothing selected, hidden on Settings. When verifying such an un-gating change,
+  always also capture a route where it must stay hidden (Settings), otherwise "always render" and
+  "correctly gated" look identical.
+- Signed out it is inert-but-messaged: `new_copilot_chat` checks `keiki_token` and returns after
+  `set_sidebar_notice("Sign in to Keiki to use Copilot")` **before** minting anything. Assert all
+  three things — the verbatim notice (renders as a red bordered strip just above the account chip),
+  an unchanged Copilot folder row count, and that no chat became selected. A notice alone is not
+  proof that no chat was created.
+
+## Composer checkout/ref footer — how to actually reach it
+
+`pickers.rs::render_footer` needs a chat that *belongs to* a git-detected space
+(`selected_space_row()` is `None` whenever `no_project`). The reliable recipe: set the sidebar space
+filter to a git-detected space first, then create the session (titlebar `+` / folder `+`) — the new
+chat inherits that space and the footer paints `Worktree`/`Local checkout` + the ref (`No ref` on a
+detached/unknown ref) under the composer. Sessions created while the filter is "All agents" are
+project-less and will never show it, which is why it can look like dead code.
