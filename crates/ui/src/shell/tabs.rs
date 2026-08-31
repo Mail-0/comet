@@ -347,7 +347,7 @@ impl Shell {
                     .when(steer_disabled, |el| {
                         el.opacity(if steer_pending { 0.35 } else { 0.55 })
                     })
-                    .when(!steer_disabled, |el| {
+                    .when(!steer_pending, |el| {
                         el.cursor_pointer()
                             .on_hover(motion::hover_listener("keiki-titlebar-steer"))
                             .on_click(cx.listener(|this, _, window, cx| {
