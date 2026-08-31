@@ -91,24 +91,13 @@ impl Shell {
         cx.notify();
     }
 
-    /// Open the device-local Copilot session, minting its project-less chat
-    /// through the same workspace `CreateChat` mutation used by the composer.
-    pub(super) fn open_copilot_chat(&mut self, cx: &mut Context<Self>) {
-        let (has_credentials, saved_id, existing_id, engine, device_id) = {
+    /// Create a device-local Copilot session through the same workspace
+    /// `CreateChat` mutation used by the composer.
+    pub(super) fn new_copilot_chat(&mut self, cx: &mut Context<Self>) {
+        let (has_credentials, engine, device_id) = {
             let state = self.state.read(cx);
             (
                 state.keiki_token.is_some(),
-                self.settings
-                    .copilot_chat_id
-                    .clone()
-                    .filter(|id| !state.chats.iter().any(|chat| &chat.id == id)),
-                self.settings.copilot_chat_id.as_deref().and_then(|id| {
-                    state
-                        .chats
-                        .iter()
-                        .find(|chat| chat.id == id && !chat.archived)
-                        .map(|chat| chat.id.clone())
-                }),
                 state.engine().cloned(),
                 state
                     .local_device_id
@@ -121,20 +110,12 @@ impl Shell {
             cx.notify();
             return;
         }
-        if let Some(chat_id) = existing_id {
-            self.open_chat(chat_id, cx);
-            return;
-        }
         let Some(engine) = engine else {
             self.set_sidebar_notice("Engine not connected");
             cx.notify();
             return;
         };
-        let chat_id = saved_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        self.settings.copilot_chat_id = Some(chat_id.clone());
-        settings::update(SavePolicy::Immediate, cx, |current| {
-            current.copilot_chat_id = Some(chat_id.clone());
-        });
+        let chat_id = uuid::Uuid::new_v4().to_string();
         self.route = Route::Chat;
         self.mutate_task = Some(cx.spawn(async move |this, cx| {
             let config = zeron_proto::ChatConfig {
@@ -153,10 +134,7 @@ impl Shell {
             let result = engine.client().call(methods::MUTATE, params).await;
             this.update(cx, |shell, cx| {
                 match result {
-                    Ok(_) => shell.open_chat(
-                        shell.settings.copilot_chat_id.clone().unwrap_or_default(),
-                        cx,
-                    ),
+                    Ok(_) => shell.open_chat(chat_id, cx),
                     Err(error) => {
                         shell.set_sidebar_notice(format!("Couldn't open Copilot: {error}"))
                     }
@@ -167,25 +145,9 @@ impl Shell {
         }));
     }
 
-    /// `+` in the titlebar: open the new-session canvas. A set sidebar filter
-    /// re-homes the canvas onto that project; under "All" the current pick
-    /// (the last selected project, restored from composer defaults) stands.
+    /// `+` in the titlebar and Ctrl+N create a fresh Copilot session.
     pub(super) fn open_new_session(&mut self, cx: &mut Context<Self>) {
-        self.route = Route::Chat;
-        let target = {
-            let state = self.state.read(cx);
-            self.settings
-                .space_filter
-                .clone()
-                .filter(|id| state.space_row(id).is_some())
-        };
-        self.state.update(cx, |s, cx| {
-            if target.is_some() {
-                s.select_space(target, cx);
-            }
-            s.select_chat(None, cx);
-        });
-        cx.notify();
+        self.new_copilot_chat(cx);
     }
 
     /// The unified titlebar in chat mode:
@@ -234,10 +196,16 @@ impl Shell {
         } else {
             self.state.read(cx).keiki_conversation().cloned()
         };
+        let keiki_controls = conversation_status.as_ref().map(|conversation| {
+            (
+                crate::keiki::takeover_live(conversation),
+                conversation.pending,
+                self.composer.read(cx).has_steer_text(cx),
+            )
+        });
 
         // The new-session `+` renders in the WINDOW-CONTROL CLUSTER whenever a
-        // session is selected (`render_titlebar_cluster`) — this row budgets
-        // one button slot so the title never sits under it.
+        // session is selected (`render_titlebar_cluster`).
         let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         let plus_inset = TITLEBAR_ACTION_SLOT_WIDTH * self.titlebar_plus_alpha(cx);
 
@@ -292,6 +260,74 @@ impl Shell {
                 .flex()
                 .flex_row()
                 .items_center();
+            if !takeover && let Some((takeover_live, pending, has_steer_text)) = keiki_controls {
+                let selected_chat = self.state.read(cx).selected_chat.clone();
+                let takeover_pending = pending
+                    == Some(crate::keiki::KeikiConversationPending::Takeover)
+                    || pending == Some(crate::keiki::KeikiConversationPending::HandBack);
+                let takeover_label = if takeover_live {
+                    "Hand back"
+                } else {
+                    "Take over"
+                };
+                let takeover = div()
+                    .id("keiki-titlebar-takeover")
+                    .h(px(28.0))
+                    .px(px(8.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .line_height(px(16.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted)
+                    .when(takeover_pending, |el| el.opacity(0.35))
+                    .when(!takeover_pending, |el| {
+                        el.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.state.read(cx).selected_chat == selected_chat
+                                    && let Some(conversation) =
+                                        this.state.read(cx).keiki_conversation()
+                                {
+                                    if crate::keiki::takeover_live(conversation) {
+                                        crate::keiki::hand_back(this.state.clone(), cx);
+                                    } else {
+                                        crate::keiki::take_over(this.state.clone(), cx);
+                                    }
+                                }
+                            }))
+                    })
+                    .child(takeover_label);
+                let steer_pending = pending == Some(crate::keiki::KeikiConversationPending::Steer);
+                let steer = div()
+                    .id("keiki-titlebar-steer")
+                    .h(px(28.0))
+                    .px(px(8.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .line_height(px(16.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_muted)
+                    .when(!has_steer_text, |el| el.opacity(0.55))
+                    .when(steer_pending, |el| el.opacity(0.35))
+                    .when(!steer_pending, |el| {
+                        el.cursor_pointer()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.composer.read(cx).has_steer_text(cx) {
+                                    this.composer.update(cx, |composer, cx| {
+                                        composer.steer_keiki(cx);
+                                    });
+                                } else {
+                                    let handle = this.composer.read(cx).focus_handle(cx);
+                                    window.focus(&handle, cx);
+                                }
+                            }))
+                    })
+                    .child("Steer");
+                controls = controls.child(takeover).child(steer);
+            }
             if right_open {
                 let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
                 let pr = self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET);

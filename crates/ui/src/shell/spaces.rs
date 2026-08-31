@@ -178,6 +178,7 @@ fn sidebar_disclosure_header(
     label: SharedString,
     chevron: AnyElement,
     leading: Option<AnyElement>,
+    trailing: Option<AnyElement>,
 ) -> gpui::Div {
     div()
         .flex()
@@ -197,7 +198,30 @@ fn sidebar_disclosure_header(
                 .child(label),
         )
         .child(div().h(px(1.0)).flex_1().bg(theme.border.opacity(0.6)))
+        .when_some(trailing, |el, trailing| el.child(trailing))
         .child(chevron)
+}
+
+fn is_copilot_chat(chat: &zeron_proto::Chat) -> bool {
+    !chat.archived
+        && chat.space_id.is_none()
+        && chat
+            .config
+            .as_ref()
+            .is_some_and(|config| config.harness == zeron_proto::HarnessId::Copilot)
+}
+
+fn copilot_chats(chats: impl IntoIterator<Item = zeron_proto::Chat>) -> Vec<zeron_proto::Chat> {
+    let mut chats: Vec<_> = chats.into_iter().filter(is_copilot_chat).collect();
+    chats.sort_by(|left, right| {
+        right
+            .last_message_at
+            .unwrap_or(right.created_at)
+            .cmp(&left.last_message_at.unwrap_or(left.created_at))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    chats
 }
 
 /// One row of the open dropdown, in display order.
@@ -1120,23 +1144,21 @@ impl Shell {
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
         let filter = self.settings.space_filter.clone();
         let state = self.state.read(cx);
-        let copilot_id = self.settings.copilot_chat_id.as_deref();
+        let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.clone())
+            .into_iter()
+            .map(|chat| chat.id)
+            .collect();
         let mut chats: Vec<zeron_proto::Chat> = state
             .sidebar_chats(Utc::now(), filter.as_deref())
             .into_iter()
             .map(|(_, chat)| chat.clone())
-            .filter(|chat| Some(chat.id.as_str()) != copilot_id)
+            .filter(|chat| !copilot_ids.contains(&chat.id))
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
-        let mut order = Vec::new();
-        if let Some(id) = copilot_id
-            && state
-                .chats
-                .iter()
-                .any(|chat| chat.id == id && !chat.archived)
-        {
-            order.push(id.to_string());
-        }
+        let mut order: Vec<String> = copilot_chats(state.chats.clone())
+            .into_iter()
+            .map(|chat| chat.id)
+            .collect();
         if !matches!(
             self.settings.sidebar_organization,
             SidebarOrganization::ByDevice | SidebarOrganization::ByAgent
@@ -1187,13 +1209,16 @@ impl Shell {
     ) -> Vec<(String, f32, AnyElement)> {
         let now = Utc::now();
         let filter = self.settings.space_filter.clone();
-        let copilot_id = self.settings.copilot_chat_id.clone();
         let mut rows: Vec<ActiveChatRow> = {
             let state = self.state.read(cx);
+            let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.clone())
+                .into_iter()
+                .map(|chat| chat.id)
+                .collect();
             let mut chats: Vec<_> = state
                 .sidebar_chats(now, filter.as_deref())
                 .into_iter()
-                .filter(|(_, chat)| copilot_id.as_deref() != Some(chat.id.as_str()))
+                .filter(|(_, chat)| !copilot_ids.contains(&chat.id))
                 .map(|(status, chat)| (status, chat.clone()))
                 .collect();
             chats.sort_by(|left, right| {
@@ -1286,44 +1311,138 @@ impl Shell {
         // chip always names the key that opens its row.
         let mut slot = 0usize;
         let mut rendered = Vec::new();
-        let copilot_available = self.state.read(cx).keiki_token.is_some();
-        let copilot_chat = {
+        let copilot_sessions = {
             let state = self.state.read(cx);
-            copilot_id.as_deref().and_then(|id| {
-                state
-                    .sidebar_chats(now, None)
-                    .into_iter()
-                    .find(|(_, chat)| chat.id == id)
-                    .map(|(status, chat)| (status, chat.clone()))
-            })
+            copilot_chats(state.chats.clone())
+                .into_iter()
+                .filter_map(|chat| {
+                    state
+                        .sidebar_chats(now, None)
+                        .into_iter()
+                        .find(|(_, candidate)| candidate.id == chat.id)
+                        .map(|(status, _)| (status, chat))
+                })
+                .collect::<Vec<_>>()
         };
-        let copilot_row = match (copilot_available, copilot_chat) {
-            (true, Some((status, chat))) => {
-                let is_selected = selected.as_deref() == Some(chat.id.as_str());
-                let element = self.render_chat_row(
-                    chat.id.clone(),
-                    "Copilot".into(),
-                    format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
-                    "~".into(),
-                    None,
-                    None,
-                    Some(zeron_proto::HarnessId::Copilot),
-                    status,
-                    is_selected,
-                    false,
-                    None,
-                    theme,
-                    cx,
-                );
-                (
-                    format!("c:{}", chat.id),
-                    super::chat_row_height(false, false),
-                    element,
+        let mut copilot_rows = Vec::with_capacity(copilot_sessions.len());
+        for (status, chat) in copilot_sessions {
+            let is_selected = selected.as_deref() == Some(chat.id.as_str());
+            let jump_label: Option<SharedString> = if jump_hints {
+                let combo = keymap.get(ShortcutId::JumpSession(slot));
+                (slot < JUMP_SLOTS && !combo.is_empty()).then(|| badge_combo(combo).into())
+            } else {
+                None
+            };
+            slot += 1;
+            let element = self.render_chat_row(
+                chat.id.clone(),
+                transcript::single_line(
+                    &chat.title.clone().unwrap_or_else(|| "New session".into()),
                 )
+                .into(),
+                format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
+                "~".into(),
+                jump_label,
+                None,
+                Some(zeron_proto::HarnessId::Copilot),
+                status,
+                is_selected,
+                false,
+                None,
+                theme,
+                cx,
+            );
+            copilot_rows.push((
+                format!("c:{}", chat.id),
+                super::chat_row_height(false, false),
+                element,
+            ));
+        }
+        let copilot_open = !self.sidebar_collapsed_groups.contains("copilot:all");
+        let copilot_body_height = SIDEBAR_DISCLOSURE_BODY_INSET
+            + copilot_rows
+                .iter()
+                .map(|(_, height, _)| *height)
+                .sum::<f32>()
+            + SIDEBAR_LIST_GAP * copilot_rows.len().saturating_sub(1) as f32;
+        let copilot_chevron =
+            self.sidebar_disclosure_chevron("group:copilot:all", copilot_open, theme);
+        let copilot_available = self.state.read(cx).keiki_token.is_some();
+        let copilot_action = div()
+            .id("copilot-new-session")
+            .size(px(20.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.0))
+            .when(copilot_available, |el| {
+                el.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.new_copilot_chat(cx);
+                }))
+            })
+            .when(!copilot_available, |el| el.opacity(0.35))
+            .child(
+                icon(icons::PLUS)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted),
+            );
+        let copilot_header = sidebar_disclosure_header(
+            theme,
+            if copilot_open {
+                "Copilot".into()
+            } else {
+                format!("Copilot ({})", copilot_rows.len()).into()
+            },
+            copilot_chevron,
+            None,
+            Some(copilot_action.into_any_element()),
+        )
+        .id("sidebar-group-copilot")
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let was_open = !this.sidebar_collapsed_groups.contains("copilot:all");
+            this.begin_sidebar_disclosure_motion(
+                "group:copilot:all",
+                if was_open { copilot_body_height } else { 0.0 },
+                if was_open { 0.0 } else { copilot_body_height },
+            );
+            if was_open {
+                this.sidebar_collapsed_groups.insert("copilot:all".into());
+            } else {
+                this.sidebar_collapsed_groups.remove("copilot:all");
             }
-            (available, _) => self.render_copilot_launcher_row(available, theme, cx),
-        };
-        rendered.push(copilot_row);
+            cx.notify();
+        }));
+        let copilot_body = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .pt(px(SIDEBAR_DISCLOSURE_BODY_INSET))
+            .gap(px(SIDEBAR_LIST_GAP))
+            .children(copilot_rows.into_iter().map(|(_, _, row)| row));
+        let copilot_body = self.render_sidebar_disclosure_body(
+            "group:copilot:all",
+            copilot_open,
+            copilot_body_height,
+            copilot_body.into_any_element(),
+        );
+        rendered.push((
+            "g:copilot:all".into(),
+            SIDEBAR_DISCLOSURE_SECTION_HEIGHT
+                + if copilot_open {
+                    copilot_body_height
+                } else {
+                    0.0
+                },
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(copilot_header)
+                .child(copilot_body)
+                .into_any_element(),
+        ));
         for (group, rows) in groups {
             let group_state = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
             {
@@ -1433,22 +1552,23 @@ impl Shell {
             } else {
                 None
             };
-            let header = sidebar_disclosure_header(theme, visible_label, chevron, group_avatar)
-                .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
-                    this.begin_sidebar_disclosure_motion(
-                        &toggle_motion_key,
-                        if was_open { body_height } else { 0.0 },
-                        if was_open { 0.0 } else { body_height },
-                    );
-                    if was_open {
-                        this.sidebar_collapsed_groups.insert(toggle_key.clone());
-                    } else {
-                        this.sidebar_collapsed_groups.remove(&toggle_key);
-                    }
-                    cx.notify();
-                }));
+            let header =
+                sidebar_disclosure_header(theme, visible_label, chevron, group_avatar, None)
+                    .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
+                        this.begin_sidebar_disclosure_motion(
+                            &toggle_motion_key,
+                            if was_open { body_height } else { 0.0 },
+                            if was_open { 0.0 } else { body_height },
+                        );
+                        if was_open {
+                            this.sidebar_collapsed_groups.insert(toggle_key.clone());
+                        } else {
+                            this.sidebar_collapsed_groups.remove(&toggle_key);
+                        }
+                        cx.notify();
+                    }));
             let body = self.render_sidebar_disclosure_body(
                 &motion_key,
                 !collapsed,
@@ -1468,50 +1588,6 @@ impl Shell {
             rendered.push((format!("g:{collapse_key}"), height, element));
         }
         rendered
-    }
-
-    fn render_copilot_launcher_row(
-        &self,
-        available: bool,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> (String, f32, AnyElement) {
-        let row = div()
-            .id("copilot-sidebar-row")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(Theme::SPACE_SM))
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .text_color(if available {
-                theme.text.opacity(0.8)
-            } else {
-                theme.text_muted.opacity(0.45)
-            })
-            .when(available, |el| el.cursor_pointer())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.open_copilot_chat(cx);
-            }))
-            .child(
-                icon(icons::BOT)
-                    .size(px(14.0))
-                    .flex_none()
-                    .text_color(theme.text_muted.opacity(if available { 0.8 } else { 0.4 })),
-            )
-            .child(
-                div()
-                    .text_size(crate::typography::ui_rems(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("Copilot"),
-            )
-            .into_any_element();
-        (
-            "copilot".to_string(),
-            super::chat_row_height(false, false),
-            row,
-        )
     }
 
     /// The sidebar's archived shelf — a direct port of t3code's settled
@@ -1569,7 +1645,7 @@ impl Shell {
             format!("Archived ({total})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron, None)
+        let header = sidebar_disclosure_header(theme, label, chevron, None, None)
             .id("archived-toggle")
             .on_click(cx.listener(move |this, _, _, cx| {
                 let was_open = this.archived_open;
@@ -3257,7 +3333,10 @@ impl Shell {
 mod tests {
     use chrono::{TimeZone as _, Utc};
 
-    use super::{compare_sidebar_chats, promote_local_device_group, promote_pinned_groups};
+    use super::{
+        compare_sidebar_chats, copilot_chats, is_copilot_chat, promote_local_device_group,
+        promote_pinned_groups,
+    };
     use crate::settings::SidebarSort;
 
     fn group(device: &str, value: u8) -> (Option<(String, String)>, Vec<u8>) {
@@ -3283,6 +3362,38 @@ mod tests {
             space_id: None,
             last_seen_at: None,
         }
+    }
+
+    fn copilot_chat(id: &str, last_message_at: i64, created_at: i64) -> zeron_proto::Chat {
+        let mut chat = chat(id);
+        chat.last_message_at = Some(Utc.timestamp_opt(last_message_at, 0).unwrap());
+        chat.created_at = Utc.timestamp_opt(created_at, 0).unwrap();
+        chat.config = Some(zeron_proto::ChatConfig {
+            harness: zeron_proto::HarnessId::Copilot,
+            model: Some("copilot".into()),
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: zeron_proto::SandboxLevel::ReadOnly,
+        });
+        chat
+    }
+
+    #[test]
+    fn copilot_chats_are_grouped_and_sorted_newest_first() {
+        let newest = copilot_chat("newest", 30, 3);
+        let older = copilot_chat("older", 20, 2);
+        let ordinary = chat("ordinary");
+        let grouped = copilot_chats([older.clone(), ordinary, newest.clone()]);
+
+        assert!(is_copilot_chat(&newest));
+        assert!(!is_copilot_chat(&chat("ordinary")));
+        assert_eq!(
+            grouped
+                .iter()
+                .map(|chat| chat.id.as_str())
+                .collect::<Vec<_>>(),
+            ["newest", "older"]
+        );
     }
 
     #[test]

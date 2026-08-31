@@ -154,7 +154,7 @@ icon_assets![
     (COPY, "copy"),
     // Hand-drawn star pair in the Solar Linear style (like the terminal/
     // plus/return ports) — outline for the favorite affordance, bold for the
-    // favorited state and the picker's favorites rail tab.
+    // favorited state.
     (STAR, "star"),
     (STAR_BOLD, "star-bold"),
     (ZERON_LOGO, "zeron-logo"),

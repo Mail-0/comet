@@ -1041,8 +1041,7 @@ impl Shell {
             _ => Route::Chat,
         };
         // More capture knobs of the same kind: `ZERON_OPEN_DIALOG=rename|delete`
-        // opens that dialog for the first chat once chats land; `=model` pops
-        // the combined harness/model menu once the shell is Ready;
+        // opens that dialog for the first chat once chats land;
         // `ZERON_FORCE_GATE=signin|org|failed` renders that gate regardless of
         // real auth state (display-only — for styling passes).
         let debug_dialog = std::env::var("ZERON_OPEN_DIALOG").ok();
@@ -4090,60 +4089,18 @@ impl Shell {
         if !keiki_menu_is_selected(chat_id, selected_chat.as_deref()) {
             return Vec::new();
         }
-        let (keiki_pending, keiki_blocked, keiki_takeover_live) = {
+        let (keiki_pending, keiki_blocked) = {
             let state = self.state.read(cx);
             let conversation = state.keiki_conversation();
             (
                 conversation.and_then(|conversation| conversation.pending),
                 conversation.is_some_and(|conversation| conversation.blocked),
-                conversation.is_some_and(crate::keiki::takeover_live),
             )
         };
 
-        let takeover_id = chat_id.to_string();
-        let hand_back_id = chat_id.to_string();
         let block_id = chat_id.to_string();
         let unblock_id = chat_id.to_string();
         let mut rows = vec![popover::menu_separator().into_any_element()];
-        if !keiki_takeover_live {
-            rows.push(
-                popover::menu_row(theme, false, format!("chat-keiki-takeover-{chat_id}"))
-                    .id("chat-keiki-takeover")
-                    .when(
-                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Takeover),
-                        |row| row.opacity(0.45),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::Takeover)
-                            && this.state.read(cx).selected_chat.as_deref()
-                                == Some(takeover_id.as_str())
-                        {
-                            crate::keiki::take_over(this.state.clone(), cx);
-                        }
-                    }))
-                    .child(SharedString::from("Take over"))
-                    .into_any_element(),
-            );
-        } else {
-            rows.push(
-                popover::menu_row(theme, false, format!("chat-keiki-hand-back-{chat_id}"))
-                    .id("chat-keiki-hand-back")
-                    .when(
-                        keiki_pending == Some(crate::keiki::KeikiConversationPending::HandBack),
-                        |row| row.opacity(0.45),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::HandBack)
-                            && this.state.read(cx).selected_chat.as_deref()
-                                == Some(hand_back_id.as_str())
-                        {
-                            crate::keiki::hand_back(this.state.clone(), cx);
-                        }
-                    }))
-                    .child(SharedString::from("Hand back"))
-                    .into_any_element(),
-            );
-        }
         if !keiki_blocked {
             rows.push(
                 popover::menu_row(theme, false, format!("chat-keiki-block-{chat_id}"))
@@ -6184,15 +6141,10 @@ impl Render for Shell {
                 }
             }))
             // A jump routes back to chat itself, so Settings is not a dead
-            // spot — the same call a click on that sidebar row makes. But an
-            // open picker/palette owns the keyboard: no jumping underneath
-            // it. The MODEL menu advertises these same slots on its rows and
-            // this matched binding beats its key handler to the dispatch —
-            // forward the slot instead of eating it.
+            // spot — the same call a click on that sidebar row makes. An open
+            // picker/palette owns the keyboard: no jumping underneath it.
             .on_action(cx.listener(|this, jump: &JumpSession, _, cx| {
-                let pickers = this.composer.read(cx).pickers().clone();
-                let handled = pickers.update(cx, |pickers, cx| pickers.jump_model_slot(jump.0, cx));
-                if !handled && !this.overlay_owns_keyboard(cx) {
+                if !this.overlay_owns_keyboard(cx) {
                     this.jump_to_session(jump.0, cx)
                 }
             }))
@@ -6230,14 +6182,6 @@ impl Render for Shell {
                         self.state
                             .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
                     }
-                }
-                // Capture knob: `ZERON_OPEN_DIALOG=model` pops the combined
-                // harness/model menu (needs `window`, so it fires here rather
-                // than in `on_state_changed`).
-                if self.debug_dialog.as_deref() == Some("model") {
-                    self.debug_dialog = None;
-                    self.composer
-                        .update(cx, |c, cx| c.debug_open_model_menu(window, cx));
                 }
                 // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);

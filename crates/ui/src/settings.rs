@@ -200,9 +200,6 @@ pub struct UiSettings {
     /// group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_keiki_conversations: Vec<String>,
-    /// Device-local Copilot chat id, restored across launches.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub copilot_chat_id: Option<String>,
     /// Optional harness branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_harness: bool,
@@ -279,7 +276,6 @@ impl Default for UiSettings {
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
             pinned_keiki_conversations: Vec::new(),
-            copilot_chat_id: None,
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
@@ -652,8 +648,8 @@ pub fn display_combo_on(mac: bool, combo: &str) -> String {
 
 /// Compact combo for badge surfaces (the sidebar jump hints): macOS spells
 /// the modifiers as their key glyphs in canonical ⌃⌥⇧⌘ order and drops the
-/// separators ("⌘1", "⇧⌘A") — the form the model picker's ⌘N chips already
-/// use — while other platforms keep the textual [`display_combo`] ("Ctrl+1").
+/// separators ("⌘1", "⇧⌘A") while other platforms keep the textual
+/// [`display_combo`] ("Ctrl+1").
 pub fn badge_combo(combo: &str) -> String {
     badge_combo_on(cfg!(target_os = "macos"), combo)
 }
@@ -777,7 +773,6 @@ mod tests {
             sidebar_organization: SidebarOrganization::ByDevice,
             sidebar_sort: SidebarSort::Created,
             pinned_keiki_conversations: vec![],
-            copilot_chat_id: Some("copilot-chat".into()),
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,

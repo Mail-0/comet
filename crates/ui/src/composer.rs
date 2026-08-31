@@ -34,7 +34,6 @@ use zeron_rpc::{RpcError, methods};
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::pickers::Pickers;
-use crate::popover;
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
@@ -3360,7 +3359,7 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 pub struct Composer {
     state: Entity<AppState>,
     input: Entity<ComposerInput>,
-    /// Composer actions row: repo/branch/harness-model/traits (§1.7).
+    /// Composer actions row: repo/branch and checkout controls (§1.7).
     /// Shared with the shell's new-session canvas, which renders the
     /// device/project target selectors ([`Pickers::render_target_selectors`]).
     pickers: Entity<Pickers>,
@@ -3458,6 +3457,14 @@ impl Composer {
     /// The picker entity, for the shell's canvas target selectors.
     pub fn pickers(&self) -> &Entity<Pickers> {
         &self.pickers
+    }
+
+    pub(crate) fn has_steer_text(&self, cx: &App) -> bool {
+        !self.input.read(cx).text().trim().is_empty()
+    }
+
+    pub(crate) fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.focus_handle(cx)
     }
 
     /// Feed the stable conversation-column width into responsive composer
@@ -3605,13 +3612,6 @@ impl Composer {
             }
         }
         composer
-    }
-
-    /// Capture-knob passthrough (`ZERON_OPEN_DIALOG=model`): open the
-    /// combined harness/model menu.
-    pub fn debug_open_model_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pickers
-            .update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
     }
 
     pub fn is_sending(&self) -> bool {
@@ -4136,7 +4136,7 @@ impl Composer {
                 );
             }
             // Overflowing rows wheel-scroll inside a bounded viewport; the
-            // floating rail mirrors the model-list scrollbar treatment.
+            // floating rail keeps the list affordance visible on hover.
             card = card.child(
                 div()
                     .id("mention-scroll-host")
@@ -4202,7 +4202,7 @@ impl Composer {
             self.sync_mention_controls(cx);
             return;
         }
-        // No resolved harness (catalog still loading): empty popup, no fetch.
+        // No resolved harness: empty popup, no fetch.
         let Some(harness) = harness else {
             self.slash.loading = false;
             self.refilter_slash(cx);
@@ -4455,7 +4455,7 @@ impl Composer {
                 );
             }
             // Overflowing rows wheel-scroll inside a bounded viewport; the
-            // floating rail mirrors the model-list scrollbar treatment.
+            // floating rail keeps the list affordance visible on hover.
             card = card.child(
                 div()
                     .id("slash-scroll-host")
@@ -4487,9 +4487,9 @@ impl Composer {
         ))
     }
 
-    /// The floating scrollbar rail for a composer popup's scroll host (the
-    /// model-list treatment). Callers pass the id and that popup's scroll
-    /// handle; the hover/drag interaction state is shared.
+    /// The floating scrollbar rail for a composer popup's scroll host. Callers
+    /// pass the id and that popup's scroll handle; the hover/drag interaction
+    /// state is shared.
     fn popup_scrollbar(
         &self,
         id: &'static str,
@@ -4701,11 +4701,8 @@ impl Composer {
             }
             return false;
         }
-        // New-chat canvas: needs a project AND a runnable agent. The
-        // no-agents check only fires once the catalog is loaded — offline
-        // and still-loading states must not block (the harness resolves from
-        // the remembered default and the engine reports real failures).
-        state.selected_space_row().is_none() || self.pickers.read(cx).no_agents_available()
+        // New-chat canvas needs a project.
+        state.selected_space_row().is_none()
     }
 
     fn button_mode(&self, cx: &App) -> SendButtonMode {
@@ -4751,7 +4748,7 @@ impl Composer {
         }
     }
 
-    fn steer_keiki(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn steer_keiki(&mut self, cx: &mut Context<Self>) {
         let text = self.input.read(cx).text().trim().to_string();
         if text.is_empty() {
             return;
@@ -5692,29 +5689,6 @@ impl Composer {
             }
         }
     }
-
-    fn render_keiki_steer_button(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let theme = Theme::of(cx);
-        let has_text = !self.input.read(cx).text().trim().is_empty();
-        let pending = self
-            .state
-            .read(cx)
-            .keiki_conversation()
-            .is_some_and(|conversation| {
-                conversation.pending == Some(crate::keiki::KeikiConversationPending::Steer)
-            });
-        popover::btn_ghost(&theme, "Steer", "composer-steer")
-            .id("composer-steer")
-            .h(px(28.0))
-            .px(px(10.0))
-            .flex_none()
-            .when(!has_text || pending, |el| el.opacity(0.35))
-            .when(has_text && !pending, |el| {
-                el.cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.steer_keiki(cx)))
-            })
-            .into_any_element()
-    }
 }
 
 /// Focus lands on the prompt input (window-level focus fallbacks — e.g. after
@@ -6105,12 +6079,6 @@ impl Render for Composer {
         self.last_rendered_height = pill_height;
 
         let send_button = self.render_send_button(mode, cx);
-        let is_keiki = self
-            .state
-            .read(cx)
-            .selected_chat
-            .as_deref()
-            .is_some_and(crate::keiki::is_keiki_chat);
         // Attach button — opens the native image picker (the original's hidden
         // `<input type=file accept="image/*" multiple>`); paste/drop also feed
         // the same strip. The parent action cluster owns the spacing: adding a
@@ -6223,14 +6191,8 @@ impl Render for Composer {
                                 .items_center()
                                 .justify_end()
                                 .gap(px(ACTION_UTILITY_GAP))
-                                .child(self.pickers.clone())
                                 .child(attach),
                         )
-                        .child(if is_keiki {
-                            self.render_keiki_steer_button(cx)
-                        } else {
-                            gpui::Empty.into_any_element()
-                        })
                         .child(send_button),
                 )
         } else {
@@ -6289,14 +6251,8 @@ impl Render for Composer {
                                         .flex_row()
                                         .items_center()
                                         .gap(px(ACTION_UTILITY_GAP))
-                                        .child(self.pickers.clone())
                                         .child(attach),
                                 )
-                                .child(if is_keiki {
-                                    self.render_keiki_steer_button(cx)
-                                } else {
-                                    gpui::Empty.into_any_element()
-                                })
                                 .child(send_button),
                         ),
                 )
