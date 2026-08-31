@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
+use zeron_doc::DocsStore;
 use zeron_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionDoc, SessionMessageEntry,
 };
@@ -29,7 +30,6 @@ use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
-use zeron_sync::DocsStore;
 
 const CHAT: &str = "chat-restart";
 
@@ -136,8 +136,7 @@ impl Harness for RecordingHarness {
 fn assemble(dir: &std::path::Path, harness: RecordingHarness) -> EngineCore {
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(harness));
-    EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock, None)
-        .expect("engine core assembles")
+    EngineCore::assemble(dir, Arc::new(registry), HarnessId::Mock).expect("engine core assembles")
 }
 
 fn queue_run(core: &EngineCore, prompt: &str, cwd: &str, message_id: &str) {
@@ -331,7 +330,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     //   the only copy of the harness session id (the debounced workspace-row
     //   write never landed).
     {
-        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let store = DocsStore::open(dir.join("profiles/local")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "msg-user-1".into(),
@@ -363,7 +362,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
 
-        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        let journal = RunJournal::open(dir.join("profiles/local/journals")).unwrap();
         journal
             .append(
                 CHAT,
@@ -403,7 +402,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[1].status, Some(MessageStatus::Aborted));
     // … and closed the stale journal with a synthetic Done.
-    let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+    let journal = RunJournal::open(dir.join("profiles/local/journals")).unwrap();
     assert!(matches!(
         journal.last_event(CHAT).unwrap(),
         Some((_, AgentEvent::Done { .. }))
@@ -456,7 +455,7 @@ impl Harness for PersistentHarness {
     }
     async fn run(
         &self,
-        request: RunRequest,
+        _request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         *self.runs_started.lock().unwrap() += 1;
@@ -527,7 +526,7 @@ async fn persistent_session_serves_multiple_turns_on_one_child() {
     registry.register(Arc::new(PersistentHarness {
         runs_started: runs_started.clone(),
     }));
-    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock, None)
+    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock)
         .expect("engine core assembles");
     pre_title(&core);
 
@@ -577,7 +576,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         .unwrap()
         .as_millis() as i64;
     {
-        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let store = DocsStore::open(dir.join("profiles/local")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "msg-user-1".into(),
@@ -609,7 +608,7 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
 
-        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        let journal = RunJournal::open(dir.join("profiles/local/journals")).unwrap();
         journal
             .append(
                 CHAT,
@@ -820,110 +819,6 @@ async fn persistent_startup_crash_keeps_stored_session_id() {
     assert_eq!(
         stored_harness_session(&core),
         Some(("hs-live".into(), Some("/tmp".into())))
-    );
-    core.shutdown().await;
-}
-
-/// Real-CLI proof of the whole regression fix: tell claude a codeword, restart
-/// the engine (fresh `EngineCore::assemble` over the same data dir), ask for
-/// the codeword back — the reply can only contain it if the second run resumed
-/// the first run's harness session. Ignored by default: needs an installed,
-/// authenticated `claude` CLI and spends real tokens (haiku, two tiny turns).
-/// Run with: `cargo test -p zeron-engine --test restart_resume -- --ignored`
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires installed+authenticated claude CLI; spends tokens"]
-async fn real_claude_remembers_codeword_across_engine_restart() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    let cwd = tmp.path().join("project");
-    std::fs::create_dir_all(&cwd).unwrap();
-    let cwd = cwd.to_string_lossy().to_string();
-
-    let real_request = |prompt: &str| RunRequest {
-        prompt: prompt.into(),
-        harness: None,
-        model: Some("haiku".into()),
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: cwd.clone(),
-        sandbox: SandboxLevel::WorkspaceWrite,
-        auto_approve: false,
-        attachments: Vec::new(),
-        worktree: None,
-        resume: None,
-    };
-    let assemble_real = || {
-        EngineCore::assemble(
-            &dir,
-            Arc::new(zeron_engine::default_registry()),
-            HarnessId::ClaudeCode,
-            None,
-        )
-        .expect("engine core assembles")
-    };
-
-    let core = assemble_real();
-    pre_title(&core); // keep the auto-titler from spending a second model call
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request: real_request(
-                    "Remember the codeword: PINEAPPLE. Reply with exactly: stored",
-                ),
-                message_id: "msg-user-1".into(),
-            },
-        )
-        .expect("queue first real run");
-    wait_for_within(
-        || complete_assistant_count(&core) == 1,
-        "first real claude turn",
-        Duration::from_secs(120),
-    )
-    .await;
-    assert!(
-        stored_harness_session(&core).is_some(),
-        "claude session id must be stored on the chat row"
-    );
-    core.shutdown().await;
-    drop(core);
-
-    // "App restart": a brand-new engine over the same data dir.
-    let core = assemble_real();
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request: real_request(
-                    "What was the codeword I told you earlier? Reply with just the codeword.",
-                ),
-                message_id: "msg-user-2".into(),
-            },
-        )
-        .expect("queue second real run");
-    wait_for_within(
-        || complete_assistant_count(&core) == 2,
-        "post-restart real claude turn",
-        Duration::from_secs(120),
-    )
-    .await;
-
-    let entries = entries_now(&core);
-    let last_assistant_text: String = entries
-        .iter()
-        .rev()
-        .find(|e| e.role == MessageRole::Assistant)
-        .into_iter()
-        .flat_map(|e| {
-            e.parts.iter().filter_map(|p| match p {
-                MessagePart::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-    assert!(
-        last_assistant_text.to_uppercase().contains("PINEAPPLE"),
-        "post-restart reply must recall the codeword (got: {last_assistant_text:?})"
     );
     core.shutdown().await;
 }

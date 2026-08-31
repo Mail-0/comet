@@ -277,6 +277,7 @@ pub struct ColorParseError;
 pub enum AccentPreset {
     #[default]
     Zeron,
+    Keiki,
     Orange,
     Amber,
     Green,
@@ -286,8 +287,9 @@ pub enum AccentPreset {
 }
 
 impl AccentPreset {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Zeron,
+        Self::Keiki,
         Self::Orange,
         Self::Amber,
         Self::Green,
@@ -298,7 +300,8 @@ impl AccentPreset {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Zeron => "Zeron",
+            Self::Zeron => "Comet",
+            Self::Keiki => "Keiki",
             Self::Orange => "Orange",
             Self::Amber => "Amber",
             Self::Green => "Green",
@@ -311,6 +314,7 @@ impl AccentPreset {
     pub fn color(self, appearance: Appearance) -> Color {
         let (dark, light) = match self {
             Self::Zeron => ("#8b7cf6", "#5b43e8"),
+            Self::Keiki => ("#0091ff", "#0088ff"),
             Self::Orange => ("#fb923c", "#c2410c"),
             Self::Amber => ("#fbbf24", "#a16207"),
             Self::Green => ("#4ade80", "#15803d"),
@@ -400,8 +404,8 @@ pub struct ThemeSelection {
 impl Default for ThemeSelection {
     fn default() -> Self {
         Self {
-            light: "zeron-light".into(),
-            dark: "zeron-dark".into(),
+            light: "keiki-light".into(),
+            dark: "keiki-dark".into(),
         }
     }
 }
@@ -756,6 +760,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn first_run_theme_selection_uses_keiki_variants() {
+        let selection = ThemeSelection::default();
+        assert_eq!(selection.light, "keiki-light");
+        assert_eq!(selection.dark, "keiki-dark");
+    }
+
+    #[test]
     fn colors_round_trip_all_supported_css_hex_lengths() {
         for source in ["#abc", "#abcd", "#102030", "#10203040"] {
             let color: Color = source.parse().unwrap();
@@ -811,7 +822,9 @@ mod tests {
     #[test]
     fn builtins_have_complete_provenance_and_no_validation_errors() {
         let registry = ThemeRegistry::builtin();
-        assert_eq!(registry.families.len(), 19);
+        assert_eq!(registry.families.len(), 20);
+        assert!(registry.variant("keiki-light").is_some());
+        assert!(registry.variant("keiki-dark").is_some());
         assert!(registry.variant("zeron-light").is_some());
         assert!(registry.variant("zeron-dark").is_some());
         let errors: Vec<_> = registry
@@ -830,7 +843,7 @@ mod tests {
             .iter()
             .map(|family| family.variants.len())
             .sum::<usize>();
-        assert_eq!(variants, 30);
-        assert_eq!(variants * VisualFixture::ALL.len(), 300);
+        assert_eq!(variants, 32);
+        assert_eq!(variants * VisualFixture::ALL.len(), 320);
     }
 }

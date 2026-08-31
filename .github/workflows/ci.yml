@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: gpui system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcb1-dev libx11-xcb-dev \
+            libfontconfig1-dev libfreetype-dev libasound2-dev \
+            libvulkan-dev pkg-config cmake
+      - name: rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo test --workspace
+      - run: cargo build -p zeron
+
+  linux-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: gpui system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcb1-dev libx11-xcb-dev \
+            libfontconfig1-dev libfreetype-dev libasound2-dev \
+            libvulkan-dev pkg-config cmake dpkg-dev \
+            xvfb mesa-vulkan-drivers file
+      - name: rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: package Linux bundles
+        run: PROFILE=debug scripts/package-linux.sh
+      - name: verify the bundles
+        run: |
+          for pattern in '*.tar.gz' '*.deb' '*.AppImage'; do
+            artifact="$(find target/package -maxdepth 1 -type f -name "$pattern" -print -quit)"
+            test -n "$artifact"
+          done
+          deb="$(find target/package -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$deb"
+          dpkg-deb --info "$deb" | tee "$RUNNER_TEMP/zeron-deb-info.txt"
+          dpkg-deb --contents "$deb" | tee "$RUNNER_TEMP/zeron-deb-contents.txt"
+          grep -q 'libvulkan1' "$RUNNER_TEMP/zeron-deb-info.txt"
+          grep -q './usr/bin/zeron' "$RUNNER_TEMP/zeron-deb-contents.txt"
+          rm -rf "$RUNNER_TEMP/zeron-deb"
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/zeron-deb"
+          test -x "$RUNNER_TEMP/zeron-deb/usr/bin/zeron"
+      - name: boot AppImage under Xvfb
+        run: |
+          appimage="$(find target/package -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          data_dir="$RUNNER_TEMP/zeron-data"
+          log="$RUNNER_TEMP/zeron-boot.log"
+          mkdir -p "$data_dir"
+          xvfb-run -a env ZERON_DATA_DIR="$data_dir" RUST_LOG=info \
+            "$appimage" --appimage-extract-and-run >"$log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 90); do
+            if grep -q 'main window opened' "$log"; then
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if ! grep -q 'main window opened' "$log"; then
+            cat "$log"
+            kill -TERM "$pid" 2>/dev/null || true
+            wait "$pid" || true
+            exit 1
+          fi
+          kill -TERM "$pid" 2>/dev/null || true
+          wait "$pid" || true
+          cat "$log"
+          ! grep -q 'panicked' "$log"
+
+  # The macOS cfg paths (Keychain in agent_accounts.rs) had never been compiled
+  # against the Apple SDK before this workflow; they do compile, so this job
+  # blocks. The release dmg build stays continue-on-error — packaging, signing
+  # and notarization are still unproven.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets

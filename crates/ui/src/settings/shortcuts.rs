@@ -256,7 +256,7 @@ fn description(id: ShortcutId) -> &'static str {
         ShortcutId::ToggleSidebar => "Show or hide sessions and settings navigation.",
         ShortcutId::ToggleChanges => "Show or hide changes for the current session.",
         ShortcutId::ToggleTerminal => "Show or hide the terminal for the current session.",
-        ShortcutId::NewSession => "Open a blank session canvas to start a new session.",
+        ShortcutId::NewSession => "Start a new Copilot session.",
         ShortcutId::NextSession => "Select the next session in the sidebar, wrapping at the end.",
         ShortcutId::PrevSession => {
             "Select the previous session in the sidebar, wrapping at the start."

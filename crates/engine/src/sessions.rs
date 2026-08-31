@@ -248,8 +248,7 @@ impl SessionsEngine {
         lock(&self.inner.statuses).get(chat_id).cloned()
     }
 
-    /// Any run currently working or blocked on input — the auto-updater's
-    /// "don't restart from under a session" gate.
+    /// Any run currently working or blocked on input.
     pub fn any_active(&self) -> bool {
         lock(&self.inner.statuses).values().any(|s| {
             matches!(
@@ -915,7 +914,7 @@ impl Inner {
 
     // NB: there is deliberately no `forget_harness_session` anymore. The old
     // tombstone fired on "run died before SessionStarted", which — since the
-    // ACP conversion made stale ids a harness-internal fallback — only ever
+    // Older conversions made stale ids a harness-internal fallback — only ever
     // meant a child STARTUP failure, and permanently severed good
     // conversations (user incident 2026-08-13). A truly stale id simply
     // yields a fresh session whose SessionStarted overwrites the row.
@@ -994,9 +993,8 @@ impl Inner {
 // ── subagent docs ───────────────────────────────────────────────────────────
 
 /// The per-subagent doc id: `{chatId}--sub--{suffix}`. Constrained by the
-/// edge's `ID_RE` (`^[A-Za-z0-9_-]{1,128}$` — the same id names the ChatRoom
-/// `chat2/{id}/ws` and the frozen blob `blob/{chatId}/{id}`): a clean, short
-/// tool-use id rides verbatim; anything unclean or over budget hashes.
+/// A clean, short tool-use id rides verbatim; anything unclean or over budget
+/// is hashed.
 pub(crate) fn subagent_doc_id(chat_id: &str, tool_use_id: &str) -> String {
     let clean = tool_use_id
         .chars()
@@ -1015,9 +1013,8 @@ pub(crate) fn subagent_doc_id(chat_id: &str, tool_use_id: &str) -> String {
     format!("{chat_id}--sub--{hex}")
 }
 
-/// A live subagent transcript sink: its own doc (opened by id — the room
-/// `chat2/{docId}/ws` dials automatically, so viewers sync it like a chat),
-/// one streaming assistant entry folded from the tagged events. The held
+/// A live subagent transcript sink: its own local doc, one streaming assistant
+/// entry folded from the tagged events. The held
 /// doc Arc pins the doc warm for the LRU while the subagent runs.
 struct SubagentSink {
     doc_id: String,
@@ -1173,7 +1170,7 @@ fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
                 // Output summaries, diff stats, and sidecar refs are
                 // deliberately kept: unlike raw tool inputs they are the
                 // transcript's record of what happened, and the strip already
-                // bounded them (docs/chat2-sync.md A1).
+                // bounded them (local transcript/workspace persistence A1).
                 output: output.clone(),
                 diff: diff.clone(),
                 output_ref: output_ref.clone(),
@@ -1367,8 +1364,8 @@ async fn drive_run(
     // costs a status dip: the parked-resume path below re-arms Working the
     // moment output flows again, and nothing is lost. `ZERON_TURN_QUIESCE_MS`
     // overrides the window; 0 disables.
-    // RETIRED for native drivers: a harness whose every turn shape ends with
-    // a deterministic wire Done (claude/codex/cursor native) needs no
+    // A harness whose every turn shape ends with a deterministic wire Done
+    // needs no
     // quiesce backstop — arming one only risks false parks on long silent
     // work. The env knob still forces a window on for diagnostics.
     let deterministic_turn_end = harness.deterministic_turn_end();
@@ -1385,9 +1382,8 @@ async fn drive_run(
     // SELF-CONTINUED turns get a much SHORTER quiesce window. A turn the
     // agent starts on its own (background-task wake) can never receive a
     // harness Done: the adapter has no `session/prompt` outstanding to
-    // settle — verified in claude-agent-acp's autonomous-result lane, which
-    // consumes the SDK's turn-end without emitting anything; codex shows
-    // the same shape. The watchdog is that turn shape's ONLY settle path,
+    // settle — the autonomous-result lane consumes the SDK's turn-end without
+    // emitting anything. The watchdog is that turn shape's ONLY settle path,
     // so the default 120s window read as 2min of stuck-Working after every
     // background notification (user report 2026-08-13). The in-flight
     // fold gate below still protects running tools; reasoning heartbeats
@@ -1591,7 +1587,7 @@ async fn drive_run(
                 .iter()
                 .any(|p| matches!(p, MessagePart::Tool { id, .. } if id == parent_tool_use_id));
             let sink_known = subagents.contains_key(parent_tool_use_id);
-            // A Done with NO sink (a subagent that never streamed — codex
+            // A Done with NO sink (a subagent that never streamed —
             // turn ends can beat registration) is chip-only: minting a doc
             // just to freeze it empty helps no one, and stamping the ref
             // would link the chip to that never-created doc (an empty tab
@@ -1693,24 +1689,7 @@ async fn drive_run(
                         _ => MessageStatus::Complete,
                     };
                     let sink = subagents.remove(parent_tool_use_id).expect("checked");
-                    let doc_id = sink.doc_id.clone();
-                    // FREEZE: the finished transcript uploads as a static R2
-                    // blob (`blob/{chatId}/{subDocId}`) so viewers of
-                    // finished subagents never wake the doc's room; dropping
-                    // the sink unpins the doc for the LRU and the room
-                    // idles. The live doc remains the fallback.
-                    if let Some(json) = sink.finish(&device_id, status)
-                        && let Some(host) = inner.doc_host()
-                    {
-                        host.upload_tool_sidecar(
-                            &chat_id,
-                            zeron_doc::SidecarPayload {
-                                part_id: doc_id,
-                                output: Some(json),
-                                diff: None,
-                            },
-                        );
-                    }
+                    let _ = sink.finish(&device_id, status);
                 }
             }
             continue;
@@ -1745,7 +1724,7 @@ async fn drive_run(
             }
         }
         // PARKED: a steer boundary, a terminal Done, or SELF-CONTINUED OUTPUT
-        // re-opens the session; everything else stays gated. The ACP child
+        // re-opens the session; everything else stays gated. The child
         // keeps forwarding `session/update` frames after a turn completes,
         // and they split two ways:
         //
@@ -1866,7 +1845,7 @@ async fn drive_run(
         // Startup-crash retry: a run that dies before ever starting (errored
         // Done, no SessionStarted, nothing streamed) means the AGENT CHILD
         // failed to come up — not that the injected resume id was bad. Since
-        // the ACP conversion (2026-08-08) a stale id is handled inside the
+        // conversion (2026-08-08) a stale id is handled inside the
         // harness (`session/load` falls back to `session/new`), so the old
         // guess here — tombstone the id, retry fresh — fired only on child
         // startup failures and permanently severed GOOD conversations (user
@@ -1990,12 +1969,6 @@ async fn drive_run(
         let skip_fold = matches!(&event, AgentEvent::SessionStarted { .. }) && !folded.is_empty();
         if !skip_fold {
             fold_event_into_parts(&mut folded, &event);
-            // R2 sidecar PARKED (2026-08-10, product call): the fold's
-            // summary/stats ARE the doc's whole record — no refs stamped, no
-            // uploads. Full outputs survive only in the host's local run
-            // journal. To reintroduce: `zeron_doc::sidecar_payload(&event)`
-            // → `apply_sidecar_refs` → `doc_host.upload_tool_sidecar`, all
-            // still in place and tested.
         }
 
         if let AgentEvent::Done { status, .. } = &event {
@@ -2088,20 +2061,8 @@ async fn drive_run(
     // Any subagent still streaming when the run ends freezes as-is: the
     // parent process is gone, so nothing more can arrive on this stream.
     for (parent_id, sink) in subagents.drain() {
-        let doc_id = sink.doc_id.clone();
         let _ = doc_ref.update_subagent_chip(&parent_id, None, Some("failed"), None);
-        if let Some(json) = sink.finish(&device_id, MessageStatus::Aborted)
-            && let Some(host) = inner.doc_host()
-        {
-            host.upload_tool_sidecar(
-                &chat_id,
-                zeron_doc::SidecarPayload {
-                    part_id: doc_id,
-                    output: Some(json),
-                    diff: None,
-                },
-            );
-        }
+        let _ = sink.finish(&device_id, MessageStatus::Aborted);
     }
 
     // Claim any accepted-but-unconfirmed steers BEFORE the handle goes away:
@@ -2184,23 +2145,23 @@ mod tests {
     #[test]
     fn live_routing_requires_the_same_runtime_configuration() {
         let initial = request();
-        let config = RuntimeConfig::from_request(HarnessId::Grok, &initial);
+        let config = RuntimeConfig::from_request(HarnessId::Mock, &initial);
 
         let mut follow_up = initial.clone();
         follow_up.prompt = "second".into();
         follow_up.resume = Some("session-1".into());
-        assert!(config.can_route(HarnessId::Grok, &follow_up));
+        assert!(config.can_route(HarnessId::Mock, &follow_up));
 
         follow_up.model = Some("grok-4.5".into());
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Copilot, &follow_up));
         follow_up.model = initial.model.clone();
 
         follow_up.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Mock, &follow_up));
         follow_up.reasoning = initial.reasoning;
 
         follow_up.attachments.push("/tmp/image.png".into());
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Copilot, &follow_up));
     }
 
     #[test]

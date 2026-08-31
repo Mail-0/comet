@@ -37,6 +37,25 @@ fn compare_sidebar_chats(
     primary.then_with(|| left.id.cmp(&right.id))
 }
 
+fn promote_pinned_groups<T>(
+    groups: &mut [(Option<(String, String)>, Vec<T>)],
+    is_pinned: impl Fn(&T) -> bool + Copy,
+) {
+    for (_, rows) in groups {
+        let mut pinned = Vec::new();
+        let mut unpinned = Vec::new();
+        for row in rows.drain(..) {
+            if is_pinned(&row) {
+                pinned.push(row);
+            } else {
+                unpinned.push(row);
+            }
+        }
+        pinned.extend(unpinned);
+        *rows = pinned;
+    }
+}
+
 /// The space-filter dropdown, `Some` while open. The same searchable-menu
 /// recipe as the composer's ref picker: filter input on top
 /// (`PaletteSearch` context so ↑↓/⏎ bubble to the card), ranked substring
@@ -79,9 +98,10 @@ impl Render for SidebarViewOptionsTooltip {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidebarViewRow {
     ByDevice,
+    ByAgent,
     InOneList,
     LastUpdated,
     Created,
@@ -96,13 +116,14 @@ impl SidebarViewRow {
     fn closes_menu(self) -> bool {
         matches!(
             self,
-            Self::ByDevice | Self::InOneList | Self::LastUpdated | Self::Created
+            Self::ByDevice | Self::ByAgent | Self::InOneList | Self::LastUpdated | Self::Created
         )
     }
 }
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 7] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 8] = [
     SidebarViewRow::ByDevice,
+    SidebarViewRow::ByAgent,
     SidebarViewRow::InOneList,
     SidebarViewRow::LastUpdated,
     SidebarViewRow::Created,
@@ -110,6 +131,8 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 7] = [
     SidebarViewRow::ShowPullRequest,
     SidebarViewRow::ShowHarness,
 ];
+const SIDEBAR_ORGANIZATION_ROWS: usize = 3;
+const SIDEBAR_SORT_ROWS: usize = 2;
 
 // With the search field and card insets, this lets the project picker grow to
 // roughly the same maximum footprint as the sidebar view-options menu while
@@ -150,7 +173,13 @@ fn promote_local_device_group<T>(
     }
 }
 
-fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyElement) -> gpui::Div {
+fn sidebar_disclosure_header(
+    theme: &Theme,
+    label: SharedString,
+    chevron: AnyElement,
+    leading: Option<AnyElement>,
+    trailing: Option<AnyElement>,
+) -> gpui::Div {
     div()
         .flex()
         .flex_row()
@@ -159,6 +188,7 @@ fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyEle
         .h(px(SIDEBAR_DISCLOSURE_HEADER_HEIGHT))
         .px(px(Theme::SPACE_SM))
         .cursor_pointer()
+        .when_some(leading, |el, leading| el.child(leading))
         .child(
             div()
                 .flex_none()
@@ -168,7 +198,35 @@ fn sidebar_disclosure_header(theme: &Theme, label: SharedString, chevron: AnyEle
                 .child(label),
         )
         .child(div().h(px(1.0)).flex_1().bg(theme.border.opacity(0.6)))
+        .when_some(trailing, |el, trailing| el.child(trailing))
         .child(chevron)
+}
+
+fn is_copilot_chat(chat: &zeron_proto::Chat) -> bool {
+    !chat.archived
+        && chat.space_id.is_none()
+        && chat
+            .config
+            .as_ref()
+            .is_some_and(|config| config.harness == zeron_proto::HarnessId::Copilot)
+}
+
+fn copilot_chats<'a>(
+    chats: impl IntoIterator<Item = &'a zeron_proto::Chat>,
+) -> Vec<&'a zeron_proto::Chat> {
+    let mut chats: Vec<_> = chats
+        .into_iter()
+        .filter(|chat| is_copilot_chat(chat))
+        .collect();
+    chats.sort_by(|left, right| {
+        right
+            .last_message_at
+            .unwrap_or(right.created_at)
+            .cmp(&left.last_message_at.unwrap_or(left.created_at))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    chats
 }
 
 /// One row of the open dropdown, in display order.
@@ -177,6 +235,7 @@ pub(super) enum SpacesMenuRow {
     All,
     Space(String),
     AddSpace,
+    NewKeikiAgent,
 }
 
 /// The add-space palette (a command-K surface, summoned by ⌘K): search bar
@@ -359,9 +418,8 @@ impl Shell {
     }
     // ---- space filter ----
 
-    /// Set the sidebar's session filter (`None` = All spaces). On the
-    /// new-session canvas the space context follows the filter — the canvas
-    /// default is "the space you're looking at".
+    /// Set the sidebar's session filter (`None` = All spaces). With nothing
+    /// selected, the empty state remains independent of the filter.
     pub(super) fn set_space_filter(&mut self, filter: Option<String>, cx: &mut Context<Self>) {
         self.settings.space_filter = filter.clone();
         if let Some(space_id) = filter
@@ -385,8 +443,8 @@ impl Shell {
         }
     }
 
-    /// Land in a just-added space: filter the sidebar to it and open the
-    /// new-session canvas there.
+    /// Land in a just-added space: filter the sidebar to it and show the
+    /// empty state.
     pub(super) fn land_in_space(&mut self, space_id: String, cx: &mut Context<Self>) {
         self.route = Route::Chat;
         self.settings.space_filter = Some(space_id.clone());
@@ -426,6 +484,9 @@ impl Shell {
                 .map(|ix| SpacesMenuRow::Space(spaces[ix].id.clone())),
         );
         rows.push(SpacesMenuRow::AddSpace);
+        if state.keiki_status == crate::keiki::SessionStatus::SignedIn {
+            rows.push(SpacesMenuRow::NewKeikiAgent);
+        }
         rows
     }
 
@@ -434,7 +495,7 @@ impl Shell {
         // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
         // to the card's key handler.
         let search =
-            cx.new(|cx| ComposerInput::with_context("Search projects…", "PaletteSearch", cx));
+            cx.new(|cx| ComposerInput::with_context("Search agents…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
                 if let Some(menu) = this.spaces_menu.open_mut() {
@@ -469,7 +530,12 @@ impl Shell {
         cx.notify();
     }
 
-    fn activate_spaces_menu_row(&mut self, row: SpacesMenuRow, cx: &mut Context<Self>) {
+    fn activate_spaces_menu_row(
+        &mut self,
+        row: SpacesMenuRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match row {
             SpacesMenuRow::All => self.set_space_filter(None, cx),
             SpacesMenuRow::Space(id) => self.set_space_filter(Some(id), cx),
@@ -477,12 +543,21 @@ impl Shell {
                 self.close_spaces_menu(cx);
                 self.open_add_space(cx);
             }
+            SpacesMenuRow::NewKeikiAgent => {
+                self.close_spaces_menu(cx);
+                window.dispatch_action(Box::new(crate::shell::NewKeikiAgent), cx);
+            }
         }
     }
 
     /// Dropdown keys (bubbling from the focused search input): ↑↓ navigate,
     /// ⏎ activates the highlighted row, esc closes.
-    fn spaces_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+    fn spaces_menu_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The card stays mounted (and focused) through the exit animation —
         // keys must not drive a dying menu.
         if !self.spaces_menu.is_open() {
@@ -512,7 +587,7 @@ impl Shell {
                     self.spaces_menu_rows(cx).get(active).cloned()
                 };
                 if let Some(row) = row {
-                    self.activate_spaces_menu_row(row, cx);
+                    self.activate_spaces_menu_row(row, window, cx);
                 }
             }
             popover::MenuKey::Backspace | popover::MenuKey::Other => {}
@@ -541,6 +616,9 @@ impl Shell {
         match row {
             SidebarViewRow::ByDevice => {
                 self.settings.sidebar_organization = SidebarOrganization::ByDevice
+            }
+            SidebarViewRow::ByAgent => {
+                self.settings.sidebar_organization = SidebarOrganization::ByAgent
             }
             SidebarViewRow::InOneList => {
                 self.settings.sidebar_organization = SidebarOrganization::InOneList
@@ -613,15 +691,17 @@ impl Shell {
 
         let labels = [
             "By device",
+            "By agent",
             "In one list",
             "Last updated",
             "Created",
             "Branch",
-            "Pull request",
+            "Conversation",
             "Harness",
         ];
         let icons = [
             icons::LAPTOP,
+            icons::BOT,
             icons::LIST,
             icons::CLOCK_CIRCLE,
             icons::CALENDAR,
@@ -631,6 +711,7 @@ impl Shell {
         ];
         let selected = [
             organization == SidebarOrganization::ByDevice,
+            organization == SidebarOrganization::ByAgent,
             organization == SidebarOrganization::InOneList,
             sort == SidebarSort::LastUpdated,
             sort == SidebarSort::Created,
@@ -673,8 +754,8 @@ impl Shell {
                 .into_any_element()
             })
             .collect();
-        let show_rows = rows.split_off(4);
-        let sort_rows = rows.split_off(2);
+        let show_rows = rows.split_off(SIDEBAR_ORGANIZATION_ROWS + SIDEBAR_SORT_ROWS);
+        let sort_rows = rows.split_off(SIDEBAR_ORGANIZATION_ROWS);
         let organization_rows = rows;
 
         popover::popover_card(theme)
@@ -724,7 +805,7 @@ impl Shell {
                         Some((tag.into(), offline)),
                     )
                 }
-                None => (SharedString::from("All projects"), None),
+                None => (SharedString::from("All agents"), None),
             }
         };
         let open = self.spaces_menu.is_open();
@@ -937,7 +1018,7 @@ impl Shell {
             rows.iter()
                 .map(|row| match row {
                     SpacesMenuRow::All => {
-                        (row.clone(), SharedString::from("All projects"), None, false)
+                        (row.clone(), SharedString::from("All agents"), None, false)
                     }
                     SpacesMenuRow::Space(id) => match state.space_row(id) {
                         Some(space) => {
@@ -952,8 +1033,14 @@ impl Shell {
                         None => (row.clone(), SharedString::from("?"), None, false),
                     },
                     SpacesMenuRow::AddSpace => {
-                        (row.clone(), SharedString::from("New project…"), None, false)
+                        (row.clone(), SharedString::from("New agent…"), None, false)
                     }
+                    SpacesMenuRow::NewKeikiAgent => (
+                        row.clone(),
+                        SharedString::from("New Keiki agent…"),
+                        None,
+                        false,
+                    ),
                 })
                 .collect()
         };
@@ -972,10 +1059,10 @@ impl Shell {
                         let is_selected = match &row {
                             SpacesMenuRow::All => filter.is_none(),
                             SpacesMenuRow::Space(id) => filter.as_deref() == Some(id.as_str()),
-                            SpacesMenuRow::AddSpace => false,
+                            SpacesMenuRow::AddSpace | SpacesMenuRow::NewKeikiAgent => false,
                         };
                         let leading = match &row {
-                            SpacesMenuRow::AddSpace => icons::PLUS,
+                            SpacesMenuRow::AddSpace | SpacesMenuRow::NewKeikiAgent => icons::PLUS,
                             _ => icons::FOLDER,
                         };
                         let menu_space = match &row {
@@ -990,8 +1077,8 @@ impl Shell {
                             format!("spaces-menu-row-{ix}"),
                         )
                         .id(("spaces-menu-row", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.activate_spaces_menu_row(activate.clone(), cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_spaces_menu_row(activate.clone(), window, cx);
                         }))
                         .when_some(menu_space, |el, space_id| {
                             el.on_mouse_down(
@@ -1037,8 +1124,8 @@ impl Shell {
             // inside the same SPACE_SM horizontal gutters.
             .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
             .track_focus(&focus)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                this.spaces_menu_key(event, cx)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.spaces_menu_key(event, window, cx)
             }))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.close_spaces_menu(cx);
@@ -1061,30 +1148,59 @@ impl Shell {
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
         let filter = self.settings.space_filter.clone();
         let state = self.state.read(cx);
+        let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.iter())
+            .into_iter()
+            .map(|chat| chat.id.clone())
+            .collect();
         let mut chats: Vec<zeron_proto::Chat> = state
             .sidebar_chats(Utc::now(), filter.as_deref())
             .into_iter()
             .map(|(_, chat)| chat.clone())
+            .filter(|chat| !copilot_ids.contains(&chat.id))
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
-        if self.settings.sidebar_organization != SidebarOrganization::ByDevice {
-            return chats.into_iter().map(|chat| chat.id).collect();
+        let mut order: Vec<String> = copilot_chats(state.chats.iter())
+            .into_iter()
+            .map(|chat| chat.id.clone())
+            .collect();
+        if !matches!(
+            self.settings.sidebar_organization,
+            SidebarOrganization::ByDevice | SidebarOrganization::ByAgent
+        ) {
+            order.extend(chats.into_iter().map(|chat| chat.id));
+            return order;
         }
         let mut groups: Vec<(Option<(String, String)>, Vec<zeron_proto::Chat>)> = Vec::new();
         for chat in chats {
-            let key = Some((chat.device_id.clone(), String::new()));
+            let key = Some(match self.settings.sidebar_organization {
+                SidebarOrganization::ByDevice => (chat.device_id.clone(), String::new()),
+                SidebarOrganization::ByAgent => {
+                    (chat.space_id.clone().unwrap_or_default(), String::new())
+                }
+                SidebarOrganization::ByProject | SidebarOrganization::InOneList => {
+                    (String::new(), String::new())
+                }
+            });
             if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &key) {
                 existing.push(chat);
             } else {
                 groups.push((key, vec![chat]));
             }
         }
-        promote_local_device_group(&mut groups, state.local_device_id.as_deref());
-        groups
-            .into_iter()
-            .flat_map(|(_, rows)| rows)
-            .map(|chat| chat.id)
-            .collect()
+        if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            let pinned = self.pinned_keiki_conversation_ids();
+            promote_pinned_groups(&mut groups, |chat| pinned.contains(chat.id.as_str()));
+        }
+        if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
+            promote_local_device_group(&mut groups, state.local_device_id.as_deref());
+        }
+        order.extend(
+            groups
+                .into_iter()
+                .flat_map(|(_, rows)| rows)
+                .map(|chat| chat.id),
+        );
+        order
     }
 
     /// The sidebar's Sessions list: every session (idle included) of the
@@ -1099,9 +1215,14 @@ impl Shell {
         let filter = self.settings.space_filter.clone();
         let mut rows: Vec<ActiveChatRow> = {
             let state = self.state.read(cx);
+            let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.iter())
+                .into_iter()
+                .map(|chat| chat.id.clone())
+                .collect();
             let mut chats: Vec<_> = state
                 .sidebar_chats(now, filter.as_deref())
                 .into_iter()
+                .filter(|(_, chat)| !copilot_ids.contains(&chat.id))
                 .map(|(status, chat)| (status, chat.clone()))
                 .collect();
             chats.sort_by(|left, right| {
@@ -1136,6 +1257,13 @@ impl Shell {
                     let change_request = state.change_request_for_chat(&chat).cloned();
                     let group = match self.settings.sidebar_organization {
                         SidebarOrganization::ByDevice => Some((chat.device_id.clone(), device)),
+                        SidebarOrganization::ByAgent => {
+                            chat.space_id.as_deref().and_then(|space_id| {
+                                state.space_for_chat(&chat).map(|space| {
+                                    (space_id.to_string(), space.display_name().to_string())
+                                })
+                            })
+                        }
                         SidebarOrganization::ByProject | SidebarOrganization::InOneList => None,
                     };
                     ActiveChatRow {
@@ -1168,6 +1296,10 @@ impl Shell {
                 groups.push((row.group.clone(), vec![row]));
             }
         }
+        if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            let pinned = self.pinned_keiki_conversation_ids();
+            promote_pinned_groups(&mut groups, |row| pinned.contains(row.chat.id.as_str()));
+        }
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
             let local_device_id = self.state.read(cx).local_device_id.clone();
             promote_local_device_group(&mut groups, local_device_id.as_deref());
@@ -1183,7 +1315,159 @@ impl Shell {
         // chip always names the key that opens its row.
         let mut slot = 0usize;
         let mut rendered = Vec::new();
+        let copilot_sessions = {
+            let state = self.state.read(cx);
+            let sidebar_statuses: std::collections::HashMap<&str, ChatIndicator> = state
+                .sidebar_chats(now, None)
+                .into_iter()
+                .map(|(status, chat)| (chat.id.as_str(), status))
+                .collect();
+            copilot_chats(state.chats.iter())
+                .into_iter()
+                .filter_map(|chat| {
+                    sidebar_statuses
+                        .get(chat.id.as_str())
+                        .copied()
+                        .map(|status| {
+                            (
+                                status,
+                                chat.id.clone(),
+                                chat.title.clone(),
+                                chat.last_message_at.unwrap_or(chat.created_at),
+                            )
+                        })
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut copilot_rows = Vec::with_capacity(copilot_sessions.len());
+        for (status, chat_id, title, last_message_at) in copilot_sessions {
+            let is_selected = selected.as_deref() == Some(chat_id.as_str());
+            let jump_label: Option<SharedString> = if jump_hints {
+                let combo = keymap.get(ShortcutId::JumpSession(slot));
+                (slot < JUMP_SLOTS && !combo.is_empty()).then(|| badge_combo(combo).into())
+            } else {
+                None
+            };
+            slot += 1;
+            let element = self.render_chat_row(
+                chat_id.clone(),
+                transcript::single_line(&title.unwrap_or_else(|| "New session".into())).into(),
+                format_time_ago(last_message_at, now).into(),
+                "~".into(),
+                None,
+                None,
+                self.settings
+                    .sidebar_show_harness
+                    .then_some(zeron_proto::HarnessId::Copilot),
+                status,
+                is_selected,
+                false,
+                jump_label,
+                theme,
+                cx,
+            );
+            copilot_rows.push((
+                format!("c:{}", chat_id),
+                super::chat_row_height(false, false),
+                element,
+            ));
+        }
+        let copilot_open = !self.sidebar_collapsed_groups.contains("copilot:all");
+        let copilot_body_height = SIDEBAR_DISCLOSURE_BODY_INSET
+            + copilot_rows
+                .iter()
+                .map(|(_, height, _)| *height)
+                .sum::<f32>()
+            + SIDEBAR_LIST_GAP * copilot_rows.len().saturating_sub(1) as f32;
+        let copilot_chevron =
+            self.sidebar_disclosure_chevron("group:copilot:all", copilot_open, theme);
+        let copilot_available = self.state.read(cx).keiki_token.is_some();
+        let copilot_action = div()
+            .id("copilot-new-session")
+            .size(px(20.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.0))
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                if this.state.read(cx).keiki_token.is_some() {
+                    this.new_copilot_chat(cx);
+                }
+            }))
+            .when(copilot_available, |el| el.cursor_pointer())
+            .when(!copilot_available, |el| el.opacity(0.35))
+            .child(
+                icon(icons::PLUS)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted),
+            );
+        let copilot_header = sidebar_disclosure_header(
+            theme,
+            if copilot_open {
+                "Copilot".into()
+            } else {
+                format!("Copilot ({})", copilot_rows.len()).into()
+            },
+            copilot_chevron,
+            None,
+            Some(copilot_action.into_any_element()),
+        )
+        .id("sidebar-group-copilot")
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let was_open = !this.sidebar_collapsed_groups.contains("copilot:all");
+            this.begin_sidebar_disclosure_motion(
+                "group:copilot:all",
+                if was_open { copilot_body_height } else { 0.0 },
+                if was_open { 0.0 } else { copilot_body_height },
+            );
+            if was_open {
+                this.sidebar_collapsed_groups.insert("copilot:all".into());
+            } else {
+                this.sidebar_collapsed_groups.remove("copilot:all");
+            }
+            cx.notify();
+        }));
+        let copilot_body = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .pt(px(SIDEBAR_DISCLOSURE_BODY_INSET))
+            .gap(px(SIDEBAR_LIST_GAP))
+            .children(copilot_rows.into_iter().map(|(_, _, row)| row));
+        let copilot_body = self.render_sidebar_disclosure_body(
+            "group:copilot:all",
+            copilot_open,
+            copilot_body_height,
+            copilot_body.into_any_element(),
+        );
+        rendered.push((
+            "g:copilot:all".into(),
+            SIDEBAR_DISCLOSURE_SECTION_HEIGHT
+                + if copilot_open {
+                    copilot_body_height
+                } else {
+                    0.0
+                },
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(copilot_header)
+                .child(copilot_body)
+                .into_any_element(),
+        ));
         for (group, rows) in groups {
+            let group_state = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
+            {
+                crate::avatars::group_avatar_state(
+                    rows.iter()
+                        .map(|row| crate::avatars::avatar_state(row.status)),
+                )
+            } else {
+                keiki_model::AvatarState::Idle
+            };
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for row in rows {
                 let ActiveChatRow {
@@ -1239,6 +1523,7 @@ impl Shell {
             };
             let organization = match self.settings.sidebar_organization {
                 SidebarOrganization::ByDevice => "device",
+                SidebarOrganization::ByAgent => "agent",
                 SidebarOrganization::ByProject | SidebarOrganization::InOneList => "list",
             };
             let collapse_key = format!("{organization}:{key}");
@@ -1266,22 +1551,39 @@ impl Shell {
             let chevron = self.sidebar_disclosure_chevron(&motion_key, !collapsed, theme);
             let toggle_key = collapse_key.clone();
             let toggle_motion_key = motion_key.clone();
-            let header = sidebar_disclosure_header(theme, visible_label, chevron)
-                .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
-                    this.begin_sidebar_disclosure_motion(
-                        &toggle_motion_key,
-                        if was_open { body_height } else { 0.0 },
-                        if was_open { 0.0 } else { body_height },
-                    );
-                    if was_open {
-                        this.sidebar_collapsed_groups.insert(toggle_key.clone());
-                    } else {
-                        this.sidebar_collapsed_groups.remove(&toggle_key);
-                    }
-                    cx.notify();
-                }));
+            let group_avatar = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
+            {
+                key.strip_prefix(crate::keiki::AGENT_PREFIX)
+                    .map(|agent_id| {
+                        self.avatar_element(
+                            agent_id,
+                            format!("keiki-avatar-{key}").into(),
+                            group_state,
+                            20.0,
+                            theme,
+                            cx,
+                        )
+                    })
+            } else {
+                None
+            };
+            let header =
+                sidebar_disclosure_header(theme, visible_label, chevron, group_avatar, None)
+                    .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
+                        this.begin_sidebar_disclosure_motion(
+                            &toggle_motion_key,
+                            if was_open { body_height } else { 0.0 },
+                            if was_open { 0.0 } else { body_height },
+                        );
+                        if was_open {
+                            this.sidebar_collapsed_groups.insert(toggle_key.clone());
+                        } else {
+                            this.sidebar_collapsed_groups.remove(&toggle_key);
+                        }
+                        cx.notify();
+                    }));
             let body = self.render_sidebar_disclosure_body(
                 &motion_key,
                 !collapsed,
@@ -1358,7 +1660,7 @@ impl Shell {
             format!("Archived ({total})").into()
         };
         let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
-        let header = sidebar_disclosure_header(theme, label, chevron)
+        let header = sidebar_disclosure_header(theme, label, chevron, None, None)
             .id("archived-toggle")
             .on_click(cx.listener(move |this, _, _, cx| {
                 let was_open = this.archived_open;
@@ -2601,7 +2903,7 @@ impl Shell {
             .children(devices.into_iter().enumerate().map(|(ix, dev)| {
                 let is_active = device.as_ref().is_some_and(|d| d.id == dev.id);
                 let online = device_presence.get(ix).copied().unwrap_or(false);
-                // The Devices-page platform mapping (settings::devices).
+                // Keep platform labels consistent with the device row.
                 let platform_icon = match dev.platform.as_str() {
                     "macos" | "darwin" => icons::LAPTOP,
                     "web" => icons::GLOBAL,
@@ -2839,7 +3141,7 @@ impl Shell {
             .space_row(&space_id)
             .map(|s| s.display_name().to_string())
             .unwrap_or_default();
-        let input = cx.new(|cx| ComposerInput::new("Project name", cx));
+        let input = cx.new(|cx| ComposerInput::new("Agent name", cx));
         input.update(cx, |input, cx| input.set_text(current, cx));
         let events = cx.subscribe(&input, |this: &mut Shell, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
@@ -2891,42 +3193,46 @@ impl Shell {
 
         if let Some((space_id, position)) = self.space_menu.get().cloned() {
             let closing = self.space_menu.closing_since();
-            let rename_id = space_id.clone();
-            let delete_id = space_id.clone();
-            let menu = popover::popover_card(&theme)
+            let is_keiki = crate::keiki::is_keiki_space(&space_id);
+            let mut menu = popover::popover_card(&theme)
                 .w(px(170.0))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.close_space_menu(cx);
                 }))
                 .flex()
-                .flex_col()
-                .child(
-                    popover::menu_row(&theme, false, format!("space-menu-rename-{space_id}"))
-                        .id("space-menu-rename")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_rename_space(rename_id.clone(), cx)
-                        }))
-                        .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
-                        .child(SharedString::from("Rename…")),
-                )
-                .child(popover::menu_separator())
-                .child(
-                    popover::menu_row(&theme, false, format!("space-menu-delete-{space_id}"))
-                        .id("space-menu-delete")
-                        .text_color(theme.danger)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.close_space_menu(cx);
-                            this.delete_space_confirm = Some(delete_id.clone());
-                            cx.notify();
-                        }))
-                        .child(
-                            icon(icons::TRASH_BIN_MINIMALISTIC)
-                                .size(px(16.0))
-                                .text_color(theme.danger),
-                        )
-                        .child(SharedString::from("Remove…")),
-                )
-                .into_any_element();
+                .flex_col();
+            if !is_keiki {
+                let rename_id = space_id.clone();
+                let delete_id = space_id.clone();
+                menu = menu
+                    .child(
+                        popover::menu_row(&theme, false, format!("space-menu-rename-{space_id}"))
+                            .id("space-menu-rename")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_rename_space(rename_id.clone(), cx)
+                            }))
+                            .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
+                            .child(SharedString::from("Rename…")),
+                    )
+                    .child(popover::menu_separator())
+                    .child(
+                        popover::menu_row(&theme, false, format!("space-menu-delete-{space_id}"))
+                            .id("space-menu-delete")
+                            .text_color(theme.danger)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_space_menu(cx);
+                                this.delete_space_confirm = Some(delete_id.clone());
+                                cx.notify();
+                            }))
+                            .child(
+                                icon(icons::TRASH_BIN_MINIMALISTIC)
+                                    .size(px(16.0))
+                                    .text_color(theme.danger),
+                            )
+                            .child(SharedString::from("Remove…")),
+                    );
+            }
+            let menu = menu.into_any_element();
             overlays.push(popover::menu_at(
                 "space-context-menu",
                 position,
@@ -2947,7 +3253,7 @@ impl Shell {
                         cx.notify();
                     }
                 }))
-                .child(popover::dialog_title(&theme, "Rename project"))
+                .child(popover::dialog_title(&theme, "Rename agent"))
                 .child(
                     div()
                         .mt(px(12.0))
@@ -2987,7 +3293,7 @@ impl Shell {
                 (
                     space
                         .map(|s| s.display_name().to_string())
-                        .unwrap_or_else(|| "this project".into()),
+                        .unwrap_or_else(|| "this agent".into()),
                     space
                         .and_then(|s| state.device_name(&s.device_id))
                         .unwrap_or("its device")
@@ -3005,7 +3311,7 @@ impl Shell {
                 )
             };
             let card = popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Remove project?"))
+                .child(popover::dialog_title(&theme, "Remove agent?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, copy)))
                 .child(
                     div()
@@ -3042,7 +3348,10 @@ impl Shell {
 mod tests {
     use chrono::{TimeZone as _, Utc};
 
-    use super::{compare_sidebar_chats, promote_local_device_group};
+    use super::{
+        compare_sidebar_chats, copilot_chats, is_copilot_chat, promote_local_device_group,
+        promote_pinned_groups,
+    };
     use crate::settings::SidebarSort;
 
     fn group(device: &str, value: u8) -> (Option<(String, String)>, Vec<u8>) {
@@ -3067,8 +3376,39 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
-            room_gen: None,
         }
+    }
+
+    fn copilot_chat(id: &str, last_message_at: i64, created_at: i64) -> zeron_proto::Chat {
+        let mut chat = chat(id);
+        chat.last_message_at = Some(Utc.timestamp_opt(last_message_at, 0).unwrap());
+        chat.created_at = Utc.timestamp_opt(created_at, 0).unwrap();
+        chat.config = Some(zeron_proto::ChatConfig {
+            harness: zeron_proto::HarnessId::Copilot,
+            model: Some("copilot".into()),
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: zeron_proto::SandboxLevel::ReadOnly,
+        });
+        chat
+    }
+
+    #[test]
+    fn copilot_chats_are_grouped_and_sorted_newest_first() {
+        let newest = copilot_chat("newest", 30, 3);
+        let older = copilot_chat("older", 20, 2);
+        let ordinary = chat("ordinary");
+        let grouped = copilot_chats([&older, &ordinary, &newest]);
+
+        assert!(is_copilot_chat(&newest));
+        assert!(!is_copilot_chat(&chat("ordinary")));
+        assert_eq!(
+            grouped
+                .iter()
+                .map(|chat| chat.id.as_str())
+                .collect::<Vec<_>>(),
+            ["newest", "older"]
+        );
     }
 
     #[test]
@@ -3104,5 +3444,56 @@ mod tests {
         promote_local_device_group(&mut groups, Some("not-present"));
 
         assert_eq!(groups, before);
+    }
+
+    #[test]
+    fn pinned_rows_promote_within_each_agent_group() {
+        let mut groups = vec![
+            (Some(("agent-a".into(), "A".into())), vec!["a2", "a1", "a3"]),
+            (Some(("agent-b".into(), "B".into())), vec!["b1", "b2"]),
+        ];
+
+        promote_pinned_groups(&mut groups, |id| matches!(*id, "a1" | "b2"));
+
+        assert_eq!(groups[0].1, ["a1", "a2", "a3"]);
+        assert_eq!(groups[1].1, ["b2", "b1"]);
+    }
+
+    #[test]
+    fn pinned_partition_preserves_order_after_poll_row_replacement() {
+        let mut groups = vec![(Some(("agent-a".into(), "A".into())), vec!["a3", "a1", "a2"])];
+
+        promote_pinned_groups(&mut groups, |id| *id == "a1");
+
+        assert_eq!(groups[0].1, ["a1", "a3", "a2"]);
+    }
+
+    #[test]
+    fn sidebar_view_sections_keep_organization_sort_and_show_rows_separate() {
+        let organization_end = super::SIDEBAR_ORGANIZATION_ROWS;
+        let sort_end = organization_end + super::SIDEBAR_SORT_ROWS;
+        assert_eq!(
+            &super::SIDEBAR_VIEW_ROWS[..organization_end],
+            &[
+                super::SidebarViewRow::ByDevice,
+                super::SidebarViewRow::ByAgent,
+                super::SidebarViewRow::InOneList,
+            ]
+        );
+        assert_eq!(
+            &super::SIDEBAR_VIEW_ROWS[organization_end..sort_end],
+            &[
+                super::SidebarViewRow::LastUpdated,
+                super::SidebarViewRow::Created,
+            ]
+        );
+        assert_eq!(
+            &super::SIDEBAR_VIEW_ROWS[sort_end..],
+            &[
+                super::SidebarViewRow::ShowBranch,
+                super::SidebarViewRow::ShowPullRequest,
+                super::SidebarViewRow::ShowHarness,
+            ]
+        );
     }
 }

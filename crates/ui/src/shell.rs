@@ -11,7 +11,6 @@
 //! ghost view + `on_drag_move::<Marker>` on the root), the same idiom as Zed's
 //! dock. Double-clicking a handle resets that pane to its default width.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -22,11 +21,10 @@ use gpui::{
     div, prelude::*, px,
 };
 
-use gpui_tokio::Tokio;
-use zeron_engine::InstanceLock;
-use zeron_proto::{AuthState, WorkspaceScope};
+use keiki_model::{AgentTemplateSummary, CreateAgentFromTemplate};
 use zeron_rpc::methods;
 
+use crate::avatars::{self, AvatarKey, AvatarSnapshot};
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
 use crate::icons::{self, icon};
@@ -34,11 +32,8 @@ use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
 use crate::popover::{self, Loadable};
 use crate::rail;
-use crate::settings::accounts::AccountsPage;
 use crate::settings::appearance::AppearancePage;
 use crate::settings::archived::ArchivedPage;
-use crate::settings::devices::DevicesPage;
-use crate::settings::harnesses::HarnessesPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
@@ -48,8 +43,8 @@ use crate::settings::{
     platform_combo,
 };
 use crate::state::{
-    AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator, OrgRow,
-    format_time_ago, org_name_valid, parse_orgs, sort_memberships,
+    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, KeikiSessionInfo,
+    format_time_ago,
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
@@ -66,6 +61,7 @@ actions!(
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
+        NewKeikiAgent,
         NewSession,
         OpenSettings,
         NextSession,
@@ -85,6 +81,33 @@ struct ChatMenuState {
     chat_id: String,
     position: Point<Pixels>,
     page: ChatMenuPage,
+}
+
+struct KeikiAgentDialog {
+    templates: Loadable<Vec<AgentTemplateSummary>>,
+    selected_template: Option<usize>,
+    name: Entity<ComposerInput>,
+    line_number: Entity<ComposerInput>,
+    error: Option<SharedString>,
+    focus_pending: bool,
+    template_task: Option<Task<()>>,
+    create_task: Option<Task<()>>,
+    create_pending: bool,
+}
+
+fn keiki_menu_is_selected(chat_id: &str, selected_chat: Option<&str>) -> bool {
+    crate::keiki::is_keiki_chat(chat_id) && selected_chat == Some(chat_id)
+}
+
+fn prune_pinned_keiki_conversations(pinned: &mut Vec<String>, chats: &[zeron_proto::Chat]) {
+    let current_keiki_chat_ids: std::collections::HashSet<&str> = chats
+        .iter()
+        .filter(|chat| crate::keiki::is_keiki_chat(&chat.id))
+        .map(|chat| chat.id.as_str())
+        .collect();
+    if !current_keiki_chat_ids.is_empty() {
+        pinned.retain(|id| current_keiki_chat_ids.contains(id.as_str()));
+    }
 }
 
 /// Interruptible height tween for the sidebar's device/archive disclosures.
@@ -144,11 +167,32 @@ fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
     (viewport - sidebar - right).max(0.0)
 }
 
-fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f32 {
-    if is_chat_route && has_selected_chat {
-        1.0
-    } else {
-        0.0
+fn titlebar_new_session_alpha(is_chat_route: bool) -> f32 {
+    if is_chat_route { 1.0 } else { 0.0 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyStateVariant {
+    SignIn,
+    Loading,
+    Ready,
+}
+
+fn empty_state_variant(status: crate::keiki::SessionStatus) -> EmptyStateVariant {
+    match status {
+        crate::keiki::SessionStatus::Loading => EmptyStateVariant::Loading,
+        crate::keiki::SessionStatus::SignedIn => EmptyStateVariant::Ready,
+        crate::keiki::SessionStatus::SignedOut | crate::keiki::SessionStatus::Error => {
+            EmptyStateVariant::SignIn
+        }
+    }
+}
+
+fn empty_state_action_label(variant: EmptyStateVariant) -> Option<&'static str> {
+    match variant {
+        EmptyStateVariant::SignIn => Some("Sign in to Keiki"),
+        EmptyStateVariant::Loading => Some("Opening Keiki…"),
+        EmptyStateVariant::Ready => None,
     }
 }
 
@@ -323,11 +367,6 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
 /// The settings sections (feature-inventory §1.5 routes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
-    Devices,
-    /// Which harnesses the composer offers (enable/disable toggles).
-    Harnesses,
-    /// Per-provider CLI accounts (login, usage) — labeled "Accounts".
-    Agents,
     Appearance,
     Notifications,
     Shortcuts,
@@ -335,10 +374,7 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] = [
-        SettingsSection::Devices,
-        SettingsSection::Harnesses,
-        SettingsSection::Agents,
+    pub const ALL: [SettingsSection; 4] = [
         SettingsSection::Appearance,
         SettingsSection::Notifications,
         SettingsSection::Shortcuts,
@@ -349,9 +385,6 @@ impl SettingsSection {
     /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
-            SettingsSection::Devices => "Devices",
-            SettingsSection::Harnesses => "Agents",
-            SettingsSection::Agents => "Accounts",
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Notifications => "Notifications",
             SettingsSection::Shortcuts => "Shortcuts",
@@ -414,8 +447,8 @@ pub struct ChatPanels {
     pub right_active: RightSurface,
 }
 
-/// The session-scoped panel map. Keys are chat ids; the new-chat canvas uses
-/// the empty key. Not persisted — a fresh app starts with everything closed.
+/// The session-scoped panel map. Keys are chat ids; no selection uses the
+/// empty key. Not persisted — a fresh app starts with everything closed.
 #[derive(Debug, Default)]
 pub struct SessionPanels {
     map: std::collections::HashMap<String, ChatPanels>,
@@ -450,7 +483,7 @@ impl SessionPanels {
 /// history — every route the user visited, browser-style).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavEntry {
-    /// A chat route; the id of the selected chat ("" = the new-chat canvas).
+    /// A chat route; the id of the selected chat, when any.
     Chat(String),
     Settings(SettingsSection),
 }
@@ -598,6 +631,7 @@ const SIDEBAR_LIST_GAP: f32 = 2.0;
 /// keep identity close on the standard 8px rhythm, while the one-line archived
 /// shelf gives its larger mark a little more separation.
 const SIDEBAR_ACTIVE_HARNESS_ICON_SIZE: f32 = 13.0;
+const SIDEBAR_KEIKI_AVATAR_SIZE: f32 = 16.0;
 const SIDEBAR_ACTIVE_HARNESS_TITLE_GAP: f32 = Theme::SPACE_SM;
 const SIDEBAR_ARCHIVED_HARNESS_ICON_SIZE: f32 = 14.0;
 const SIDEBAR_ARCHIVED_HARNESS_TITLE_GAP: f32 = 10.0;
@@ -704,262 +738,30 @@ struct RenameChatDialog {
     _events: Subscription,
 }
 
-/// In-app update lifecycle (macOS bundle installs; see `render_update_strip`).
-enum UpdateFlow {
-    Idle,
-    Downloading,
-    /// Staged bundle ready to swap in — one click restarts into it.
-    Ready(PathBuf),
-    Failed(SharedString),
-}
-
-/// Account lifecycle owned by this process. Sign-in on a local workspace
-/// flows through the in-place switch wizard (offer → switch → import → done);
-/// `RestartPending` survives only as the fallback when the in-place swap
-/// fails and a full quit is the safe way out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SyncFlow {
-    Idle,
-    Enabling,
-    Canceling,
-    /// Signed in on a local runtime: the wizard's choice step (bring local
-    /// work / start fresh / later). `notice_open: false` = postponed, badge
-    /// in the account menu.
-    SwitchOffer {
-        notice_open: bool,
-    },
-    /// Stopping the local runtime and bootstrapping the synced one in-place.
-    Switching {
-        import: bool,
-    },
-    /// The one-time import stream is running on the new synced runtime.
-    Importing {
-        done: usize,
-        total: usize,
-    },
-    /// Import finished; the success step stays until dismissed.
-    ImportDone {
-        imported: usize,
-        skipped: usize,
-    },
-    /// The import stream reported errors or died early. Explicit retry step —
-    /// structural idempotence makes re-running safe (only missing rows copy).
-    /// Details ride `runtime_change_error`. `notice_open: false` = postponed:
-    /// the dialog is hidden but the failure stays pending, reachable through
-    /// the account menu — dismissal must never discard the only retry
-    /// entry point (under Synced scope the menu otherwise offers just
-    /// Sign out, and the local rows would be unreachable).
-    ImportFailed {
-        notice_open: bool,
-    },
-    RestartPending {
-        notice_open: bool,
-    },
-    SignOutConfirm,
-    SigningOut,
-    SignedOutRestartRequired,
-}
-
-impl SyncFlow {
-    /// States the in-place switch driver owns end-to-end — auth/scope edges
-    /// must not reset them while the runtime is being replaced under the UI.
-    fn is_switch_lifecycle(self) -> bool {
-        matches!(
-            self,
-            SyncFlow::Switching { .. }
-                | SyncFlow::Importing { .. }
-                | SyncFlow::ImportDone { .. }
-                | SyncFlow::ImportFailed { .. }
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AccountMenuAction {
-    EnableSync,
-    SyncInProgress,
-    /// Postponed switch wizard (or legacy restart fallback) — reopen it.
-    RestartPending,
-    SignOut,
-}
-
-const RUNTIME_CHANGE_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNTIME_CHANGE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Wait until a stopped daemon can no longer win the next bootstrap probe and
-/// has released the data directory for the replacement runtime.
-async fn wait_for_remote_engine_shutdown(
-    ipc_port: u16,
-    data_dir: &std::path::Path,
-    timeout: Duration,
-) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let port_closed = !matches!(
-            tokio::time::timeout(
-                Duration::from_millis(200),
-                tokio::net::TcpStream::connect(("127.0.0.1", ipc_port)),
-            )
-            .await,
-            Ok(Ok(_))
-        );
-        if port_closed && InstanceLock::holder(data_dir).is_none() {
-            return Ok(());
+fn account_identity(
+    status: crate::keiki::SessionStatus,
+    session: Option<&KeikiSessionInfo>,
+) -> (SharedString, Option<SharedString>, SharedString) {
+    match status {
+        crate::keiki::SessionStatus::SignedIn => {
+            let name = session.and_then(|session| session.display_name.as_deref());
+            let email = session.and_then(|session| session.email.as_deref());
+            let line = name.or(email).unwrap_or("Keiki account").into();
+            let subline = session
+                .and_then(|session| session.active_org_name.as_deref().or(email))
+                .map(Into::into);
+            let identity = email.unwrap_or("Keiki account").into();
+            (line, subline, identity)
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "the daemon did not finish stopping within {} seconds",
-                timeout.as_secs()
-            ));
+        crate::keiki::SessionStatus::Loading => {
+            ("Signing in…".into(), None, "Keiki account".into())
         }
-        tokio::time::sleep(RUNTIME_CHANGE_POLL_INTERVAL).await;
+        _ => (
+            "Not signed in".into(),
+            Some("Keiki".into()),
+            "Keiki account".into(),
+        ),
     }
-}
-
-/// Stop the engine that owns the synced profile and wait until a local runtime
-/// can safely acquire both its IPC port and data-directory lock.
-async fn stop_synced_runtime(
-    engine: crate::state::EngineHandle,
-    ipc_port: u16,
-    data_dir: &std::path::Path,
-) -> Result<(), String> {
-    let stop_error = if matches!(engine.mode(), EngineMode::Remote { .. }) {
-        engine
-            .client()
-            .call(methods::STOP_ENGINE, serde_json::json!({}))
-            .await
-            .err()
-            .map(|error| error.to_string())
-    } else {
-        None
-    };
-    engine.shutdown().await;
-    match wait_for_remote_engine_shutdown(ipc_port, data_dir, RUNTIME_CHANGE_TIMEOUT).await {
-        Ok(()) => Ok(()),
-        Err(error) => match stop_error {
-            Some(stop_error) => Err(format!("{stop_error}; {error}")),
-            None => Err(error),
-        },
-    }
-}
-
-/// What an import-summary stream item means for the wizard: `Ok((imported,
-/// skipped))` only when the engine reported zero errors; otherwise the
-/// user-facing failure message. Pure so the partial-failure path is testable.
-fn import_summary_outcome(item: &serde_json::Value) -> Result<(usize, usize), String> {
-    let count = |key: &str| item.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let errors: Vec<&str> = item
-        .get("errors")
-        .and_then(|e| e.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-        .unwrap_or_default();
-    if errors.is_empty() {
-        return Ok((count("importedChats"), count("skippedChats")));
-    }
-    let first = errors.first().copied().unwrap_or("unknown error");
-    Err(if errors.len() == 1 {
-        format!("{} imported, 1 failure: {first}", count("importedChats"))
-    } else {
-        format!(
-            "{} imported, {} failures — first: {first}",
-            count("importedChats"),
-            errors.len()
-        )
-    })
-}
-
-/// The offer step's description of what a switch would bring along, or `None`
-/// when the local profile holds nothing importable. Spaces count as work:
-/// a projects-only profile must get the import choice too.
-fn local_work_phrase(chats: usize, spaces: usize) -> Option<String> {
-    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
-    match (chats, spaces) {
-        (0, 0) => None,
-        (c, 0) => Some(format!("the {}", plural(c, "session"))),
-        (0, s) => Some(format!("the {}", plural(s, "project"))),
-        (c, s) => Some(format!(
-            "the {} and {}",
-            plural(c, "session"),
-            plural(s, "project")
-        )),
-    }
-}
-
-fn account_menu_action(scope: Option<WorkspaceScope>, flow: SyncFlow) -> Option<AccountMenuAction> {
-    match scope {
-        Some(WorkspaceScope::Local) => match flow {
-            SyncFlow::Idle => Some(AccountMenuAction::EnableSync),
-            SyncFlow::Enabling | SyncFlow::Canceling => Some(AccountMenuAction::SyncInProgress),
-            SyncFlow::SwitchOffer { .. } | SyncFlow::RestartPending { .. } => {
-                Some(AccountMenuAction::RestartPending)
-            }
-            SyncFlow::ImportFailed { .. } => Some(AccountMenuAction::RestartPending),
-            SyncFlow::Switching { .. }
-            | SyncFlow::Importing { .. }
-            | SyncFlow::ImportDone { .. } => Some(AccountMenuAction::SyncInProgress),
-            SyncFlow::SignOutConfirm
-            | SyncFlow::SigningOut
-            | SyncFlow::SignedOutRestartRequired => None,
-        },
-        Some(WorkspaceScope::Synced) => match flow {
-            SyncFlow::SignedOutRestartRequired => None,
-            // A pending import failure must stay reachable: this is the only
-            // surface that can reopen the retry dialog on a synced runtime.
-            SyncFlow::ImportFailed { .. } => Some(AccountMenuAction::RestartPending),
-            _ if flow.is_switch_lifecycle() => Some(AccountMenuAction::SyncInProgress),
-            _ => Some(AccountMenuAction::SignOut),
-        },
-        Some(WorkspaceScope::Development) | None => None,
-    }
-}
-
-fn sync_flow_after_auth(
-    flow: SyncFlow,
-    scope: Option<WorkspaceScope>,
-    auth: Option<&AuthState>,
-) -> SyncFlow {
-    match scope {
-        Some(WorkspaceScope::Local) => match (flow, auth) {
-            // The in-place switch owns its own lifecycle once started.
-            (flow, _) if flow.is_switch_lifecycle() => flow,
-            // AuthStatus belongs to the runtime, not to the Shell that opened
-            // the browser. Every attached viewport must advertise the pending
-            // profile switch once any of them completes sign-in.
-            (SyncFlow::SwitchOffer { .. }, Some(AuthState::SignedOut)) => SyncFlow::Idle,
-            (SyncFlow::RestartPending { .. }, Some(AuthState::SignedOut)) => SyncFlow::Idle,
-            (SyncFlow::Canceling, Some(AuthState::SignedIn { .. })) => flow,
-            (SyncFlow::SwitchOffer { .. }, Some(AuthState::SignedIn { .. })) => flow,
-            (SyncFlow::RestartPending { .. }, Some(AuthState::SignedIn { .. })) => flow,
-            (_, Some(AuthState::SignedIn { .. })) => SyncFlow::SwitchOffer { notice_open: true },
-            _ => flow,
-        },
-        Some(WorkspaceScope::Synced) => match auth {
-            // AuthStatus is shared by every viewport attached to the runtime.
-            // Once a synced store loses its credentials, every Shell must stop:
-            // letting another viewport sign in would authenticate a new account
-            // while the engine still serves the previous account's fixed store.
-            Some(AuthState::SignedOut) => SyncFlow::SignedOutRestartRequired,
-            _ => match flow {
-                SyncFlow::SignOutConfirm
-                | SyncFlow::SigningOut
-                | SyncFlow::SignedOutRestartRequired => flow,
-                flow if flow.is_switch_lifecycle() => flow,
-                _ => SyncFlow::Idle,
-            },
-        },
-        Some(WorkspaceScope::Development) => SyncFlow::Idle,
-        None => flow,
-    }
-}
-
-/// The "Create your workspace" gate (feature-inventory §1.2 OrgGate).
-struct OrgGateUi {
-    name_input: Entity<ComposerInput>,
-    orgs: Loadable<Vec<OrgRow>>,
-    submitting: bool,
-    error: Option<SharedString>,
-    task: Option<Task<()>>,
-    _events: Subscription,
 }
 
 /// One right-pane subagent tab: the doc it shows, its strip title, and the
@@ -968,8 +770,6 @@ struct SubagentTab {
     doc_id: String,
     title: SharedString,
     transcript: Entity<Transcript>,
-    /// Keeps a frozen-blob fetch alive (it falls back to a live doc watch).
-    _fetch: Option<Task<()>>,
     /// Spawn chips INSIDE the subagent transcript open their own tabs.
     _events: Subscription,
 }
@@ -1034,13 +834,10 @@ pub struct Shell {
     route: Route,
     /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
-    devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
-    accounts_page: Option<Entity<AccountsPage>>,
-    harnesses_page: Option<Entity<HarnessesPage>>,
     shortcuts_sub: Option<Subscription>,
     notifications_sub: Option<Subscription>,
     /// Session-row context menu, including the Copy submenu.
@@ -1056,6 +853,8 @@ pub struct Shell {
     /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
     /// while open.
     add_space: Option<AddSpaceFlow>,
+    /// Keiki's template-backed agent creation dialog.
+    keiki_agent_dialog: Option<KeikiAgentDialog>,
     /// The sidebar's space-filter dropdown.
     spaces_menu: popover::Popup<spaces::SpacesMenu>,
     /// Persisted organization/sort/metadata controls beside the project filter.
@@ -1076,35 +875,16 @@ pub struct Shell {
     user_menu: popover::Popup<()>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
-    /// Local lifecycle of an in-app update (macOS bundle swap) — the engine's
-    /// UpdateStatus stream says WHETHER one exists; this says how far the
-    /// download/stage of it has come in this process.
-    update_flow: UpdateFlow,
-    update_task: Option<Task<()>>,
-    /// Version whose update strip the user dismissed (advisory installs only —
-    /// a newer release shows the strip again).
-    update_dismissed: Option<String>,
-    /// How this binary was installed — decides the strip's click behavior.
-    /// Cached: `detect_install` stats `current_exe` and this renders per frame.
-    install: zeron_update::InstallKind,
-    org: Option<OrgGateUi>,
-    sync_flow: SyncFlow,
+    /// Access token last synchronized into the device-local Copilot holder.
+    copilot_synced_token: Option<String>,
     mutate_task: Option<Task<()>>,
-    auth_task: Option<Task<()>>,
-    runtime_change_task: Option<Task<()>>,
-    runtime_change_error: Option<SharedString>,
-    /// The one-time local→synced import stream (switch wizard progress step).
-    import_task: Option<Task<()>>,
-    /// Title of the chat the import stream is copying right now.
-    import_current: Option<SharedString>,
     /// Kept for the failed-gate "Retry" action.
     boot: EngineBootConfig,
-    data_dir: PathBuf,
     settings: UiSettings,
     /// Session-scoped panel open flags (terminal / changes per chat; §1.10-1.11
     /// parity — heights stay in [`UiSettings`]).
     panels: SessionPanels,
-    /// The panel key of the chat currently shown ("" = new-chat canvas).
+    /// The panel key of the chat currently shown.
     active_chat: String,
     /// Last rendered sidebar order (key + estimated height) — the FLIP baseline
     /// for the §1.6 resort glide.
@@ -1115,8 +895,7 @@ pub struct Shell {
     /// Keys that just appeared in a live list (fade in, no glide).
     sidebar_new_keys: std::collections::HashSet<String>,
     resort_epoch: usize,
-    /// Last observed `window.is_window_active()` — rising edge fires a
-    /// ProbeSync so a broadcast-deaf room heals as the user looks at the app.
+    /// Last observed `window.is_window_active()`.
     was_window_active: bool,
     /// Dev/testing knobs (`ZERON_OPEN_DIALOG`, `ZERON_FORCE_GATE`,
     /// `ZERON_DEMO_UPLOAD`) — see [`Shell::new`].
@@ -1178,6 +957,8 @@ pub struct Shell {
     /// Clears the jump hints when the window deactivates: a Cmd+Tab away
     /// swallows the key-up, so without this the chips stay on screen for good.
     activation_sub: Option<Subscription>,
+    avatar_loads: std::collections::HashMap<AvatarKey, Task<()>>,
+    avatar_retries: std::collections::HashMap<AvatarKey, Task<()>>,
     /// 1s heartbeat re-rendering the working indicator (elapsed + flavour word).
     _ticker: Task<()>,
     _state_observation: Subscription,
@@ -1187,6 +968,18 @@ pub struct Shell {
 }
 
 impl Shell {
+    pub(crate) fn set_sidebar_notice(&mut self, notice: impl Into<SharedString>) {
+        self.sidebar_notice = Some(notice.into());
+    }
+
+    fn pinned_keiki_conversation_ids(&self) -> std::collections::HashSet<&str> {
+        self.settings
+            .pinned_keiki_conversations
+            .iter()
+            .map(String::as_str)
+            .collect()
+    }
+
     pub fn new(state: Entity<AppState>, boot: EngineBootConfig, cx: &mut Context<Self>) -> Self {
         let observation = cx.observe(&state, |this: &mut Shell, state, cx| {
             this.on_state_changed(&state, cx);
@@ -1222,13 +1015,6 @@ impl Shell {
                         s.selected_chat
                             .as_deref()
                             .is_some_and(|id| s.indicator_for(id, Utc::now()) != Indicator::None)
-                            // The connection pill's retry countdown needs the
-                            // same per-second refresh while degraded.
-                            || matches!(
-                                s.connectivity.state,
-                                zeron_proto::ConnectivityState::Offline
-                                    | zeron_proto::ConnectivityState::Reconnecting
-                            )
                     };
                     if live {
                         cx.notify();
@@ -1239,8 +1025,12 @@ impl Shell {
                 }
             }
         });
-        let data_dir = boot.data_dir.clone();
-        let settings = settings::current(cx);
+        let mut settings = settings::current(cx);
+        if state.read(cx).keiki_client.is_some()
+            && settings.sidebar_organization == SidebarOrganization::InOneList
+        {
+            settings.sidebar_organization = SidebarOrganization::ByAgent;
+        }
         state.update(cx, |state, cx| {
             state.set_change_requests_visible(settings.sidebar_show_pull_request, cx)
         });
@@ -1250,16 +1040,13 @@ impl Shell {
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors.
         let route = match std::env::var("ZERON_OPEN_ROUTE").ok().as_deref() {
-            Some("settings") | Some("settings/devices") => {
-                Route::Settings(SettingsSection::Devices)
+            Some("settings") | Some("settings/devices") | Some("settings/appearance") => {
+                Route::Settings(SettingsSection::Appearance)
             }
-            Some("settings/agents") => Route::Settings(SettingsSection::Agents),
-            Some("settings/harnesses") => Route::Settings(SettingsSection::Harnesses),
-            Some("settings/appearance") => Route::Settings(SettingsSection::Appearance),
             Some("settings/notifications") => Route::Settings(SettingsSection::Notifications),
             Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
             Some("settings/archived") => Route::Settings(SettingsSection::Archived),
-            // `new` pins the new-chat canvas (suppresses boot auto-select).
+            // `new` suppresses boot auto-select and leaves the empty state.
             Some("new") => {
                 state.update(cx, |s, _| s.auto_selected = true);
                 Route::Chat
@@ -1267,8 +1054,7 @@ impl Shell {
             _ => Route::Chat,
         };
         // More capture knobs of the same kind: `ZERON_OPEN_DIALOG=rename|delete`
-        // opens that dialog for the first chat once chats land; `=model` pops
-        // the combined harness/model menu once the shell is Ready;
+        // opens that dialog for the first chat once chats land;
         // `ZERON_FORCE_GATE=signin|org|failed` renders that gate regardless of
         // real auth state (display-only — for styling passes).
         let debug_dialog = std::env::var("ZERON_OPEN_DIALOG").ok();
@@ -1277,10 +1063,9 @@ impl Shell {
         // ring) — display-only; a real upload can't be paused for a capture.
         let debug_upload = std::env::var("ZERON_DEMO_UPLOAD").ok();
         let debug_gate = match std::env::var("ZERON_FORCE_GATE").ok().as_deref() {
-            Some("signin") => Some(GatePhase::SignIn),
-            Some("org") => Some(GatePhase::OrgGate),
+            Some("signin") => None,
             Some("failed") => Some(GatePhase::Failed(
-                "Could not reach the zeron engine on port 27901".into(),
+                "Could not reach the Keiki engine on port 27901".into(),
             )),
             _ => None,
         };
@@ -1314,13 +1099,10 @@ impl Shell {
             right_tab_scroll: gpui::ScrollHandle::new(),
             route,
             nav,
-            devices_page: None,
             archived_page: None,
             appearance_page: None,
             notifications_page: None,
             shortcuts_page: None,
-            accounts_page: None,
-            harnesses_page: None,
             shortcuts_sub: None,
             notifications_sub: None,
             chat_menu: popover::Popup::default(),
@@ -1330,6 +1112,7 @@ impl Shell {
             rename_space_dialog: None,
             delete_space_confirm: None,
             add_space: None,
+            keiki_agent_dialog: None,
             spaces_menu: popover::Popup::default(),
             sidebar_view_menu: popover::Popup::default(),
             sidebar_view_trigger_focus: cx.focus_handle().tab_stop(true),
@@ -1339,20 +1122,9 @@ impl Shell {
             sound_prev: std::collections::HashMap::new(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
-            update_flow: UpdateFlow::Idle,
-            update_task: None,
-            update_dismissed: None,
-            install: zeron_update::detect_install(),
-            org: None,
-            sync_flow: SyncFlow::Idle,
+            copilot_synced_token: None,
             mutate_task: None,
-            auth_task: None,
-            runtime_change_task: None,
-            runtime_change_error: None,
-            import_task: None,
-            import_current: None,
             boot,
-            data_dir,
             settings,
             panels: SessionPanels::default(),
             active_chat: String::new(),
@@ -1384,6 +1156,8 @@ impl Shell {
             splash_task: None,
             focus_sub: None,
             activation_sub: None,
+            avatar_loads: std::collections::HashMap::new(),
+            avatar_retries: std::collections::HashMap::new(),
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
@@ -1394,35 +1168,40 @@ impl Shell {
     // ---- splash ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
-        if let Some(notice) = state.update(cx, |state, _| state.take_deep_link_notice()) {
-            self.sidebar_notice = Some(notice.into());
-        }
-        let next_sync_flow = {
-            let state = state.read(cx);
-            sync_flow_after_auth(self.sync_flow, state.workspace_scope, state.auth.as_ref())
-        };
-        if next_sync_flow != self.sync_flow {
-            self.sync_flow = next_sync_flow;
-            if matches!(
-                self.sync_flow,
-                SyncFlow::RestartPending { .. } | SyncFlow::SwitchOffer { .. }
-            ) {
-                self.org = None;
+        let copilot_sync = {
+            let current = state.read(cx);
+            if current.keiki_token.is_none() {
+                self.copilot_synced_token = None;
+                None
+            } else {
+                match (
+                    current.keiki_token.as_ref(),
+                    current.keiki_client.clone(),
+                    current.engine(),
+                ) {
+                    (Some(token), Some(client), Some(_)) => {
+                        let access_token = token.access_token().to_string();
+                        if self.copilot_synced_token.as_deref() == Some(access_token.as_str()) {
+                            None
+                        } else {
+                            Some((client, token.clone(), access_token))
+                        }
+                    }
+                    _ => None,
+                }
             }
-        }
-        // The in-place local→synced switch: once the replacement runtime is
-        // attached and Ready, kick the import (or finish) from here.
-        self.drive_sync_switch(cx);
-        let signed_out_synced = {
-            let state = state.read(cx);
-            state.workspace_scope == Some(WorkspaceScope::Synced)
-                && matches!(state.auth, Some(AuthState::SignedOut))
         };
-        // AuthStatus is shared by every viewport. Whichever viewport owns the
-        // embedded runtime drains it; remote viewports request daemon shutdown
-        // and all of them independently reattach to the new local runtime.
-        if signed_out_synced && self.runtime_change_task.is_none() {
-            self.start_local_runtime_transition(false, cx);
+        if let Some((client, token, access_token)) = copilot_sync {
+            let state = state.downgrade();
+            cx.spawn(async move |this, cx| {
+                if crate::keiki::sync_copilot_credentials(&state, &client, &token, cx).await {
+                    this.update(cx, |shell, _| {
+                        shell.copilot_synced_token = Some(access_token);
+                    })
+                    .ok();
+                }
+            })
+            .detach();
         }
         // Capture knob: the add-space palette needs only the device registry.
         if self.debug_dialog.as_deref() == Some("add-space") && !state.read(cx).devices.is_empty() {
@@ -1586,7 +1365,7 @@ impl Shell {
             self.space_boot_applied = true;
             if state.read(cx).selected_chat.is_none() {
                 // A set sidebar filter is an explicit standing choice — the
-                // canvas defaults (project AND its device) follow it, even
+                // sidebar context (project AND its device) follows it, even
                 // over a remembered "no project" opt-out. Otherwise the last
                 // selected project stands, unless opted out.
                 let exists = |id: &String| state.read(cx).space_row(id).is_some();
@@ -1629,7 +1408,7 @@ impl Shell {
         if selected != self.active_chat {
             self.active_chat = selected;
             // Route history: a chat switch is a navigation. The very first
-            // selection off the untouched boot canvas REPLACES that entry —
+            // selection off the untouched empty state REPLACES that entry —
             // zeron's `/` route redirected into the last-used chat, leaving no
             // dead Back target. Walking history lands here too, but the
             // destination already equals `current()`, so the push dedups.
@@ -1697,9 +1476,8 @@ impl Shell {
     /// The current chat's changes-pane flag (per-session, in-memory), gated on
     /// the space having git at all: a stale per-chat open flag must not reopen
     /// the pane after switching into a non-git space.
-    /// The per-session panel key. The new-chat canvas (no selection) keys per
-    /// SPACE — one shared "" key made a canvas toggle read as global state
-    /// (user report).
+    /// The per-session panel key. No selection keys per space so panel state
+    /// remains scoped to the visible sidebar context.
     fn panel_key(&self, cx: &App) -> String {
         if self.active_chat.is_empty() {
             let space = self
@@ -1716,9 +1494,8 @@ impl Shell {
 
     /// Whether the right pane shows. NOT gated on git any more: the pane is
     /// a surface HOST now (terminals work in any space), so only the Git
-    /// surface rows check `space_git_detected`. Still hidden on the
-    /// new-session canvas, where the titlebar carries no toggle to close it
-    /// again (an earlier user request).
+    /// surface rows check `space_git_detected`. Still hidden when no chat is
+    /// selected because there is no session to inspect.
     fn right_pane_open(&self, cx: &App) -> bool {
         !self.active_chat.is_empty() && self.panels.get(&self.panel_key(cx)).changes_open
     }
@@ -1996,7 +1773,7 @@ impl Shell {
     /// subagents watch the doc directly.
     fn add_subagent_surface(
         &mut self,
-        chat_id: String,
+        _chat_id: String,
         doc_id: String,
         title: String,
         frozen: bool,
@@ -2022,20 +1799,14 @@ impl Shell {
         let transcript =
             cx.new(|cx| Transcript::for_doc(self.state.clone(), doc_id.clone(), !frozen, cx));
         let events = cx.subscribe(&transcript, Self::on_transcript_event);
-        let fetch = if frozen {
-            self.spawn_subagent_snapshot_fetch(&chat_id, &doc_id, cx)
-        } else {
-            self.state
-                .update(cx, |s, cx| s.watch_subagent_doc(doc_id.clone(), cx));
-            None
-        };
+        self.state
+            .update(cx, |s, cx| s.watch_subagent_doc(doc_id.clone(), cx));
         self.subagent_tabs.insert(
             id,
             SubagentTab {
                 doc_id,
                 title: title.into(),
                 transcript,
-                _fetch: fetch,
                 _events: events,
             },
         );
@@ -2045,46 +1816,6 @@ impl Shell {
             .or_default()
             .push(RightSurface::Subagent(id));
         self.set_right_active(RightSurface::Subagent(id), cx);
-    }
-
-    /// Fetch a finished subagent's frozen transcript blob
-    /// (`{chat_id}/{doc_id}`); on ANY failure fall back to watching the doc
-    /// — the blob upload is best-effort engine-side.
-    fn spawn_subagent_snapshot_fetch(
-        &self,
-        chat_id: &str,
-        doc_id: &str,
-        cx: &mut Context<Self>,
-    ) -> Option<Task<()>> {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.state
-                .update(cx, |s, cx| s.watch_subagent_doc(doc_id.to_string(), cx));
-            return None;
-        };
-        let blob_ref = format!("{chat_id}/{doc_id}");
-        let state = self.state.clone();
-        let doc_id = doc_id.to_string();
-        Some(cx.spawn(async move |_, cx| {
-            let reply = crate::attachments::call_with_timeout(
-                &engine,
-                cx.background_executor(),
-                methods::FETCH_TOOL_BLOB,
-                serde_json::json!({ "blobRef": blob_ref }),
-                Duration::from_secs(20),
-            )
-            .await;
-            let entries: Option<Vec<zeron_doc::SessionMessageEntry>> = reply.ok().and_then(|v| {
-                let text = v.get("text")?.as_str()?.to_owned();
-                serde_json::from_str(&text).ok()
-            });
-            state.update(cx, |s, cx| {
-                match entries {
-                    Some(entries) => s.set_subagent_snapshot(doc_id, entries),
-                    None => s.watch_subagent_doc(doc_id, cx),
-                }
-                cx.notify();
-            });
-        }))
     }
 
     /// A surface tab's ✕. The active fallback happens naturally through
@@ -2270,47 +2001,52 @@ impl Shell {
         }
     }
 
+    fn toggle_keiki_conversation_pin(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        if !crate::keiki::is_keiki_chat(&chat_id) {
+            self.close_chat_menu(cx);
+            return;
+        }
+        let mut pinned = self.settings.pinned_keiki_conversations.clone();
+        {
+            let state = self.state.read(cx);
+            prune_pinned_keiki_conversations(&mut pinned, &state.chats);
+        }
+        if let Some(index) = pinned.iter().position(|id| id == &chat_id) {
+            pinned.remove(index);
+        } else {
+            pinned.push(chat_id);
+        }
+        self.settings.pinned_keiki_conversations = pinned.clone();
+        settings::update(SavePolicy::Immediate, cx, |current| {
+            current.pinned_keiki_conversations = pinned;
+        });
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
+    fn view_keiki_conversation(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let url = {
+            let state = self.state.read(cx);
+            state.keiki_client.as_ref().and_then(|client| {
+                crate::keiki::conversation_locator(&chat_id).and_then(|locator| {
+                    crate::keiki::conversation_dashboard_url(client.base_url(), &locator)
+                })
+            })
+        };
+        if let Some(url) = url {
+            cx.open_url(&url);
+        } else {
+            self.set_sidebar_notice("Keiki conversation is not ready yet");
+        }
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
     fn open_chat_copy_menu(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.chat_menu.open_mut() {
             menu.page = ChatMenuPage::Copy;
             cx.notify();
         }
-    }
-
-    fn copy_zeron_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
-        let link = {
-            let state = self.state.read(cx);
-            crate::links::workspace_locator(
-                state.workspace_scope,
-                state.auth.as_ref(),
-                state.local_device_id.as_deref(),
-            )
-            .map(|workspace| crate::links::zeron_conversation_link(chat_id, &workspace))
-        };
-        if let Some(link) = link {
-            cx.write_to_clipboard(ClipboardItem::new_string(link));
-            self.sidebar_notice = Some("Zeron conversation link copied".into());
-        } else {
-            self.sidebar_notice = Some("Conversation link is not ready yet".into());
-        }
-        self.close_chat_menu(cx);
-        cx.notify();
-    }
-
-    fn copy_harness_conversation_link(&mut self, chat_id: &str, cx: &mut Context<Self>) {
-        let link = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == chat_id)
-            .and_then(crate::links::harness_conversation_link);
-        if let Some(link) = link {
-            cx.write_to_clipboard(ClipboardItem::new_string(link.url));
-            self.sidebar_notice = Some(format!("{} copied", link.label).into());
-        }
-        self.close_chat_menu(cx);
-        cx.notify();
     }
 
     fn copy_harness_session_id(&mut self, chat_id: &str, cx: &mut Context<Self>) {
@@ -2330,11 +2066,6 @@ impl Shell {
     }
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
-        // Recreate per visit: the page's ListHarnesses load re-probes which
-        // CLIs are installed, so installing one shows up on the next open.
-        if section == SettingsSection::Harnesses {
-            self.harnesses_page = None;
-        }
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
         self.close_user_menu(cx);
@@ -2386,36 +2117,6 @@ impl Shell {
     /// Lazily create the entity for a settings section and return it renderable.
     fn settings_outlet(&mut self, section: SettingsSection, cx: &mut Context<Self>) -> AnyElement {
         match section {
-            SettingsSection::Devices => {
-                if self.devices_page.is_none() {
-                    let state = self.state.clone();
-                    self.devices_page = Some(cx.new(|cx| DevicesPage::new(state, cx)));
-                }
-                match &self.devices_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Harnesses => {
-                if self.harnesses_page.is_none() {
-                    let state = self.state.clone();
-                    self.harnesses_page = Some(cx.new(|cx| HarnessesPage::new(state, cx)));
-                }
-                match &self.harnesses_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Agents => {
-                if self.accounts_page.is_none() {
-                    let state = self.state.clone();
-                    self.accounts_page = Some(cx.new(|cx| AccountsPage::new(state, cx)));
-                }
-                match &self.accounts_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
             SettingsSection::Appearance => {
                 if self.appearance_page.is_none() {
                     self.appearance_page = Some(cx.new(AppearancePage::new));
@@ -2599,14 +2300,11 @@ impl Shell {
         self.open_chat(chat_id, cx);
     }
 
-    /// Whether an overlay that owns the keyboard is up — the add-space
-    /// palette or a composer picker popover (model selector, traits, repo,
-    /// branch…). Session-nav shortcuts (cycle/jump/archive) go quiet
-    /// underneath one: gpui runs a matched binding before any `on_key_down`,
-    /// so an unguarded jump would switch sessions UNDER the open popover,
-    /// stranding it over a session the user never picked.
-    pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
-        self.add_space.is_some() || self.composer.read(cx).pickers().read(cx).is_open()
+    /// Whether the add-space palette owns the keyboard. GPUI runs a matched
+    /// binding before any `on_key_down`, so session-navigation shortcuts must
+    /// stay quiet underneath it.
+    pub(super) fn overlay_owns_keyboard(&self, _cx: &App) -> bool {
+        self.add_space.is_some()
     }
 
     /// Track the held modifiers so the sidebar can show its jump hints. Only a
@@ -2647,554 +2345,8 @@ impl Shell {
         cx.notify();
     }
 
-    fn request_sign_out(&mut self, cx: &mut Context<Self>) {
-        self.close_user_menu(cx);
-        if self.state.read(cx).workspace_scope != Some(WorkspaceScope::Synced) {
-            return;
-        }
-        self.sync_flow = SyncFlow::SignOutConfirm;
-        cx.notify();
-    }
-
-    fn confirm_sign_out(&mut self, cx: &mut Context<Self>) {
-        self.start_local_runtime_transition(true, cx);
-    }
-
-    fn start_local_runtime_transition(&mut self, sign_out: bool, cx: &mut Context<Self>) {
-        if self.runtime_change_task.is_some() {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.runtime_change_error = Some("Engine not connected".into());
-            self.sync_flow = SyncFlow::SignedOutRestartRequired;
-            cx.notify();
-            return;
-        };
-        self.sync_flow = SyncFlow::SigningOut;
-        self.runtime_change_error = None;
-        let ipc_port = self.boot.ipc_port;
-        let data_dir = self.data_dir.clone();
-        let shutdown_dir = data_dir.clone();
-        let transition = Tokio::spawn(cx, async move {
-            if sign_out {
-                engine
-                    .client()
-                    .call(methods::SIGN_OUT, serde_json::json!({}))
-                    .await
-                    .map_err(|error| format!("Sign out failed: {error}"))?;
-            }
-            stop_synced_runtime(engine, ipc_port, &shutdown_dir).await
-        });
-        let state = self.state.clone();
-        let boot = self.boot.clone();
-        self.runtime_change_task = Some(cx.spawn(async move |this, cx| {
-            let result = match transition.await {
-                Ok(result) => result,
-                Err(error) => Err(error.to_string()),
-            };
-            this.update(cx, |shell, cx| {
-                shell.runtime_change_task = None;
-                match result {
-                    Ok(()) => {
-                        shell.sync_flow = SyncFlow::Idle;
-                        shell.runtime_change_error = None;
-                        shell.org = None;
-                        shell.route = Route::Chat;
-                        shell.space_boot_applied = false;
-                        state.update(cx, |state, cx| state.prepare_runtime_replacement(cx));
-                        AppState::bootstrap(state.clone(), boot, cx);
-                    }
-                    Err(error) => {
-                        shell.sync_flow = SyncFlow::SignedOutRestartRequired;
-                        shell.runtime_change_error = Some(error.into());
-                        cx.notify();
-                    }
-                }
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    fn cancel_auth_setup(&mut self, cx: &mut Context<Self>) {
-        let local = self.state.read(cx).workspace_scope == Some(WorkspaceScope::Local);
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let pending_auth = self.auth_task.take();
-        let pending_org = self.org.as_mut().and_then(|org| org.task.take());
-        if local {
-            self.sync_flow = SyncFlow::Canceling;
-        }
-        self.auth_task = Some(cx.spawn(async move |this, cx| {
-            // Do not race SignOut against an exchange or organization write
-            // that can still persist a session after credentials were cleared.
-            if let Some(task) = pending_auth {
-                task.await;
-            }
-            if let Some(task) = pending_org {
-                task.await;
-            }
-            let result = engine
-                .client()
-                .call(methods::SIGN_OUT, serde_json::json!({}))
-                .await;
-            this.update(cx, |shell, cx| {
-                match result {
-                    Ok(_) => {
-                        shell.org = None;
-                        if local {
-                            shell.sync_flow = SyncFlow::Idle;
-                        }
-                    }
-                    Err(err) => {
-                        if local {
-                            shell.sync_flow = SyncFlow::Enabling;
-                        }
-                        shell.sidebar_notice =
-                            Some(format!("Could not cancel sign-in: {err}").into());
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    fn postpone_sync_restart(&mut self, cx: &mut Context<Self>) {
-        match self.sync_flow {
-            SyncFlow::RestartPending { .. } => {
-                self.sync_flow = SyncFlow::RestartPending { notice_open: false };
-            }
-            SyncFlow::SwitchOffer { .. } => {
-                self.sync_flow = SyncFlow::SwitchOffer { notice_open: false };
-            }
-            SyncFlow::ImportFailed { .. } => {
-                self.sync_flow = SyncFlow::ImportFailed { notice_open: false };
-            }
-            _ => return,
-        }
-        cx.notify();
-    }
-
-    fn reopen_sync_notice(&mut self, cx: &mut Context<Self>) {
-        self.close_user_menu(cx);
-        match self.sync_flow {
-            SyncFlow::RestartPending { .. } => {
-                self.sync_flow = SyncFlow::RestartPending { notice_open: true };
-            }
-            SyncFlow::SwitchOffer { .. } => {
-                self.sync_flow = SyncFlow::SwitchOffer { notice_open: true };
-            }
-            SyncFlow::ImportFailed { .. } => {
-                self.sync_flow = SyncFlow::ImportFailed { notice_open: true };
-            }
-            _ => return,
-        }
-        cx.notify();
-    }
-
-    /// The wizard's choice step chose a path: stop the local runtime, boot the
-    /// synced one in-place (mirror of the sign-out transition), then let
-    /// [`Self::drive_sync_switch`] run the import once the runtime is ready.
-    /// Failure falls back to the quit-and-reopen dialog — the local profile is
-    /// untouched, so the old path is always a safe exit.
-    fn start_synced_switch(&mut self, import: bool, cx: &mut Context<Self>) {
-        if self.runtime_change_task.is_some() {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.runtime_change_error = Some("Engine not connected".into());
-            self.sync_flow = SyncFlow::RestartPending { notice_open: true };
-            cx.notify();
-            return;
-        };
-        self.sync_flow = SyncFlow::Switching { import };
-        self.runtime_change_error = None;
-        self.import_current = None;
-        let ipc_port = self.boot.ipc_port;
-        let data_dir = self.data_dir.clone();
-        let transition = Tokio::spawn(cx, async move {
-            stop_synced_runtime(engine, ipc_port, &data_dir).await
-        });
-        let state = self.state.clone();
-        let boot = self.boot.clone();
-        self.runtime_change_task = Some(cx.spawn(async move |this, cx| {
-            let result = match transition.await {
-                Ok(result) => result,
-                Err(error) => Err(error.to_string()),
-            };
-            this.update(cx, |shell, cx| {
-                shell.runtime_change_task = None;
-                match result {
-                    Ok(()) => {
-                        // Keep `Switching { import }`: the state observer sees
-                        // the replacement runtime reach Ready and advances the
-                        // wizard from there.
-                        shell.org = None;
-                        shell.route = Route::Chat;
-                        shell.space_boot_applied = false;
-                        state.update(cx, |state, cx| state.prepare_runtime_replacement(cx));
-                        AppState::bootstrap(state.clone(), boot, cx);
-                    }
-                    Err(error) => {
-                        shell.sync_flow = SyncFlow::RestartPending { notice_open: true };
-                        shell.runtime_change_error = Some(error.into());
-                        cx.notify();
-                    }
-                }
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    /// Advance the in-place switch when the replacement runtime lands: Ready +
-    /// Synced starts the import stream (or finishes immediately when the user
-    /// chose a fresh start); a runtime that comes back non-synced fell out of
-    /// the swap — surface the quit fallback rather than pretend.
-    fn drive_sync_switch(&mut self, cx: &mut Context<Self>) {
-        let SyncFlow::Switching { import } = self.sync_flow else {
-            return;
-        };
-        if self.runtime_change_task.is_some() {
-            return; // still stopping the local runtime
-        }
-        let (ready, scope) = {
-            let state = self.state.read(cx);
-            (
-                matches!(state.connection, ConnectionStatus::Ready),
-                state.workspace_scope,
-            )
-        };
-        if !ready {
-            if let ConnectionStatus::Failed(error) = &self.state.read(cx).connection {
-                self.sync_flow = SyncFlow::RestartPending { notice_open: true };
-                self.runtime_change_error = Some(error.clone().into());
-                cx.notify();
-            }
-            return;
-        }
-        match scope {
-            Some(WorkspaceScope::Synced) => {
-                if import {
-                    self.spawn_local_import(cx);
-                } else {
-                    self.sync_flow = SyncFlow::Idle;
-                    cx.notify();
-                }
-            }
-            Some(_) => {
-                self.sync_flow = SyncFlow::RestartPending { notice_open: true };
-                self.runtime_change_error =
-                    Some("The synced workspace did not come up — restart to finish.".into());
-                cx.notify();
-            }
-            None => {}
-        }
-    }
-
-    /// Subscribe to the engine's one-time import stream and mirror its
-    /// progress into the wizard.
-    fn spawn_local_import(&mut self, cx: &mut Context<Self>) {
-        if self.import_task.is_some() {
-            return;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.sync_flow = SyncFlow::RestartPending { notice_open: true };
-            self.runtime_change_error = Some("Engine not connected".into());
-            cx.notify();
-            return;
-        };
-        self.sync_flow = SyncFlow::Importing { done: 0, total: 0 };
-        self.runtime_change_error = None;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-        let stream = Tokio::spawn(cx, async move {
-            let mut items = engine
-                .client()
-                .subscribe(methods::IMPORT_LOCAL_WORKSPACE, serde_json::json!({}))
-                .await
-                .map_err(|error| error.to_string())?;
-            while let Some(item) = items.recv().await {
-                let _ = tx.send(item);
-            }
-            Ok::<(), String>(())
-        });
-        self.import_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let item = rx.recv().await;
-                let ended = item.is_none();
-                this.update(cx, |shell, cx| {
-                    if let Some(item) = &item {
-                        shell.apply_import_event(item, cx);
-                    }
-                    if ended {
-                        shell.import_task = None;
-                        shell.import_current = None;
-                        // A stream that died before its summary is a failure —
-                        // offer the in-place retry (idempotent).
-                        if matches!(shell.sync_flow, SyncFlow::Importing { .. }) {
-                            shell.sync_flow = SyncFlow::ImportFailed { notice_open: true };
-                            shell.runtime_change_error =
-                                Some("The import stream ended before it finished.".into());
-                        }
-                        cx.notify();
-                    }
-                })
-                .ok();
-                if ended {
-                    break;
-                }
-            }
-            if let Ok(Err(error)) = stream.await {
-                this.update(cx, |shell, cx| {
-                    shell.import_task = None;
-                    if matches!(shell.sync_flow, SyncFlow::Importing { .. }) {
-                        shell.sync_flow = SyncFlow::ImportFailed { notice_open: true };
-                        shell.runtime_change_error = Some(error.into());
-                        cx.notify();
-                    }
-                })
-                .ok();
-            }
-        }));
-        cx.notify();
-    }
-
-    fn apply_import_event(&mut self, item: &serde_json::Value, cx: &mut Context<Self>) {
-        match item.get("kind").and_then(|k| k.as_str()) {
-            Some("start") => {
-                let total = item.get("chats").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                self.sync_flow = SyncFlow::Importing { done: 0, total };
-            }
-            Some("chat") => {
-                let index = item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let total = item.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                self.import_current = item
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map(|t| SharedString::from(t.to_string()));
-                self.sync_flow = SyncFlow::Importing { done: index, total };
-            }
-            Some("summary") => {
-                self.import_current = None;
-                // A summary with errors is a FAILED import, however normally
-                // the stream ended — never present a partial migration as
-                // complete (the engine keeps collecting per-item failures
-                // precisely so this can be surfaced).
-                match import_summary_outcome(item) {
-                    Ok((imported, skipped)) => {
-                        self.sync_flow = SyncFlow::ImportDone { imported, skipped };
-                    }
-                    Err(message) => {
-                        self.sync_flow = SyncFlow::ImportFailed { notice_open: true };
-                        self.runtime_change_error = Some(message.into());
-                    }
-                }
-            }
-            _ => return,
-        }
-        cx.notify();
-    }
-
-    fn quit_for_runtime_change(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            self.runtime_change_error = Some("Engine not connected".into());
-            cx.notify();
-            return;
-        };
-        if engine.mode() == EngineMode::InProcess {
-            cx.quit();
-            return;
-        }
-        if self.runtime_change_task.is_some() {
-            return;
-        }
-
-        self.runtime_change_error = None;
-        let ipc_port = self.boot.ipc_port;
-        let data_dir = self.data_dir.clone();
-        let shutdown = Tokio::spawn(cx, async move {
-            engine
-                .client()
-                .call(methods::STOP_ENGINE, serde_json::json!({}))
-                .await
-                .map_err(|err| err.to_string())?;
-            wait_for_remote_engine_shutdown(ipc_port, &data_dir, RUNTIME_CHANGE_TIMEOUT).await
-        });
-        self.runtime_change_task = Some(cx.spawn(async move |this, cx| {
-            let result = match shutdown.await {
-                Ok(result) => result,
-                Err(err) => Err(err.to_string()),
-            };
-            this.update(cx, |shell, cx| {
-                shell.runtime_change_task = None;
-                match result {
-                    Ok(_) => cx.quit(),
-                    Err(err) => {
-                        shell.runtime_change_error = Some(format!(
-                            "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Zeron."
-                        ).into());
-                        cx.notify();
-                    }
-                }
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    fn start_sign_in(&mut self, cx: &mut Context<Self>) {
-        let scope = self.state.read(cx).workspace_scope;
-        if scope == Some(WorkspaceScope::Development) {
-            return;
-        }
-        self.close_user_menu(cx);
-        if scope == Some(WorkspaceScope::Local) {
-            self.sync_flow = SyncFlow::Enabling;
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        self.auth_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::SIGN_IN, serde_json::json!({}))
-                .await;
-            this.update(cx, |shell, cx| match result {
-                Ok(value) => {
-                    if let Some(url) = value.get("url").and_then(|u| u.as_str()) {
-                        cx.open_url(url);
-                    }
-                    cx.notify();
-                }
-                Err(err) => {
-                    if scope == Some(WorkspaceScope::Local) && shell.sync_flow == SyncFlow::Enabling
-                    {
-                        shell.sync_flow = SyncFlow::Idle;
-                    }
-                    shell.sidebar_notice = Some(format!("Sign in failed: {err}").into());
-                    cx.notify();
-                }
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    // ---- org gate ----
-
-    fn ensure_org_ui(&mut self, cx: &mut Context<Self>) {
-        if self.org.is_some() {
-            return;
-        }
-        let name_input = cx.new(|cx| ComposerInput::new("Workspace name", cx));
-        let events = cx.subscribe(&name_input, |this: &mut Shell, _, event, cx| {
-            if matches!(event, ComposerInputEvent::Submitted) {
-                this.create_org(cx);
-            }
-        });
-        self.org = Some(OrgGateUi {
-            name_input,
-            orgs: Loadable::Idle,
-            submitting: false,
-            error: None,
-            task: None,
-            _events: events,
-        });
-        self.load_orgs(cx);
-    }
-
-    fn load_orgs(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let Some(org) = self.org.as_mut() else { return };
-        org.orgs = Loadable::Loading;
-        org.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::LIST_ORGS, serde_json::json!({}))
-                .await;
-            this.update(cx, |shell, cx| {
-                if let Some(org) = shell.org.as_mut() {
-                    org.orgs = match result {
-                        Ok(value) => Loadable::Ready(sort_memberships(parse_orgs(&value))),
-                        Err(err) => Loadable::Error(err.to_string()),
-                    };
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    fn create_org(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let Some(org) = self.org.as_mut() else { return };
-        if org.submitting {
-            return;
-        }
-        let name = org.name_input.read(cx).text().trim().to_string();
-        if !org_name_valid(&name) {
-            org.error = Some("Enter a workspace name".into());
-            cx.notify();
-            return;
-        }
-        org.submitting = true;
-        org.error = None;
-        org.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::CREATE_ORG, serde_json::json!({ "name": name }))
-                .await;
-            this.update(cx, |shell, cx| {
-                if let Some(org) = shell.org.as_mut() {
-                    org.submitting = false;
-                    if let Err(err) = result {
-                        org.error = Some(format!("{err}").into());
-                    }
-                    // Success: the AuthStatus stream flips to SignedIn and the
-                    // gate falls away on its own.
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    fn select_org(&mut self, organization_id: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let Some(org) = self.org.as_mut() else { return };
-        org.submitting = true;
-        org.error = None;
-        org.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(
-                    methods::SELECT_ORG,
-                    serde_json::json!({ "organizationId": organization_id }),
-                )
-                .await;
-            this.update(cx, |shell, cx| {
-                if let Some(org) = shell.org.as_mut() {
-                    org.submitting = false;
-                    if let Err(err) = result {
-                        org.error = Some(format!("{err}").into());
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
+    fn start_keiki_sign_in(&mut self, cx: &mut Context<Self>) {
+        crate::keiki::begin_sign_in(self.state.clone(), "manage", cx);
     }
 
     // ---- render pieces ----
@@ -3406,10 +2558,7 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
-        // The titlebar is the single owner of the new-session action in both
-        // sidebar states. Hide it on the new-session canvas: opening another
-        // blank canvas from an already blank canvas has no effect and used to
-        // leave two competing + placements across the responsive variants.
+        // The titlebar owns Copilot session creation on the chat route.
         let plus_alpha = self.titlebar_plus_alpha(cx);
         let show_plus = plus_alpha > 0.01;
         div()
@@ -3475,13 +2624,9 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The titlebar owns new-session creation regardless of sidebar state. It
-    /// is useful only while an existing session is selected.
-    pub(super) fn titlebar_plus_alpha(&self, cx: &App) -> f32 {
-        titlebar_new_session_alpha(
-            matches!(self.route, Route::Chat),
-            self.state.read(cx).selected_chat.is_some(),
-        )
+    /// The titlebar owns Copilot session creation on the chat route.
+    pub(super) fn titlebar_plus_alpha(&self, _cx: &App) -> f32 {
+        titlebar_new_session_alpha(matches!(self.route, Route::Chat))
     }
 
     /// Native Windows caption controls integrated into Zeron's unified
@@ -3703,9 +2848,6 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let section_icon = |item: SettingsSection| match item {
-            SettingsSection::Devices => icons::MONITOR,
-            SettingsSection::Harnesses => icons::WIDGET,
-            SettingsSection::Agents => icons::KEY_MINIMALISTIC,
             SettingsSection::Appearance => icons::TUNING,
             SettingsSection::Notifications => icons::BELL,
             SettingsSection::Shortcuts => icons::KEYBOARD,
@@ -3804,12 +2946,123 @@ impl Shell {
             .into_any_element()
     }
 
+    fn avatar_element(
+        &mut self,
+        agent_id: &str,
+        element_id: SharedString,
+        state: keiki_model::AvatarState,
+        rendered_px: f32,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let bucket = keiki_api::avatar_size_bucket((rendered_px * 2.0).round() as u32);
+        let key = AvatarKey::new(agent_id, state, avatars::avatar_theme(theme), bucket);
+        let snapshot = avatars::snapshot(&key);
+        match snapshot {
+            AvatarSnapshot::Loaded(image) => div()
+                .size(px(rendered_px))
+                .flex_none()
+                .child(
+                    gpui::img(image)
+                        .id(element_id)
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
+                .into_any_element(),
+            AvatarSnapshot::Loading => {
+                if avatars::begin_load(&key) {
+                    self.spawn_avatar_load(key, cx);
+                }
+                div().size(px(rendered_px)).flex_none().into_any_element()
+            }
+            AvatarSnapshot::Error { retry_in } => {
+                if avatars::begin_load(&key) {
+                    self.spawn_avatar_load(key.clone(), cx);
+                }
+                self.schedule_avatar_retry(key, retry_in, cx);
+                div().size(px(rendered_px)).flex_none().into_any_element()
+            }
+        }
+    }
+
+    fn spawn_avatar_load(&mut self, key: AvatarKey, cx: &mut Context<Self>) {
+        let Some(client) = self.state.read(cx).keiki_client.clone() else {
+            avatars::store_error(&key);
+            return;
+        };
+        let task_key = key.clone();
+        let load_key = key.clone();
+        let cleanup_key = key.clone();
+        let generation = avatars::generation();
+        let task = cx.spawn(async move |this, cx| {
+            let request = cx.update(|cx| {
+                let request_client = client.clone();
+                let request_key = task_key.clone();
+                gpui_tokio::Tokio::spawn(cx, async move {
+                    request_client
+                        .agent_avatar(
+                            &request_key.agent_id,
+                            request_key.bucket,
+                            request_key.state,
+                            request_key.theme,
+                        )
+                        .await
+                })
+            });
+            match request.await {
+                Ok(Ok(bytes)) => {
+                    if avatars::generation() == generation {
+                        avatars::store_loaded(load_key.clone(), bytes);
+                    }
+                }
+                Ok(Err(error)) => {
+                    if avatars::generation() == generation {
+                        tracing::warn!(%error, agent_id = %load_key.agent_id, "Keiki avatar request failed");
+                        avatars::store_error(&load_key);
+                    }
+                }
+                Err(error) => {
+                    if avatars::generation() == generation {
+                        tracing::warn!(%error, agent_id = %load_key.agent_id, "Keiki avatar request task failed");
+                        avatars::store_error(&load_key);
+                    }
+                }
+            }
+            if let Err(error) = this.update(cx, |shell, cx| {
+                shell.avatar_loads.remove(&cleanup_key);
+                cx.notify();
+            }) {
+                tracing::debug!(%error, "Keiki avatar shell update skipped");
+            }
+        });
+        self.avatar_loads.insert(key, task);
+    }
+
+    fn schedule_avatar_retry(&mut self, key: AvatarKey, delay: Duration, cx: &mut Context<Self>) {
+        if delay == Duration::MAX || self.avatar_retries.contains_key(&key) {
+            return;
+        }
+        let wake = key.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(delay + Duration::from_millis(60))
+                .await;
+            if let Err(error) = this.update(cx, |shell, cx| {
+                shell.avatar_retries.remove(&wake);
+                cx.notify();
+            }) {
+                tracing::debug!(%error, "Keiki avatar retry update skipped");
+            }
+        });
+        self.avatar_retries.insert(key, task);
+    }
+
     /// One session row: context + status on line one, harness + title on line
     /// two, and source metadata below. Working uses the live thread glyph in
     /// the status corner. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
-        &self,
+        &mut self,
         id: String,
         title: SharedString,
         time_ago: SharedString,
@@ -3835,6 +3088,18 @@ impl Shell {
         // ARCHIVE button (UNARCHIVE on rows in the sidebar's archived
         // accordion), t3code's settle-on-hover.
         let corner_hovered = self.chat_status_hover.as_deref() == Some(id.as_str());
+        let keiki_agent_id =
+            crate::keiki::conversation_locator(&id).and_then(|locator| locator.agent_id);
+        let keiki_avatar = keiki_agent_id.as_deref().map(|agent_id| {
+            self.avatar_element(
+                agent_id,
+                format!("keiki-avatar-{id}").into(),
+                crate::avatars::avatar_state(status),
+                SIDEBAR_KEIKI_AVATAR_SIZE,
+                theme,
+                cx,
+            )
+        });
         // Send-truth overrides: a send unadopted past the grace window is
         // FAILED (explicit, with the transcript's retry affordance); a send
         // whose delivery path is degraded is QUEUED, not Working — the
@@ -3842,10 +3107,7 @@ impl Shell {
         let (queued, undelivered) = {
             let now = Utc::now();
             let state = self.state.read(cx);
-            (
-                state.send_queued(&id, now),
-                state.send_undelivered(&id, now),
-            )
+            (false, state.send_undelivered(&id, now))
         };
         let status_color = if undelivered {
             theme.danger
@@ -3863,7 +3125,7 @@ impl Shell {
                 zeron_proto::ChatIndicator::Working => Some("Working"),
                 zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
                 zeron_proto::ChatIndicator::Errored => Some("Failed"),
-                zeron_proto::ChatIndicator::Completed => Some("Done"),
+                zeron_proto::ChatIndicator::Completed => None,
                 zeron_proto::ChatIndicator::Idle => None,
             }
         };
@@ -3935,49 +3197,52 @@ impl Shell {
                 )
                 .into_any_element()
         } else {
+            // Glyphs keep their own slot so completed rows can show the check
+            // without manufacturing a text gap or falling through to time.
+            let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
+                icon(icons::CHECK)
+                    .size(px(11.0))
+                    .flex_none()
+                    .text_color(status_color)
+                    .into_any_element()
+            } else if working {
+                loaders::mini_glyph_spinner(
+                    format!("chat-working-{id}"),
+                    2.0,
+                    theme.glyph,
+                    cx.entity_id(),
+                    cx,
+                )
+                .into_any_element()
+            } else {
+                div()
+                    .size(px(6.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(status_color)
+                    .into_any_element()
+            };
             match status_label {
-                Some(label) => {
-                    // Glyph slot: Working wears the preset's animated pixel
-                    // glyph beside its label, Done wears the check, and the
-                    // remaining statuses use a compact dot.
-                    let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
-                        icon(icons::CHECK)
-                            .size(px(11.0))
-                            .flex_none()
-                            .text_color(status_color)
-                            .into_any_element()
-                    } else if working {
-                        loaders::mini_glyph_spinner(
-                            format!("chat-working-{id}"),
-                            2.0,
-                            theme.glyph,
-                            cx.entity_id(),
-                            cx,
-                        )
-                        .into_any_element()
-                    } else {
+                Some(label) => div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(glyph)
+                    .child(
                         div()
-                            .size(px(6.0))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(status_color)
-                            .into_any_element()
-                    };
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(glyph)
-                        .child(
-                            div()
-                                .text_size(crate::typography::ui_rems(10.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(status_color)
-                                .child(SharedString::from(label)),
-                        )
-                        .into_any_element()
-                }
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(status_color)
+                            .child(SharedString::from(label)),
+                    )
+                    .into_any_element(),
+                None if status == zeron_proto::ChatIndicator::Completed => div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(glyph)
+                    .into_any_element(),
                 None => div()
                     .text_size(crate::typography::ui_rems(10.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
@@ -4110,8 +3375,12 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap(px(SIDEBAR_ACTIVE_HARNESS_TITLE_GAP))
+                    .when_some(keiki_avatar, |el, avatar| el.child(avatar))
                     .when_some(
-                        harness.map(crate::pickers::harness_brand_icon),
+                        keiki_agent_id
+                            .is_none()
+                            .then(|| harness.map(crate::pickers::harness_brand_icon))
+                            .flatten(),
                         |el, (path, tint)| {
                             el.child(
                                 icon(path)
@@ -4183,81 +3452,20 @@ impl Shell {
     /// no border (v0.2.12 feedback): a bare spinner + faint caption while
     /// reconnecting; an amber dot only when the OS says offline. The
     /// transport error belongs in logs, not the sidebar.
-    fn render_connection_pill(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use zeron_proto::ConnectivityState as S;
-        let conn = self.state.read(cx).connectivity.clone();
-        let (label, glyph): (SharedString, AnyElement) = match conn.state {
-            S::Disabled | S::Connected => return None,
-            S::Offline => (
-                "Offline — sends are saved".into(),
-                div()
-                    .size(px(5.0))
-                    .rounded_full()
-                    .bg(theme.warning)
-                    .into_any_element(),
-            ),
-            S::Reconnecting => (
-                "Reconnecting…".into(),
-                loaders::mini_mono_spinner(
-                    "connection-spinner",
-                    2.0,
-                    theme.text_muted,
-                    cx.entity_id(),
-                    cx,
-                )
-                .into_any_element(),
-            ),
-        };
-        Some(
-            crate::motion::fade_in(
-                "connection-pill",
-                div()
-                    .id("connection-pill")
-                    .mx(px(Theme::SPACE_SM + 4.0))
-                    .mb(px(Theme::SPACE_SM))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(glyph)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(theme.text_faint)
-                            .child(label),
-                    ),
-            )
-            .into_any_element(),
-        )
+    fn render_connection_pill(
+        &self,
+        _theme: &Theme,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
     }
 
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let (user, workspace_scope) = {
-            let state = self.state.read(cx);
-            (state.auth_user().cloned(), state.workspace_scope)
-        };
-
-        // Keyed rows: (stable key, estimated height, element) — the key + height
-        // list drives the §1.6 resort FLIP diff below (attention-bucket
-        // promotions glide; cleared rows just go).
         let keyed: Vec<(String, f32, AnyElement)> = self.render_active_rows(theme, cx);
-
-        // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
-        // list changes (new activity resort, grouping flip), surviving rows
-        // glide from their old y to the new one — layout is already at the new
-        // position; the offset is a paint-only relative inset animated to 0
-        // over 260ms cubic-bezier(0.22,1,0.36,1). New rows fade in; removals
-        // just go (matching the original). First fill and chat switches (which
-        // don't reorder) never animate.
         let order: Vec<(String, f32)> = keyed.iter().map(|(k, h, _)| (k.clone(), *h)).collect();
         if self.sidebar_prev_order != order {
             let key_order_changed = sidebar_key_order_changed(&self.sidebar_prev_order, &order);
             if !self.sidebar_prev_order.is_empty() {
-                // A disclosure already animates its own body height. Applying
-                // FLIP offsets when only keyed heights change double-counts
-                // that movement, leaving gaps and momentary overlaps between
-                // the first group, following groups, and Archived.
                 let offsets = if key_order_changed {
                     resort_offsets(&self.sidebar_prev_order, &order, SIDEBAR_LIST_GAP)
                 } else {
@@ -4301,39 +3509,10 @@ impl Shell {
                 }
             })
             .collect();
-
-        // t3code's archived accordion, below the active list.
         let archived_section = self.render_archived_section(theme, cx);
-
-        let (user_line, trigger_subline, menu_identity): (
-            SharedString,
-            Option<SharedString>,
-            SharedString,
-        ) = match workspace_scope {
-            Some(WorkspaceScope::Local) => {
-                let line = if matches!(self.sync_flow, SyncFlow::RestartPending { .. }) {
-                    "Sync ready after restart"
-                } else {
-                    "Local only"
-                };
-                (line.into(), None, "Stored on this device".into())
-            }
-            Some(WorkspaceScope::Development) => (
-                "Development".into(),
-                Some("Local development runtime".into()),
-                "Authentication disabled".into(),
-            ),
-            Some(WorkspaceScope::Synced) | None => {
-                let line: SharedString = user
-                    .as_ref()
-                    .map(|u| u.name.clone().unwrap_or_else(|| u.email.clone()).into())
-                    .unwrap_or_else(|| SharedString::from("Not signed in"));
-                let email = user
-                    .as_ref()
-                    .map(|u| SharedString::from(u.email.clone()))
-                    .unwrap_or_else(|| line.clone());
-                (line, Some("Alpha".into()), email)
-            }
+        let (user_line, trigger_subline, menu_identity) = {
+            let state = self.state.read(cx);
+            account_identity(state.keiki_status, state.keiki_session.as_ref())
         };
         let user_menu =
             self.render_user_menu(user_line.clone(), trigger_subline, menu_identity, theme, cx);
@@ -4397,15 +3576,10 @@ impl Shell {
                 )
                 .fade_overflow_y(&self.sidebar_scroll),
             )
-            // Global connection pill (durable-by-design UI truth): appears
-            // whenever the edge posture is degraded; hidden while healthy —
-            // appearing IS the signal.
+            // Local connection state is rendered by the shell when the engine
+            // is booting or unavailable.
             .when_some(self.render_connection_pill(theme, cx), |el, pill| {
                 el.child(pill)
-            })
-            // Update strip (above the user menu; below the lists).
-            .when_some(self.render_update_strip(theme, cx), |el, strip| {
-                el.child(strip)
             })
             // Inline mutation-failure notice.
             .when_some(self.sidebar_notice.clone(), |el, notice| {
@@ -4433,139 +3607,158 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Update strip: shown above the user menu whenever the engine's
-    /// UpdateStatus stream reports a newer release. On a macOS bundle install
-    /// it drives the whole flow — click to download, then click to restart into
-    /// the staged bundle. Elsewhere (managed/source installs) it is advisory
-    /// (`zeron update`); click dismisses it for that version.
-    fn render_update_strip(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let status = self.state.read(cx).update.clone()?;
-        if !status.update_available {
-            return None;
-        }
-        let latest = status.latest_version.clone()?;
-        if self.update_dismissed.as_deref() == Some(latest.as_str()) {
-            return None;
-        }
-        let mac_app = matches!(self.install, zeron_update::InstallKind::MacApp { .. });
-
-        let (label, clickable): (SharedString, bool) = if mac_app {
-            match &self.update_flow {
-                UpdateFlow::Idle => (format!("Update available — v{latest}").into(), true),
-                UpdateFlow::Downloading => (format!("Downloading v{latest}…").into(), false),
-                UpdateFlow::Ready(_) => ("Update ready — restart to apply".into(), true),
-                UpdateFlow::Failed(message) => (format!("Update failed: {message}").into(), true),
-            }
-        } else {
-            (
-                format!("Update available — v{latest} · run `zeron update`").into(),
-                true,
-            )
-        };
-        let failed = matches!(self.update_flow, UpdateFlow::Failed(_));
-        let tone = if failed { theme.danger } else { theme.accent };
-        // Follow the selected spectrum with a low-emphasis glass tint rather
-        // than painting the bright text accent as a solid slab.
-        let (chip_bg, chip_bg_hover) = if failed {
-            (theme.danger.opacity(0.14), theme.danger.opacity(0.22))
-        } else {
-            (theme.accent_wash, theme.accent.opacity(0.16))
-        };
-
-        let mut strip = div()
-            .id("update-strip")
-            .mx(px(Theme::SPACE_SM))
-            // No bottom margin: the user-menu block below carries its own
-            // SPACE_SM padding — doubling it read as a hole (user report).
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .bg(chip_bg)
-            .flex()
-            .flex_row()
-            .items_center()
-            .text_size(crate::typography::ui_rems(11.0))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(tone)
-            .child(div().flex_1().min_w_0().child(label));
-        if clickable {
-            strip = strip
-                .cursor_pointer()
-                .hover(move |s| s.bg(chip_bg_hover))
-                .on_click(cx.listener(move |this, _, _, cx| this.on_update_strip_click(cx)));
-        }
-        Some(strip.into_any_element())
-    }
-
-    /// Idle → download; Ready → swap + relaunch; Failed → retry; advisory
-    /// installs → dismiss for this version.
-    fn on_update_strip_click(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.install, zeron_update::InstallKind::MacApp { .. }) {
-            self.update_dismissed = self
-                .state
-                .read(cx)
-                .update
-                .as_ref()
-                .and_then(|s| s.latest_version.clone());
-            cx.notify();
+    fn open_keiki_agent_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).keiki_status != crate::keiki::SessionStatus::SignedIn {
             return;
         }
-        match std::mem::replace(&mut self.update_flow, UpdateFlow::Idle) {
-            UpdateFlow::Idle | UpdateFlow::Failed(_) => self.begin_update_download(cx),
-            UpdateFlow::Downloading => self.update_flow = UpdateFlow::Downloading,
-            UpdateFlow::Ready(staged) => self.apply_staged_update(staged, cx),
-        }
-    }
-
-    /// Fetch the manifest and stage the new Zeron desktop bundle under the data dir
-    /// (tokio — reqwest); the strip flips to "restart to apply" when done.
-    fn begin_update_download(&mut self, cx: &mut Context<Self>) {
-        let edge_url = self.boot.edge_url.clone();
-        let data_dir = self.data_dir.clone();
-        self.update_flow = UpdateFlow::Downloading;
-        let download = Tokio::spawn(cx, async move {
-            let manifest = zeron_update::fetch_latest(&edge_url).await?;
-            zeron_update::stage_mac_app(&edge_url, &manifest, &data_dir).await
+        let name = cx.new(|cx| ComposerInput::new("Agent name", cx));
+        let line_number = cx.new(|cx| ComposerInput::new("Optional line number", cx));
+        self.keiki_agent_dialog = Some(KeikiAgentDialog {
+            templates: Loadable::Loading,
+            selected_template: None,
+            name,
+            line_number,
+            error: None,
+            focus_pending: true,
+            template_task: None,
+            create_task: None,
+            create_pending: false,
         });
-        self.update_task = Some(cx.spawn(async move |this, cx| {
-            let outcome = match download.await {
-                Ok(Ok(staged)) => Ok(staged),
-                Ok(Err(err)) => Err(format!("{err:#}")),
-                Err(join_err) => Err(join_err.to_string()),
-            };
-            this.update(cx, |shell, cx| {
-                shell.update_flow = match outcome {
-                    Ok(staged) => UpdateFlow::Ready(staged),
-                    Err(message) => {
-                        tracing::warn!(%message, "update download failed");
-                        UpdateFlow::Failed(message.into())
-                    }
+        let state = self.state.downgrade();
+        let task = cx.spawn(async move |this, cx| {
+            let result = crate::keiki::list_agent_templates(&state, cx).await;
+            if let Err(error) = this.update(cx, |shell, cx| {
+                let Some(dialog) = shell.keiki_agent_dialog.as_mut() else {
+                    return;
                 };
+                dialog.template_task = None;
+                match result {
+                    Ok(templates) => {
+                        dialog.templates = Loadable::Ready(templates);
+                        if let Some(template) = dialog.templates.ready().and_then(|v| v.first()) {
+                            dialog.selected_template = Some(0);
+                            dialog.name.update(cx, |input, cx| {
+                                input.set_text(template.name.clone(), cx);
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        dialog.templates = Loadable::Error(error.to_string());
+                    }
+                }
                 cx.notify();
-            })
-            .ok();
-        }));
+            }) {
+                tracing::error!("update Keiki template dialog: {error}");
+            }
+        });
+        if let Some(dialog) = self.keiki_agent_dialog.as_mut() {
+            dialog.template_task = Some(task);
+        }
         cx.notify();
     }
 
-    /// Swap the staged bundle over the installed one, arm the detached
-    /// relauncher, and quit — the relauncher `open`s the new bundle once this
-    /// process (and its engine lock / IPC port) is gone.
-    fn apply_staged_update(&mut self, staged: PathBuf, cx: &mut Context<Self>) {
-        let zeron_update::InstallKind::MacApp { bundle } = self.install.clone() else {
+    fn select_keiki_template(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_dialog.as_mut() else {
             return;
         };
-        match zeron_update::apply_mac_app(&staged, &bundle) {
-            Ok(()) => {
-                zeron_update::relaunch_app_after_exit(&bundle);
-                cx.quit();
-            }
-            Err(err) => {
-                tracing::error!(error = %err, "update apply failed");
-                self.update_flow = UpdateFlow::Failed(format!("{err:#}").into());
-                cx.notify();
-            }
+        let Some(template) = dialog.templates.ready().and_then(|v| v.get(index)).cloned() else {
+            return;
+        };
+        dialog.selected_template = Some(index);
+        dialog.name.update(cx, |input, cx| {
+            input.set_text(template.name, cx);
+        });
+        dialog.error = None;
+        cx.notify();
+    }
+
+    fn submit_keiki_agent(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.keiki_agent_dialog.as_mut() else {
+            return;
+        };
+        if dialog.create_pending {
+            return;
         }
+        let Some(index) = dialog.selected_template else {
+            dialog.error = Some("Select a template to continue.".into());
+            cx.notify();
+            return;
+        };
+        let Some(template) = dialog.templates.ready().and_then(|v| v.get(index)) else {
+            return;
+        };
+        let input = CreateAgentFromTemplate {
+            template: template.id.clone(),
+            name: {
+                let value = dialog.name.read(cx).text().trim().to_string();
+                (!value.is_empty()).then_some(value)
+            },
+            line_number: {
+                let value = dialog.line_number.read(cx).text().trim().to_string();
+                (!value.is_empty()).then_some(value)
+            },
+        };
+        dialog.create_pending = true;
+        dialog.error = None;
+        let state = self.state.downgrade();
+        let task = cx.spawn(async move |this, cx| {
+            let result = crate::keiki::create_agent_from_template(&state, input, cx).await;
+            let outcome = match result {
+                Ok(response) if response.ok => {
+                    let refresh = crate::keiki::refresh_keiki_snapshot(state.clone(), cx).await;
+                    refresh.map(|()| response)
+                }
+                Ok(_) => Err(keiki_api::Error::Local(
+                    "Keiki did not confirm that the agent was created".into(),
+                )),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = this.update(cx, |shell, cx| {
+                if shell.keiki_agent_dialog.is_none() {
+                    return;
+                }
+                if let Some(dialog) = shell.keiki_agent_dialog.as_mut() {
+                    dialog.create_task = None;
+                }
+                match outcome {
+                    Ok(response) => {
+                        let space_id = format!("{}{}", crate::keiki::AGENT_PREFIX, response.id);
+                        shell.keiki_agent_dialog = None;
+                        if let Err(error) = state.update(cx, |state, cx| {
+                            state.select_space(Some(space_id), cx);
+                        }) {
+                            tracing::error!("select newly created Keiki agent: {error}");
+                        }
+                        if !response.missing_secrets.is_empty() {
+                            let secrets = response
+                                .missing_secrets
+                                .iter()
+                                .map(|secret| secret.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            shell.sidebar_notice = Some(
+                                format!(
+                                    "Agent created. Add these secrets on onkeiki.com before it can run: {secrets}."
+                                )
+                                .into(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(dialog) = shell.keiki_agent_dialog.as_mut() {
+                            dialog.create_pending = false;
+                            dialog.error = Some(error.to_string().into());
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            {
+                tracing::error!("update Keiki agent creation dialog: {error}");
+            }
+        });
+        dialog.create_task = Some(task);
+        cx.notify();
     }
 
     /// Scope-aware sidebar identity and account menu. Local runtimes advertise
@@ -4579,9 +3772,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.user_menu.is_open();
-        let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
-        // Bottom-of-sidebar identity: avatar circle + scope/account label and
-        // its secondary status line.
+        let keiki_status = self.state.read(cx).keiki_status;
+        let keiki_error = self.state.read(cx).keiki_error.clone();
         let initial: SharedString = user_line
             .chars()
             .next()
@@ -4599,9 +3791,6 @@ impl Shell {
             .items_center()
             .gap(px(10.0))
             .cursor_pointer()
-            // user-menu.tsx trigger: hover `bg-white/[0.04]`, open state
-            // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`;
-            // the hover wash fades over `transition-colors`.
             .bg(if open {
                 theme.glass_hover()
             } else {
@@ -4617,8 +3806,6 @@ impl Shell {
                 cx.listener(|this, _, _, _| this.user_menu.note_trigger_press()),
             )
             .on_click(cx.listener(|this, _, _, cx| {
-                // A press that found the menu open closes it (the card's
-                // mouse-down-out already began the close) — never reopen.
                 if this.user_menu.take_press_was_open() {
                     this.close_user_menu(cx);
                 } else {
@@ -4627,7 +3814,6 @@ impl Shell {
                 cx.notify();
             }))
             .child(
-                // Avatar: white circle, initial in near-black (zeron user-menu.tsx).
                 div()
                     .size(px(28.0))
                     .flex_none()
@@ -4642,7 +3828,6 @@ impl Shell {
                     .child(initial),
             )
             .child(
-                // Name with an optional status line underneath — no chip on the right.
                 div()
                     .flex_1()
                     .min_w_0()
@@ -4655,7 +3840,7 @@ impl Shell {
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .truncate()
-                            .child(user_line.clone()),
+                            .child(user_line),
                     )
                     .when_some(trigger_subline, |identity, subline| {
                         identity.child(
@@ -4669,16 +3854,9 @@ impl Shell {
             );
         if self.user_menu.get().is_some() {
             let closing = self.user_menu.closing_since();
-            // user-menu.tsx content: `w-[--radix-dropdown-menu-trigger-width]`
-            // (exactly as wide as the trigger row — sidebar minus its p-2
-            // gutters), `flex-col gap-0.5`, then: one small muted email line
-            // (`px-2 pb-1 pt-1.5 text-[11px] text-muted-foreground/70`),
-            // the action selected by the runtime scope, then "Settings".
-            let menu = popover::popover_card(theme)
+            let mut menu = popover::popover_card(theme)
                 .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.close_user_menu(cx);
-                }))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_user_menu(cx)))
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
@@ -4691,459 +3869,279 @@ impl Shell {
                         .text_color(theme.text_muted.opacity(0.7))
                         .truncate()
                         .child(menu_identity),
-                )
-                .when_some(action, |menu, action| {
-                    let row = match action {
-                        AccountMenuAction::EnableSync => {
-                            popover::menu_row(theme, false, "user-menu-enable-sync")
-                                .id("user-menu-enable-sync")
-                                .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
-                                .child(
-                                    icon(icons::GLOBAL)
-                                        .size(px(16.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Enable sync"))
-                                .into_any_element()
-                        }
-                        AccountMenuAction::SyncInProgress => {
-                            popover::menu_row(theme, false, "user-menu-sync-progress")
-                                .id("user-menu-sync-progress")
-                                .opacity(0.6)
-                                .child(
-                                    icon(icons::GLOBAL)
-                                        .size(px(16.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Sync setup in progress"))
-                                .into_any_element()
-                        }
-                        AccountMenuAction::RestartPending => {
-                            popover::menu_row(theme, false, "user-menu-sync-restart")
-                                .id("user-menu-sync-restart")
-                                .on_click(cx.listener(|this, _, _, cx| this.reopen_sync_notice(cx)))
-                                .child(
-                                    icon(icons::RESTART)
-                                        .size(px(16.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Finish sync setup"))
-                                .into_any_element()
-                        }
-                        AccountMenuAction::SignOut => {
-                            popover::menu_row(theme, false, "user-menu-signout")
-                                .id("user-menu-signout")
-                                .on_click(cx.listener(|this, _, _, cx| this.request_sign_out(cx)))
-                                .child(
-                                    icon(icons::LOGOUT_2)
-                                        .size(px(16.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Sign out"))
-                                .into_any_element()
-                        }
-                    };
-                    menu.child(row).child(popover::menu_separator())
-                })
-                .child(
-                    popover::menu_row(theme, false, "user-menu-settings")
-                        .id("user-menu-settings")
+                );
+            if keiki_status == crate::keiki::SessionStatus::SignedIn {
+                menu = menu.child(
+                    popover::menu_row(theme, false, "user-menu-keiki-signout")
+                        .id("user-menu-keiki-signout")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.open_settings(SettingsSection::Devices, cx)
+                            crate::keiki::sign_out(this.state.clone(), cx).detach();
+                            this.close_user_menu(cx);
                         }))
                         .child(
-                            icon(icons::SETTINGS_MINIMALISTIC)
+                            icon(icons::LOGOUT_2)
                                 .size(px(16.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from("Settings")),
-                )
-                .into_any_element();
+                        .child(SharedString::from("Sign out of Keiki")),
+                );
+            } else {
+                let loading = keiki_status == crate::keiki::SessionStatus::Loading;
+                let row = popover::menu_row(theme, false, "user-menu-keiki-signin")
+                    .id("user-menu-keiki-signin")
+                    .when(!loading, |row| {
+                        row.on_click(cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)))
+                    })
+                    .when(loading, |row| row.opacity(0.6))
+                    .child(
+                        icon(icons::GLOBAL)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child(SharedString::from(if loading {
+                        "Opening Keiki…"
+                    } else {
+                        "Sign in to Keiki"
+                    }));
+                menu = menu.child(row).when_some(keiki_error, |menu, error| {
+                    menu.child(
+                        div()
+                            .px(px(8.0))
+                            .pb(px(4.0))
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.danger)
+                            .child(error),
+                    )
+                });
+            }
+            menu = menu.child(popover::menu_separator()).child(
+                popover::menu_row(theme, false, "user-menu-settings")
+                    .id("user-menu-settings")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_settings(SettingsSection::Appearance, cx)
+                    }))
+                    .child(
+                        icon(icons::SETTINGS_MINIMALISTIC)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child(SharedString::from("Settings")),
+            );
             trigger = trigger.child(popover::anchored_menu_above(
                 "user-menu-popover",
-                menu,
+                menu.into_any_element(),
                 closing,
             ));
         }
         trigger.into_any_element()
     }
 
-    fn render_sync_overlay(
+    fn render_keiki_agent_overlay(
         &mut self,
         viewport: gpui::Size<Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
-        let needs_org = matches!(
-            self.state.read(cx).auth.as_ref(),
-            Some(AuthState::NeedsOrganization { .. })
-        );
-        let remote_engine = self
-            .state
-            .read(cx)
-            .engine()
-            .is_some_and(|engine| matches!(engine.mode(), EngineMode::Remote { .. }));
-        let runtime_change_label = if self.runtime_change_task.is_some() {
-            "Stopping engine…"
-        } else if remote_engine {
-            "Stop daemon and quit"
-        } else {
-            "Quit Zeron"
-        };
-
-        if self.sync_flow == SyncFlow::Enabling && needs_org {
-            return Some(self.render_org_gate(cx));
+        let dialog = self.keiki_agent_dialog.as_mut()?;
+        if std::mem::take(&mut dialog.focus_pending) {
+            window.focus(&dialog.name.focus_handle(cx), cx);
         }
-
-        let signed_in_email: Option<SharedString> = match self.state.read(cx).auth.as_ref() {
-            Some(AuthState::SignedIn { user, .. }) => Some(SharedString::from(user.email.clone())),
-            _ => None,
-        };
-        // Spaces count as local work too: a projects-only profile must get
-        // the import choice, not a bare "Switch now".
-        let (local_chats, local_spaces) = {
-            let state = self.state.read(cx);
-            (state.chats.len(), state.spaces.len())
-        };
-        let work_phrase = local_work_phrase(local_chats, local_spaces);
-
-        let card = match self.sync_flow {
-            SyncFlow::Enabling => popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Enable sync"))
-                .child(
-                    div().mt(px(6.0)).child(popover::dialog_body(
-                        &theme,
-                        "Finish signing in in your browser. Zeron will keep using this local workspace until you quit and reopen.",
-                    )),
-                )
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
+        let selected = dialog.selected_template;
+        let busy = dialog.create_pending;
+        let name = dialog.name.clone();
+        let line_number = dialog.line_number.clone();
+        let templates = dialog.templates.clone();
+        let error = dialog.error.clone();
+        let template_body: AnyElement = match templates {
+            Loadable::Idle | Loadable::Loading => div()
+                .py(px(18.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted)
+                .child("Loading Keiki templates…")
+                .into_any_element(),
+            Loadable::Error(message) => div()
+                .py(px(8.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.danger_muted)
+                .child(SharedString::from(message))
+                .into_any_element(),
+            Loadable::Ready(templates) => div()
+                .id("keiki-template-list")
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .max_h(px(220.0))
+                .overflow_y_scroll()
+                .children(templates.into_iter().enumerate().map(|(index, template)| {
+                    let is_selected = selected == Some(index);
+                    popover::menu_row(&theme, is_selected, format!("keiki-template-{index}"))
+                        .id(("keiki-template", index))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_keiki_template(index, cx);
+                        }))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel", "sync-enable-cancel")
-                                .id("sync-enable-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_auth_setup(cx)
-                                })),
+                            div()
+                                .w(px(28.0))
+                                .flex_none()
+                                .text_size(crate::typography::ui_rems(18.0))
+                                .child(SharedString::from(template.emoji)),
                         )
                         .child(
-                            popover::btn_primary(&theme, "Open browser again")
-                                .id("sync-enable-open-browser")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.start_sign_in(cx)
-                                })),
-                        ),
-                )
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(13.0))
+                                        .text_color(theme.text)
+                                        .child(SharedString::from(template.name)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_muted)
+                                        .child(SharedString::from(template.blurb)),
+                                ),
+                        )
+                }))
                 .into_any_element(),
-            SyncFlow::Canceling => popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Canceling sync setup…"))
-                .child(
-                    div().mt(px(6.0)).child(popover::dialog_body(
-                        &theme,
-                        "Removing the partial sign-in before returning to your local workspace.",
-                    )),
+        };
+        let can_create = !busy
+            && dialog.templates.ready().is_some_and(|templates| {
+                selected.is_some_and(|index| templates.get(index).is_some())
+            });
+        let card = popover::dialog_card(&theme)
+            .w(px(500.0))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.keiki_agent_dialog = None;
+                    cx.notify();
+                }
+            }))
+            .child(popover::dialog_title(&theme, "New Keiki agent"))
+            .child(div().mt(px(6.0)).child(popover::dialog_body(
+                &theme,
+                "Choose a template, then customize the agent name and line.",
+            )))
+            .child(div().mt(px(12.0)).child(template_body))
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(popover::dialog_field(name.into_any_element()))
+                    .child(popover::dialog_field(line_number.into_any_element())),
+            )
+            .when_some(error, |card, error| {
+                card.child(
+                    div()
+                        .mt(px(10.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .line_height(px(16.0))
+                        .text_color(theme.danger_muted)
+                        .child(error),
                 )
-                .into_any_element(),
-            // ── in-place switch wizard ────────────────────────────────────
-            SyncFlow::SwitchOffer { notice_open: true } => {
-                let has_local_work = work_phrase.is_some();
-                let body: SharedString = match (&signed_in_email, &work_phrase) {
-                    (Some(email), Some(phrase)) => format!(
-                        "You're signed in as {email}. Bring {phrase} from this device into your synced workspace, or start it fresh."
-                    )
-                    .into(),
-                    (Some(email), None) => format!(
-                        "You're signed in as {email}. Zeron can switch to your synced workspace now."
-                    )
-                    .into(),
-                    (None, Some(phrase)) => format!(
-                        "Bring {phrase} from this device into your synced workspace, or start it fresh."
-                    )
-                    .into(),
-                    (None, None) => "Zeron can switch to your synced workspace now.".into(),
-                };
-                let mut actions = div()
+            })
+            .child(
+                div()
                     .mt(px(16.0))
                     .flex()
                     .flex_row()
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(&theme, "Later", "sync-switch-later")
-                            .id("sync-switch-later")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.postpone_sync_restart(cx)
-                            })),
-                    );
-                if has_local_work {
-                    actions = actions
-                        .child(
-                            popover::btn_ghost(&theme, "Start fresh", "sync-switch-fresh")
-                                .id("sync-switch-fresh")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.start_synced_switch(false, cx)
-                                })),
-                        )
-                        .child(
-                            popover::btn_primary(&theme, "Bring my work")
-                                .id("sync-switch-import")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.start_synced_switch(true, cx)
-                                })),
-                        );
-                } else {
-                    actions = actions.child(
-                        popover::btn_primary(&theme, "Switch now")
-                            .id("sync-switch-now")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.start_synced_switch(false, cx)
-                            })),
-                    );
-                }
-                popover::dialog_card(&theme)
-                    .child(popover::dialog_title(&theme, "Sync is ready"))
-                    .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, body)))
-                    .child(actions)
-                    .into_any_element()
-            }
-            SyncFlow::Switching { import } => popover::dialog_card(&theme)
-                .child(popover::dialog_title(
-                    &theme,
-                    "Switching to your synced workspace…",
-                ))
-                .child(div().mt(px(6.0)).child(popover::dialog_body(
-                    &theme,
-                    if import {
-                        "Handing the engine over to your account. Your local sessions come along next."
-                    } else {
-                        "Handing the engine over to your account."
-                    },
-                )))
-                .into_any_element(),
-            SyncFlow::Importing { done, total } => {
-                let fraction = if total == 0 {
-                    0.0
-                } else {
-                    (done as f32 / total as f32).clamp(0.0, 1.0)
-                };
-                let label: SharedString = if total == 0 {
-                    "Looking for local sessions…".into()
-                } else {
-                    format!("Importing session {} of {total}", (done + 1).min(total)).into()
-                };
-                let mut card = popover::dialog_card(&theme)
-                    .child(popover::dialog_title(&theme, "Bringing your work over"))
-                    .child(
-                        div()
-                            .mt(px(6.0))
-                            .child(popover::dialog_body(&theme, label)),
-                    );
-                if let Some(current) = self.import_current.clone() {
-                    card = card.child(
-                        div()
-                            .mt(px(4.0))
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .line_height(px(17.0))
-                            .text_color(theme.text_muted)
-                            .overflow_hidden()
-                            .child(current),
-                    );
-                }
-                card.child(
-                    // Determinate progress: a hairline track with an accent fill.
-                    div()
-                        .mt(px(14.0))
-                        .h(px(4.0))
-                        .w_full()
-                        .rounded(px(2.0))
-                        .bg(theme.border)
-                        .child(
-                            div()
-                                .h_full()
-                                .rounded(px(2.0))
-                                .bg(theme.accent_strong)
-                                .w(gpui::relative(fraction.max(0.04))),
-                        ),
-                )
-                .into_any_element()
-            }
-            SyncFlow::ImportDone { imported, skipped } => {
-                let body: SharedString = match (imported, skipped) {
-                    (0, 0) => "Your synced workspace is ready.".into(),
-                    (n, 0) => format!(
-                        "{n} session{} moved into your synced workspace.",
-                        if n == 1 { "" } else { "s" },
-                    )
-                    .into(),
-                    (n, s) => format!(
-                        "{n} session{} imported, {s} already present.",
-                        if n == 1 { "" } else { "s" },
-                    )
-                    .into(),
-                };
-                popover::dialog_card(&theme)
-                    .child(popover::dialog_title(&theme, "You're all set"))
-                    .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, body)))
-                    .child(
-                        div()
-                            .mt(px(16.0))
-                            .flex()
-                            .flex_row()
-                            .justify_end()
-                            .child(
-                                popover::btn_primary(&theme, "Continue")
-                                    .id("sync-switch-done")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sync_flow = SyncFlow::Idle;
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .into_any_element()
-            }
-            SyncFlow::ImportFailed { notice_open: true } => popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Import didn't finish"))
-                .child(div().mt(px(6.0)).child(popover::dialog_body(
-                    &theme,
-                    "Anything already imported is kept; retrying only copies what's missing.",
-                )))
-                .when_some(self.runtime_change_error.clone(), |card, error| {
-                    card.child(
-                        div()
-                            .mt(px(10.0))
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .line_height(px(17.0))
-                            .text_color(theme.danger)
-                            .child(error),
-                    )
-                })
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(
-                            popover::btn_ghost(&theme, "Later", "import-failed-dismiss")
-                                .id("import-failed-dismiss")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.postpone_sync_restart(cx)
-                                })),
-                        )
-                        .child(
-                            popover::btn_primary(&theme, "Retry import")
-                                .id("import-failed-retry")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.spawn_local_import(cx)
-                                })),
-                        ),
-                )
-                .into_any_element(),
-            SyncFlow::RestartPending { notice_open: true } => popover::dialog_card(&theme)
-                .child(popover::dialog_title(
-                    &theme,
-                    "Sync needs a restart",
-                ))
-                .child(
-                    div().mt(px(6.0)).child(popover::dialog_body(
-                        &theme,
-                        if remote_engine {
-                            "Zeron is using a background daemon. Stop it and quit Zeron, then reopen to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
-                        } else {
-                            "Quit and reopen Zeron to start the synced workspace. Existing local sessions stay on this device and will not be uploaded."
-                        },
-                    )),
-                )
-                .when_some(self.runtime_change_error.clone(), |card, error| {
-                    card.child(
-                        div()
-                            .mt(px(10.0))
-                            .text_size(crate::typography::ui_rems(12.0))
-                            .line_height(px(17.0))
-                            .text_color(theme.danger)
-                            .child(error),
-                    )
-                })
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(
-                            popover::btn_ghost(&theme, "Later", "sync-restart-later")
-                                .id("sync-restart-later")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.postpone_sync_restart(cx)
-                                })),
-                        )
-                        .child(
-                            popover::btn_primary(&theme, runtime_change_label)
-                                .id("sync-restart-quit")
-                                .when(self.runtime_change_task.is_some(), |button| {
-                                    button.opacity(0.6)
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.quit_for_runtime_change(cx)
-                                })),
-                        ),
-                )
-                .into_any_element(),
-            SyncFlow::SignOutConfirm => popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Sign out?"))
-                .child(
-                    div().mt(px(6.0)).child(popover::dialog_body(
-                        &theme,
-                        "Zeron will remove your credentials, close the synced workspace, and continue in local mode.",
-                    )),
-                )
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(
-                            popover::btn_ghost(&theme, "Cancel", "signout-cancel")
-                                .id("signout-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.sync_flow = SyncFlow::Idle;
+                        popover::btn_ghost(&theme, "Cancel", "keiki-agent-cancel")
+                            .id("keiki-agent-cancel")
+                            .when(busy, |button| button.opacity(0.5))
+                            .when(!busy, |button| {
+                                button.on_click(cx.listener(|this, _, _, cx| {
+                                    this.keiki_agent_dialog = None;
                                     cx.notify();
-                                })),
-                        )
-                        .child(
-                            popover::btn_danger(&theme, "Sign out")
-                                .id("signout-confirm")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirm_sign_out(cx)
-                                })),
-                        ),
-                )
-                .into_any_element(),
-            SyncFlow::SigningOut => popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Signing out…"))
-                .child(
-                    div().mt(px(6.0)).child(popover::dialog_body(
-                        &theme,
-                        "Removing account credentials and closing the synced workspace.",
-                    )),
-                )
-                .into_any_element(),
-            SyncFlow::Idle
-            | SyncFlow::SwitchOffer { notice_open: false }
-            | SyncFlow::ImportFailed { notice_open: false }
-            | SyncFlow::RestartPending { notice_open: false }
-            | SyncFlow::SignedOutRestartRequired => return None,
+                                }))
+                            }),
+                    )
+                    .child(
+                        popover::btn_primary(&theme, "Create agent")
+                            .id("keiki-agent-create")
+                            .when(!can_create, |button| button.opacity(0.45))
+                            .when(can_create, |button| {
+                                button.on_click(cx.listener(|this, _, _, cx| {
+                                    this.submit_keiki_agent(cx);
+                                }))
+                            }),
+                    ),
+            )
+            .into_any_element();
+        Some(popover::modal("keiki-agent-dialog", viewport, card))
+    }
+
+    fn render_keiki_chat_action_rows(
+        &self,
+        chat_id: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let selected_chat = self.state.read(cx).selected_chat.clone();
+        if !keiki_menu_is_selected(chat_id, selected_chat.as_deref()) {
+            return Vec::new();
+        }
+        let (keiki_pending, keiki_blocked) = {
+            let state = self.state.read(cx);
+            let conversation = state.keiki_conversation();
+            (
+                conversation.and_then(|conversation| conversation.pending),
+                conversation.is_some_and(|conversation| conversation.blocked),
+            )
         };
 
-        Some(popover::modal("sync-lifecycle-dialog", viewport, card))
+        let block_id = chat_id.to_string();
+        let unblock_id = chat_id.to_string();
+        let mut rows = vec![popover::menu_separator().into_any_element()];
+        if !keiki_blocked {
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-block-{chat_id}"))
+                    .id("chat-keiki-block")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Block),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::Block)
+                            && this.state.read(cx).selected_chat.as_deref()
+                                == Some(block_id.as_str())
+                        {
+                            crate::keiki::block(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("Block"))
+                    .into_any_element(),
+            );
+        } else {
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-unblock-{chat_id}"))
+                    .id("chat-keiki-unblock")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Block),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::Block)
+                            && this.state.read(cx).selected_chat.as_deref()
+                                == Some(unblock_id.as_str())
+                        {
+                            crate::keiki::unblock(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("Unblock"))
+                    .into_any_element(),
+            );
+        }
+        rows
     }
 
     /// Floating layers owned by the shell: context menus, edit dialogs, and
@@ -5195,6 +4193,50 @@ impl Shell {
                             )
                             .child(SharedString::from("Archive")),
                     )
+                    .children(self.render_keiki_chat_action_rows(&chat_id, &theme, cx))
+                    .when(crate::keiki::is_keiki_chat(&chat_id), |menu| {
+                        let pinned = self
+                            .settings
+                            .pinned_keiki_conversations
+                            .iter()
+                            .any(|id| id == &chat_id);
+                        let pin_id = chat_id.clone();
+                        let view_id = chat_id.clone();
+                        menu.child(
+                            popover::menu_row(&theme, false, format!("chat-menu-pin-{chat_id}"))
+                                .id("chat-menu-pin")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_keiki_conversation_pin(pin_id.clone(), cx);
+                                }))
+                                .child(
+                                    icon(if pinned {
+                                        icons::STAR_BOLD
+                                    } else {
+                                        icons::STAR
+                                    })
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from(if pinned { "Unpin" } else { "Pin" })),
+                        )
+                        .child(
+                            popover::menu_row(
+                                &theme,
+                                false,
+                                format!("chat-menu-view-conversation-{chat_id}"),
+                            )
+                            .id("chat-menu-view-conversation")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.view_keiki_conversation(view_id.clone(), cx);
+                            }))
+                            .child(
+                                icon(icons::GLOBAL)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("View conversation")),
+                        )
+                    })
                     .child(
                         popover::menu_row(&theme, false, format!("chat-menu-copy-{chat_id}"))
                             .id("chat-menu-copy")
@@ -5236,15 +4278,10 @@ impl Shell {
                         .iter()
                         .find(|chat| chat.id == chat_id)
                         .cloned();
-                    let harness_link = chat
-                        .as_ref()
-                        .and_then(crate::links::harness_conversation_link);
                     let session_id = chat
                         .as_ref()
                         .and_then(|chat| chat.harness_session_id.as_deref())
                         .is_some_and(|id| !id.trim().is_empty());
-                    let zeron_id = chat_id.clone();
-                    let harness_id = chat_id.clone();
                     let session_chat_id = chat_id.clone();
                     menu.child(
                         popover::menu_row(&theme, false, format!("chat-copy-back-{chat_id}"))
@@ -5263,38 +4300,6 @@ impl Shell {
                             .child(SharedString::from("Back")),
                     )
                     .child(popover::menu_separator())
-                    .child(
-                        popover::menu_row(&theme, false, format!("chat-copy-zeron-{chat_id}"))
-                            .id("chat-copy-zeron")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_zeron_conversation_link(&zeron_id, cx)
-                            }))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("Zeron conversation link")),
-                    )
-                    .when_some(harness_link, |menu, link| {
-                        menu.child(
-                            popover::menu_row(
-                                &theme,
-                                false,
-                                format!("chat-copy-harness-{chat_id}"),
-                            )
-                            .id("chat-copy-harness")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_harness_conversation_link(&harness_id, cx)
-                            }))
-                            .child(
-                                icon(icons::COPY)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from(link.label)),
-                        )
-                    })
                     .when(session_id, |menu| {
                         menu.child(
                             popover::menu_row(
@@ -5374,6 +4379,9 @@ impl Shell {
         if let Some(overlay) = self.render_add_space_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
+        if let Some(overlay) = self.render_keiki_agent_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
 
         if let Some(chat_id) = self.delete_confirm.clone() {
             let title = transcript::single_line(
@@ -5417,10 +4425,6 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("delete-chat-dialog", viewport, card));
-        }
-
-        if let Some(sync) = self.render_sync_overlay(viewport, cx) {
-            overlays.push(sync);
         }
 
         overlays
@@ -5495,7 +4499,7 @@ impl Shell {
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme_owned = Theme::of(cx).clone();
         let theme = &theme_owned;
-        let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
+        let (border, text) = (theme.border, theme.text);
 
         // Settings route: just the section outlet — the section label lives in
         // the unified window titlebar now (render_title_bar). Settings never
@@ -5515,77 +4519,60 @@ impl Shell {
 
         let _ = (text, border);
         let has_selection = self.state.read(cx).selected_chat.is_some();
-        let has_spaces = !self.state.read(cx).spaces.is_empty();
-        let no_project = self.state.read(cx).no_project;
 
-        // Content outlet: selected chat → transcript; nothing selected → a
-        // bare canvas (the composer stack carries the affordances); no spaces
-        // at all → the onboarding card. The composer sits below the first two
-        // (new-chat mode mints the chat id on first send).
+        // Content outlet: selected chat → transcript; nothing selected →
+        // centered empty-state content.
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
-        } else if !has_spaces && !no_project {
-            // Onboarding (first boot / after the destructive wipe): no folders
-            // to work in yet — one clear affordance.
-            let _ = faint;
+        } else {
+            let variant = empty_state_variant(self.state.read(cx).keiki_status);
+            let mut content = div().flex().items_center().justify_center();
+            if let Some(action_label) = empty_state_action_label(variant) {
+                let loading = variant == EmptyStateVariant::Loading;
+                content = content.child(
+                    div()
+                        .id("no-selection-action")
+                        .w(px(240.0))
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .bg(theme.text)
+                        .text_size(crate::typography::ui_rems(14.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.on_solid)
+                        .when(!loading, |button| {
+                            button.cursor_pointer().hover(|s| s.opacity(0.9)).on_click(
+                                cx.listener(|this, _, _, cx| this.start_keiki_sign_in(cx)),
+                            )
+                        })
+                        .child(SharedString::from(action_label)),
+                );
+            } else {
+                content = content.child(
+                    icon(icons::ZERON_LOGO)
+                        .w(px(41.9))
+                        .h(px(48.0))
+                        .text_color(theme.text.opacity(0.09)),
+                );
+            }
             div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .child(motion::fade_in(
-                    "no-spaces-canvas",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .child(
-                            icon(icons::ZERON_LOGO)
-                                .w(px(41.9))
-                                .h(px(48.0))
-                                .text_color(theme.text.opacity(0.09)),
-                        )
-                        .child(
-                            div()
-                                .mt(px(24.0))
-                                .text_size(crate::typography::ui_rems(16.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .child(SharedString::from("Add a project to get started")),
-                        )
-                        .child(
-                            div()
-                                .mt(px(6.0))
-                                .text_size(crate::typography::ui_rems(13.0))
-                                .text_color(theme.text_muted.opacity(0.7))
-                                .child(SharedString::from(
-                                    "A project is a folder on one of your devices.",
-                                )),
-                        )
-                        .child(
-                            popover::btn_primary(&theme_owned, "Add a project")
-                                .id("onboarding-add-space")
-                                .mt(px(20.0))
-                                .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx))),
-                        ),
-                ))
+                .child(motion::fade_in("no-selection-canvas", content))
                 .into_any_element()
-        } else {
-            // New-chat canvas: intentionally bare (user request — no logo, no
-            // helper line). The device + project selectors live above the
-            // composer pill (composer.rs renders them via
-            // `render_target_selectors`).
-            div().size_full().into_any_element()
         };
 
         let status = self.render_status_strip(cx);
-        // File dropzone over the ENTIRE conversation column (transcript +
+        // File dropzone over the selected conversation column (transcript +
         // composer, not just the pill): dragging OS files anywhere across the
-        // chat area shows the "Drop images to attach" veil; a drop stages the
-        // files in the composer. GPUI derives the veil's visibility from the
-        // active payload type: an internal drag such as a pane resize must
-        // never be able to resurrect stale external-file hover state.
+        // chat area shows the "Drop images to attach" veil. GPUI derives the
+        // veil's visibility from the active payload type: an internal drag
+        // such as a pane resize must never resurrect stale external-file state.
         div()
             .id("chat-dropzone")
             .relative()
@@ -5665,29 +4652,31 @@ impl Shell {
                         .inset_0(),
                     )
                     .child(status)
-                    .when(has_spaces, |el| el.child(self.composer.clone()))
+                    .when(has_selection, |el| el.child(self.composer.clone()))
                     .child(self.render_terminal_container(cx))
             })
-            .child(
-                div()
-                    .invisible()
-                    .absolute()
-                    .inset_0()
-                    .bg(theme.scrim().opacity(0.4 / 0.6))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .text_color(theme.text)
-                    .child("Drop images to attach")
-                    .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.visible())
-                    .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
-                        let paths = paths.paths().to_vec();
-                        this.composer
-                            .update(cx, |composer, cx| composer.add_paths(paths, cx));
-                        cx.notify();
-                    })),
-            )
+            .when(has_selection, |element| {
+                element.child(
+                    div()
+                        .invisible()
+                        .absolute()
+                        .inset_0()
+                        .bg(theme.scrim().opacity(0.4 / 0.6))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(crate::typography::ui_rems(13.0))
+                        .text_color(theme.text)
+                        .child("Drop images to attach")
+                        .drag_over::<gpui::ExternalPaths>(|style, _, _, _| style.visible())
+                        .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                            let paths = paths.paths().to_vec();
+                            this.composer
+                                .update(cx, |composer, cx| composer.add_paths(paths, cx));
+                            cx.notify();
+                        })),
+                )
+            })
             .into_any_element()
     }
 
@@ -6135,90 +5124,6 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_signed_out_restart(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = Theme::of(cx).clone();
-        let runtime_change_label = if self.runtime_change_task.is_some() {
-            "Stopping engine…"
-        } else {
-            "Retry local mode"
-        };
-        let card = div()
-            .w(px(380.0))
-            .px(px(32.0))
-            .py(px(40.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_card)
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .items_center()
-            .text_center()
-            .child(
-                icon(icons::ZERON_LOGO)
-                    .w(px(31.4))
-                    .h(px(36.0))
-                    .text_color(theme.text),
-            )
-            .child(
-                div()
-                    .mt(px(24.0))
-                    .text_size(crate::typography::ui_rems(18.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text)
-                    .child(SharedString::from("Signed out")),
-            )
-            .child(
-                div()
-                    .mt(px(6.0))
-                    .mb(px(24.0))
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .line_height(px(19.0))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(
-                        "Zeron removed your credentials but could not finish closing the previous synced workspace. Retry before continuing in local mode.",
-                    )),
-            )
-            .when_some(self.runtime_change_error.clone(), |card, error| {
-                card.child(
-                    div()
-                        .mb(px(16.0))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .line_height(px(17.0))
-                        .text_color(theme.danger)
-                        .child(error),
-                )
-            })
-            .child(
-                popover::btn_primary(&theme, runtime_change_label)
-                    .id("signed-out-quit")
-                    .when(self.runtime_change_task.is_some(), |button| {
-                        button.opacity(0.6)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.start_local_runtime_transition(false, cx)
-                    })),
-            );
-
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(theme.bg)
-            .child(grid_backdrop(&theme))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(motion::fade_in("signed-out-restart", card)),
-            )
-            .into_any_element()
-    }
-
     fn close_right_plus(&mut self, cx: &mut Context<Self>) {
         if self.right_plus.begin_close() {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.right_plus);
@@ -6643,6 +5548,9 @@ impl Shell {
 
     fn render_gate_card(&mut self, phase: &GatePhase, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
+        let keiki_status = self.state.read(cx).keiki_status;
+        let keiki_error = self.state.read(cx).keiki_error.clone();
+        let keiki_loading = matches!(keiki_status, crate::keiki::SessionStatus::Loading);
         let content: AnyElement = match phase {
             // Backend unreachable: quiet centered copy (zeron Gate `Failed`),
             // plus a Retry affordance (the native engine doesn't self-redial).
@@ -6673,8 +5581,8 @@ impl Shell {
                         .child(SharedString::from("Retry")),
                 )
                 .into_any_element(),
-            // Login card (zeron App.tsx Gate): centered card on the grid —
-            // logo, "Log in to Zeron", copy, full-width white Log in button.
+            // Login card (Keiki Gate): centered card on the grid —
+            // logo, "Sign in to Keiki", copy, full-width Keiki button.
             _ => div()
                 .w(px(360.0))
                 .px(px(32.0))
@@ -6700,7 +5608,7 @@ impl Shell {
                         .text_size(crate::typography::ui_rems(18.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.text)
-                        .child(SharedString::from("Log in to Zeron")),
+                        .child(SharedString::from("Sign in to Keiki")),
                 )
                 .child(
                     div()
@@ -6710,12 +5618,12 @@ impl Shell {
                         .line_height(px(19.0))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(
-                            "This opens your browser to finish logging in — you'll come right back.",
+                            "This opens Keiki in your browser to finish signing in — you'll come right back.",
                         )),
                 )
                 .child(
                     div()
-                        .id("sign-in")
+                        .id("keiki-sign-in")
                         .w_full()
                         .h(px(36.0))
                         .flex()
@@ -6726,11 +5634,29 @@ impl Shell {
                         .text_size(crate::typography::ui_rems(14.0))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(theme.on_solid)
-                        .cursor_pointer()
-                        .hover(|s| s.opacity(0.9))
-                        .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
-                        .child(SharedString::from("Log in")),
+                        .when(!keiki_loading, |button| {
+                            button
+                                .cursor_pointer()
+                                .hover(|s| s.opacity(0.9))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.start_keiki_sign_in(cx)
+                                }))
+                        })
+                        .child(SharedString::from(if keiki_loading {
+                            "Opening Keiki…"
+                        } else {
+                            "Sign in to Keiki"
+                        })),
                 )
+                .when_some(keiki_error, |card, error| {
+                    card.child(
+                        div()
+                            .mt(px(10.0))
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.danger)
+                            .child(SharedString::from(error)),
+                    )
+                })
                 .into_any_element(),
         };
         div()
@@ -6750,238 +5676,10 @@ impl Shell {
                     // 0.5s entrance instead of mutating one animated element.
                     .child(motion::fade_in(
                         match phase {
-                            GatePhase::SignIn => "gate-card-signin",
                             _ => "gate-card-failed",
                         },
                         div().child(content),
                     )),
-            )
-            .into_any_element()
-    }
-
-    /// Organization onboarding used by the synced gate and, for a local
-    /// runtime, only after the user explicitly starts the sync opt-in.
-    fn render_org_gate(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        self.ensure_org_ui(cx);
-        let theme = Theme::of(cx).clone();
-        let local_setup = self.state.read(cx).workspace_scope == Some(WorkspaceScope::Local);
-        let Some(org) = self.org.as_ref() else {
-            return Empty.into_any_element();
-        };
-        let submitting = org.submitting;
-        let error = org.error.clone();
-        let name_input = org.name_input.clone();
-        let orgs = org.orgs.clone();
-
-        let email: Option<SharedString> = self
-            .state
-            .read(cx)
-            .auth_user()
-            .map(|u| u.email.clone().into());
-
-        let memberships: AnyElement =
-            match &orgs {
-                Loadable::Idle | Loadable::Loading => div()
-                    .mt(px(24.0))
-                    .child(popover::skeleton_rows(
-                        "org-skeleton",
-                        &theme,
-                        2,
-                        cx.entity_id(),
-                        cx,
-                    ))
-                    .into_any_element(),
-                Loadable::Error(message) => div()
-                    .mt(px(24.0))
-                    .child(
-                        popover::error_row(&theme, message).child(
-                            div()
-                                .id("orgs-retry")
-                                .px(px(Theme::SPACE_SM))
-                                .py(px(3.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_color(theme.text)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.glass_hover()))
-                                .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
-                                .child(SharedString::from("Retry")),
-                        ),
-                    )
-                    .into_any_element(),
-                Loadable::Ready(rows) if rows.is_empty() => Empty.into_any_element(),
-                Loadable::Ready(rows) => div()
-                    .mt(px(24.0))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .pb(px(8.0))
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text_muted.opacity(0.6))
-                            .child(SharedString::from(
-                                "Or continue in a workspace you belong to",
-                            )),
-                    )
-                    .child(div().flex().flex_col().gap(px(4.0)).children(
-                        rows.iter().enumerate().map(|(ix, row)| {
-                            let org_id = row.organization_id.clone();
-                            div()
-                                .id(("org-row", ix))
-                                .px(px(12.0))
-                                .py(px(8.0))
-                                .rounded(px(8.0))
-                                .border_1()
-                                .border_color(theme.border)
-                                .bg(theme.bg)
-                                .text_size(crate::typography::ui_rems(13.0))
-                                .text_color(theme.text)
-                                .when(submitting, |el| el.opacity(0.5))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(crate::theme::wash(0.11)))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.select_org(org_id.clone(), cx);
-                                }))
-                                .child(SharedString::from(row.name.clone()))
-                        }),
-                    ))
-                    .into_any_element(),
-            };
-
-        // zeron App.tsx OrgGate: w-400 card on the grid — logo, headline,
-        // explainer (+ signed-in email), name form with a white Create button,
-        // then existing memberships and the account escape hatch.
-        let blurb: SharedString = match email {
-            Some(email) => format!(
-                "Zeron is organized around workspaces — create one for yourself or your team. Signed in as {email}."
-            )
-            .into(),
-            None => {
-                "Zeron is organized around workspaces — create one for yourself or your team."
-                    .into()
-            }
-        };
-        let card = div()
-            .w(px(400.0))
-            .px(px(32.0))
-            .py(px(36.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.surface_card)
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .child(
-                icon(icons::ZERON_LOGO)
-                    .w(px(24.4))
-                    .h(px(28.0))
-                    .text_color(theme.text),
-            )
-            .child(
-                div()
-                    .mt(px(20.0))
-                    .text_size(crate::typography::ui_rems(18.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text)
-                    .child(SharedString::from("Create your workspace")),
-            )
-            .child(
-                div()
-                    .mt(px(6.0))
-                    .mb(px(24.0))
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .line_height(px(19.0))
-                    .text_color(theme.text_muted)
-                    .child(blurb),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h(px(36.0))
-                            .flex()
-                            .items_center()
-                            .px(px(12.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.bg)
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .child(name_input),
-                    )
-                    .child(
-                        div()
-                            .id("create-org")
-                            .h(px(36.0))
-                            .px(px(16.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(6.0))
-                            .bg(theme.text)
-                            .text_size(crate::typography::ui_rems(14.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.on_solid)
-                            .when(submitting, |el| el.opacity(0.5))
-                            .cursor_pointer()
-                            .hover(|s| s.opacity(0.9))
-                            .on_click(cx.listener(|this, _, _, cx| this.create_org(cx)))
-                            .child(SharedString::from(if submitting {
-                                "Creating…"
-                            } else {
-                                "Create"
-                            })),
-                    ),
-            )
-            .child(memberships)
-            .when_some(error, |el, message| {
-                el.child(
-                    div()
-                        .mt(px(16.0))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .line_height(px(17.0))
-                        .text_color(theme.danger_muted.opacity(0.9)) // red-300
-                        .child(message),
-                )
-            })
-            .child(
-                div().mt(px(24.0)).flex().flex_row().child(
-                    div()
-                        .id("org-signout")
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.text_muted.opacity(0.6))
-                        .cursor_pointer()
-                        .hover(|s| s.text_color(theme.text))
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel_auth_setup(cx)))
-                        .child(SharedString::from(if local_setup {
-                            "Cancel sync setup"
-                        } else {
-                            "Use a different account"
-                        })),
-                ),
-            );
-
-        div()
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(theme.bg)
-            .child(grid_backdrop(&theme))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(motion::fade_in("org-gate-card", card)),
             )
             .into_any_element()
     }
@@ -7306,6 +6004,7 @@ impl Render for Shell {
         self.settings.theme_selection = crate::appearance::themes(cx);
         self.settings.accent = crate::appearance::accent(cx);
         self.settings.surface = crate::appearance::surface(cx);
+        avatars::flush_evicted(Some(window), cx);
         let theme = Theme::of(cx);
         // The shell tone (zeron `.frost`): the surface the sidebar sits on and
         // the main panel floats over as an inset rounded card. On macOS the
@@ -7313,12 +6012,6 @@ impl Render for Shell {
         // frost paints translucent — the sidebar and card margins read as
         // glass while the opaque card keeps text off it.
         let (frost, text, font) = (theme.glass(), theme.text, theme.font_sans.clone());
-        let (workspace_scope, auth) = {
-            let state = self.state.read(cx);
-            (state.workspace_scope, state.auth.clone())
-        };
-        self.sync_flow = sync_flow_after_auth(self.sync_flow, workspace_scope, auth.as_ref());
-        let restart_required = self.sync_flow == SyncFlow::SignedOutRestartRequired;
         let gate = self
             .debug_gate
             .clone()
@@ -7376,8 +6069,7 @@ impl Render for Shell {
                 }
             }));
         }
-        if !restart_required
-            && matches!(gate, GatePhase::Ready)
+        if matches!(gate, GatePhase::Ready)
             && matches!(self.route, Route::Chat)
             && window.focused(cx).is_none()
         {
@@ -7413,9 +6105,9 @@ impl Render for Shell {
             // Native Settings menu item and the platform convention (Cmd+, on
             // macOS, Ctrl+, elsewhere) always land on the default section.
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
-                this.open_settings(SettingsSection::Devices, cx)
+                this.open_settings(SettingsSection::Appearance, cx)
             }))
-            // Chat-scoped, unlike new-session — `cycle_session` holds the guard
+            // Chat-scoped; `cycle_session` holds the guard
             // and says why.
             .on_action(cx.listener(|this, _: &NextSession, _, cx| this.cycle_session(true, cx)))
             .on_action(cx.listener(|this, _: &PrevSession, _, cx| this.cycle_session(false, cx)))
@@ -7433,17 +6125,10 @@ impl Render for Shell {
                 }
             }))
             // A jump routes back to chat itself, so Settings is not a dead
-            // spot — the same call a click on that sidebar row makes. But an
-            // open picker/palette owns the keyboard: no jumping underneath
-            // it. The MODEL menu advertises these same slots on its rows and
-            // this matched binding beats its key handler to the dispatch —
-            // forward the slot instead of eating it.
+            // spot — the same call a click on that sidebar row makes. An open
+            // picker/palette owns the keyboard: no jumping underneath it.
             .on_action(cx.listener(|this, jump: &JumpSession, _, cx| {
-                let pickers = this.composer.read(cx).pickers().clone();
-                let handled = pickers.update(cx, |pickers, cx| {
-                    pickers.jump_model_slot(jump.0, cx)
-                });
-                if !handled && !this.overlay_owns_keyboard(cx) {
+                if !this.overlay_owns_keyboard(cx) {
                     this.jump_to_session(jump.0, cx)
                 }
             }))
@@ -7457,25 +6142,14 @@ impl Render for Shell {
                 } else {
                     this.open_add_space(cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &NewKeikiAgent, _, cx| {
+                this.open_keiki_agent_dialog(cx);
             }));
 
-        let render_gate = if restart_required {
-            GatePhase::Loading
-        } else {
-            gate.clone()
-        };
-        let root = match &render_gate {
+        let root = match &gate {
             GatePhase::Ready => {
-                // Focus is a sync signal: on the rising edge of window
-                // activation, nudge every open room to verify liveness — a
-                // broadcast-deaf socket (accepted writes, runtime pongs,
-                // nothing delivered; 2026-08-04 incident) then heals within
-                // seconds of the user looking at the app rather than waiting
-                // out the background probe cadence.
                 let window_active = window.is_window_active();
-                if window_active && !self.was_window_active {
-                    self.state.update(cx, |s, cx| s.probe_sync(cx));
-                }
                 self.was_window_active = window_active;
                 // A run finishing while you're LOOKING at the session must not
                 // badge "completed" until you leave and return — mark it seen
@@ -7492,14 +6166,6 @@ impl Render for Shell {
                         self.state
                             .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
                     }
-                }
-                // Capture knob: `ZERON_OPEN_DIALOG=model` pops the combined
-                // harness/model menu (needs `window`, so it fires here rather
-                // than in `on_state_changed`).
-                if self.debug_dialog.as_deref() == Some("model") {
-                    self.debug_dialog = None;
-                    self.composer
-                        .update(cx, |c, cx| c.debug_open_model_menu(window, cx));
                 }
                 // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);
@@ -7658,22 +6324,11 @@ impl Render for Shell {
                     .child(motion::fade_in("phase-app", page))
             }
             GatePhase::Loading => root, // splash overlay covers boot
-            GatePhase::OrgGate => {
-                let card = self.render_org_gate(cx);
-                root.child(card)
-            }
-            phase @ (GatePhase::Failed(_) | GatePhase::SignIn) => {
+            phase @ GatePhase::Failed(_) => {
                 let card = self.render_gate_card(phase, cx);
                 root.child(card)
             }
         };
-        let root = if restart_required {
-            let restart = self.render_signed_out_restart(cx);
-            root.child(restart)
-        } else {
-            root
-        };
-
         // A manually-driven tween is mid-flight: keep frames coming (the same
         // scheduling `with_animation` would have requested). Hover color fades
         // ride the same clock; their once-per-frame tick lives here (this is
@@ -7702,9 +6357,7 @@ impl Render for Shell {
         // the native `Drag` control area, on Linux the explicit
         // `start_window_move` strip (the control-area hit-test is inert
         // there); macOS drags gate windows natively.
-        let root = if (!restart_required && matches!(gate, GatePhase::Ready))
-            || cfg!(target_os = "macos")
-        {
+        let root = if matches!(gate, GatePhase::Ready) || cfg!(target_os = "macos") {
             root
         } else {
             root.child(
@@ -7728,6 +6381,140 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_identity_signed_out() {
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::SignedOut, None),
+            (
+                "Not signed in".into(),
+                Some("Keiki".into()),
+                "Keiki account".into()
+            )
+        );
+    }
+
+    #[test]
+    fn account_identity_loading() {
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::Loading, None),
+            ("Signing in…".into(), None, "Keiki account".into())
+        );
+    }
+
+    #[test]
+    fn account_identity_signed_in_with_name_and_org() {
+        let session = KeikiSessionInfo {
+            display_name: Some("Ada Lovelace".into()),
+            email: Some("ada@example.com".into()),
+            active_org_name: Some("Analytical Engines".into()),
+            role: Some("owner".into()),
+        };
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::SignedIn, Some(&session)),
+            (
+                "Ada Lovelace".into(),
+                Some("Analytical Engines".into()),
+                "ada@example.com".into()
+            )
+        );
+    }
+
+    #[test]
+    fn account_identity_signed_in_with_email_only() {
+        let session = KeikiSessionInfo {
+            display_name: None,
+            email: Some("ada@example.com".into()),
+            active_org_name: None,
+            role: None,
+        };
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::SignedIn, Some(&session)),
+            (
+                "ada@example.com".into(),
+                Some("ada@example.com".into()),
+                "ada@example.com".into()
+            )
+        );
+    }
+
+    #[test]
+    fn account_identity_signed_in_without_organization() {
+        let session = KeikiSessionInfo {
+            display_name: Some("Ada Lovelace".into()),
+            email: Some("ada@example.com".into()),
+            active_org_name: None,
+            role: Some("owner".into()),
+        };
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::SignedIn, Some(&session)),
+            (
+                "Ada Lovelace".into(),
+                Some("ada@example.com".into()),
+                "ada@example.com".into()
+            )
+        );
+    }
+
+    #[test]
+    fn account_identity_signed_in_before_session_info_arrives() {
+        assert_eq!(
+            account_identity(crate::keiki::SessionStatus::SignedIn, None),
+            ("Keiki account".into(), None, "Keiki account".into())
+        );
+    }
+
+    fn keiki_chat(id: &str) -> zeron_proto::Chat {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "deviceId": "device",
+            "archived": false,
+            "createdAt": "2024-01-01T00:00:00Z",
+        }))
+        .expect("test chat")
+    }
+
+    #[test]
+    fn prune_pinned_keiki_conversations_drops_stale_ids() {
+        let mut pinned = vec![
+            "keiki-conv:agent:stale".to_string(),
+            "keiki-conv:agent:live".to_string(),
+        ];
+        let chats = vec![keiki_chat("keiki-conv:agent:live")];
+
+        prune_pinned_keiki_conversations(&mut pinned, &chats);
+
+        assert_eq!(pinned, vec!["keiki-conv:agent:live"]);
+    }
+
+    #[test]
+    fn prune_pinned_keiki_conversations_keeps_live_ids() {
+        let mut pinned = vec!["keiki-conv:agent:live".to_string()];
+        let chats = vec![keiki_chat("keiki-conv:agent:live")];
+
+        prune_pinned_keiki_conversations(&mut pinned, &chats);
+
+        assert_eq!(pinned, vec!["keiki-conv:agent:live"]);
+    }
+
+    #[test]
+    fn prune_pinned_keiki_conversations_skips_empty_keiki_snapshot() {
+        let mut pinned = vec![
+            "keiki-conv:agent:live".to_string(),
+            "keiki-conv:other:also-live".to_string(),
+        ];
+        let chats = vec![keiki_chat("zeron-chat")];
+
+        prune_pinned_keiki_conversations(&mut pinned, &chats);
+
+        assert_eq!(
+            pinned,
+            vec![
+                "keiki-conv:agent:live".to_string(),
+                "keiki-conv:other:also-live".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn every_default_shortcut_binds_on_this_platform() {
@@ -7771,11 +6558,9 @@ mod tests {
     }
 
     #[test]
-    fn new_session_action_lives_in_the_titlebar_only_when_useful() {
-        assert_eq!(titlebar_new_session_alpha(true, true), 1.0);
-        assert_eq!(titlebar_new_session_alpha(true, false), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, true), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, false), 0.0);
+    fn new_session_action_lives_in_the_titlebar_on_the_chat_route() {
+        assert_eq!(titlebar_new_session_alpha(true), 1.0);
+        assert_eq!(titlebar_new_session_alpha(false), 0.0);
     }
 
     #[test]
@@ -7805,347 +6590,6 @@ mod tests {
         assert_eq!(
             stable_panel_content_width(conversation, Some((takeover, conversation))),
             conversation
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_shutdown_waits_for_ipc_release() {
-        let dir = tempfile::tempdir().unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let release = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            drop(listener);
-        });
-
-        wait_for_remote_engine_shutdown(port, dir.path(), Duration::from_secs(2))
-            .await
-            .unwrap();
-        release.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn signed_out_synced_runtime_stops_and_reboots_local() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("session.json"),
-            r#"{"refreshToken":"still-valid","user":{"id":"user_1","email":"u@example.com"},"orgId":"org_1"}"#,
-        )
-        .unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let boot = EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: zeron_proto::HarnessId::Mock,
-        };
-        let synced = crate::state::EngineHandle::bootstrap(boot.clone())
-            .await
-            .expect("saved session opens its synced profile");
-        assert_eq!(synced.engine_info().workspace_scope, WorkspaceScope::Synced);
-
-        synced
-            .client()
-            .call(methods::SIGN_OUT, serde_json::json!({}))
-            .await
-            .expect("sign out clears credentials");
-        stop_synced_runtime(synced, port, dir.path())
-            .await
-            .expect("synced runtime drains and releases ownership");
-
-        assert!(!dir.path().join("session.json").exists());
-        let local = crate::state::EngineHandle::bootstrap(boot)
-            .await
-            .expect("same process can continue locally");
-        assert_eq!(local.engine_info().workspace_scope, WorkspaceScope::Local);
-        local.shutdown().await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn remote_shutdown_waits_for_engine_lock_release() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock = InstanceLock::acquire(dir.path()).unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let lock_released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let released_by_task = lock_released.clone();
-        let release = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            drop(lock);
-            released_by_task.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        wait_for_remote_engine_shutdown(port, dir.path(), Duration::from_secs(2))
-            .await
-            .unwrap();
-        assert!(lock_released.load(std::sync::atomic::Ordering::SeqCst));
-        release.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn remote_shutdown_times_out_while_ipc_remains_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        let error = wait_for_remote_engine_shutdown(port, dir.path(), Duration::from_millis(100))
-            .await
-            .unwrap_err();
-
-        assert!(error.contains("did not finish stopping"));
-        drop(listener);
-    }
-
-    #[test]
-    fn account_actions_follow_the_attached_workspace_scope() {
-        assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Local), SyncFlow::Idle),
-            Some(AccountMenuAction::EnableSync)
-        );
-        assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle),
-            Some(AccountMenuAction::SignOut)
-        );
-        assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Development), SyncFlow::Idle),
-            None
-        );
-    }
-
-    #[test]
-    fn local_sign_in_offers_the_in_place_switch() {
-        let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
-                id: "user-1".into(),
-                email: "user@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-1".into()),
-        };
-
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::Enabling,
-                Some(WorkspaceScope::Local),
-                Some(&signed_in),
-            ),
-            SyncFlow::SwitchOffer { notice_open: true }
-        );
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::Idle,
-                Some(WorkspaceScope::Local),
-                Some(&signed_in),
-            ),
-            SyncFlow::SwitchOffer { notice_open: true },
-            "another viewport derives the pending switch from AuthStatus"
-        );
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::SwitchOffer { notice_open: false },
-                Some(WorkspaceScope::Local),
-                Some(&signed_in),
-            ),
-            SyncFlow::SwitchOffer { notice_open: false },
-            "shared auth updates do not reopen a postponed wizard"
-        );
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::RestartPending { notice_open: false },
-                Some(WorkspaceScope::Local),
-                Some(&signed_in),
-            ),
-            SyncFlow::RestartPending { notice_open: false },
-            "the quit fallback survives shared auth updates too"
-        );
-        assert_eq!(
-            account_menu_action(
-                Some(WorkspaceScope::Local),
-                SyncFlow::SwitchOffer { notice_open: false },
-            ),
-            Some(AccountMenuAction::RestartPending)
-        );
-        for notice_open in [true, false] {
-            assert_eq!(
-                sync_flow_after_auth(
-                    SyncFlow::SwitchOffer { notice_open },
-                    Some(WorkspaceScope::Local),
-                    Some(&AuthState::SignedOut),
-                ),
-                SyncFlow::Idle,
-                "revoked credentials cancel the pending switch"
-            );
-        }
-    }
-
-    #[test]
-    fn import_summary_errors_are_a_failure_not_a_success() {
-        // Clean summary → done with counts.
-        let clean = serde_json::json!({
-            "kind": "summary", "importedChats": 2, "skippedChats": 1, "errors": []
-        });
-        assert_eq!(import_summary_outcome(&clean), Ok((2, 1)));
-
-        // Any error means the wizard must NOT say "all set" — partial
-        // migrations surface as an explicit failure with the first cause.
-        let partial = serde_json::json!({
-            "kind": "summary", "importedChats": 1, "skippedChats": 0,
-            "errors": ["chat c2: journal copy failed"]
-        });
-        let message = import_summary_outcome(&partial).expect_err("errors must fail");
-        assert!(message.contains("journal copy failed"), "{message}");
-        assert!(message.contains("1 imported"), "{message}");
-
-        let many = serde_json::json!({
-            "kind": "summary", "importedChats": 0, "skippedChats": 0,
-            "errors": ["a", "b", "c"]
-        });
-        let message = import_summary_outcome(&many).expect_err("errors must fail");
-        assert!(message.contains("3 failures"), "{message}");
-
-        // A summary missing the errors field entirely (older engine) is
-        // treated as clean rather than failing every import.
-        let legacy = serde_json::json!({ "kind": "summary", "importedChats": 4 });
-        assert_eq!(import_summary_outcome(&legacy), Ok((4, 0)));
-    }
-
-    #[test]
-    fn spaces_only_local_work_still_gets_the_import_offer() {
-        assert_eq!(local_work_phrase(0, 0), None, "nothing to bring");
-        assert_eq!(local_work_phrase(2, 0).as_deref(), Some("the 2 sessions"));
-        assert_eq!(
-            local_work_phrase(0, 1).as_deref(),
-            Some("the 1 project"),
-            "a projects-only profile must be offered the import, not a bare switch"
-        );
-        assert_eq!(
-            local_work_phrase(1, 2).as_deref(),
-            Some("the 1 session and 2 projects")
-        );
-    }
-
-    #[test]
-    fn dismissed_import_failure_stays_reachable_on_a_synced_runtime() {
-        let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
-                id: "user-1".into(),
-                email: "user@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-1".into()),
-        };
-
-        // "Later" postpones the failure notice; it must not evaporate.
-        let dismissed = SyncFlow::ImportFailed { notice_open: false };
-        assert_eq!(
-            sync_flow_after_auth(dismissed, Some(WorkspaceScope::Synced), Some(&signed_in)),
-            dismissed,
-            "a postponed import failure survives auth/scope updates"
-        );
-
-        // …and the account menu on the SYNCED runtime still exposes the
-        // re-entry point. This is the whole point: after the switch there is
-        // no local runtime left to re-derive an offer from, so this menu row
-        // is the only path back to the retry dialog.
-        assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Synced), dismissed),
-            Some(AccountMenuAction::RestartPending),
-            "retry must remain reachable after dismissal"
-        );
-        assert_eq!(
-            account_menu_action(
-                Some(WorkspaceScope::Synced),
-                SyncFlow::ImportFailed { notice_open: true },
-            ),
-            Some(AccountMenuAction::RestartPending)
-        );
-
-        // Resolving the failure restores the normal synced menu.
-        assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle),
-            Some(AccountMenuAction::SignOut)
-        );
-    }
-
-    #[test]
-    fn switch_lifecycle_survives_the_runtime_replacement_window() {
-        let signed_in = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
-                id: "user-1".into(),
-                email: "user@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-1".into()),
-        };
-        for flow in [
-            SyncFlow::Switching { import: true },
-            SyncFlow::Importing { done: 1, total: 3 },
-            SyncFlow::ImportDone {
-                imported: 3,
-                skipped: 0,
-            },
-            SyncFlow::ImportFailed { notice_open: true },
-            SyncFlow::ImportFailed { notice_open: false },
-        ] {
-            // Local (before the stop), detached (mid-replacement), and synced
-            // (replacement runtime up): the driver owns these states — auth
-            // and scope edges must never reset them.
-            assert_eq!(
-                sync_flow_after_auth(flow, Some(WorkspaceScope::Local), Some(&signed_in)),
-                flow
-            );
-            assert_eq!(sync_flow_after_auth(flow, None, None), flow);
-            assert_eq!(
-                sync_flow_after_auth(flow, Some(WorkspaceScope::Synced), Some(&signed_in)),
-                flow
-            );
-        }
-    }
-
-    #[test]
-    fn synced_sign_out_blocks_every_viewport_and_cannot_switch_accounts() {
-        let signed_in_as_another_user = AuthState::SignedIn {
-            user: zeron_proto::UserProfile {
-                id: "user-2".into(),
-                email: "other@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-2".into()),
-        };
-
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::SigningOut,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
-            SyncFlow::SignedOutRestartRequired,
-            "the viewport that requested sign-out is blocked by AuthStatus"
-        );
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::Idle,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
-            SyncFlow::SignedOutRestartRequired,
-            "another viewport observing the same runtime is also blocked"
-        );
-        assert_eq!(
-            sync_flow_after_auth(
-                SyncFlow::SignedOutRestartRequired,
-                Some(WorkspaceScope::Synced),
-                Some(&signed_in_as_another_user),
-            ),
-            SyncFlow::SignedOutRestartRequired,
-            "new credentials cannot reopen the previous account's store"
         );
     }
 
@@ -8241,7 +6685,7 @@ mod tests {
         assert!(!panels.get("a").terminal_open);
         assert!(!panels.get("a").changes_open);
         assert_eq!(panels.get("a").right_active, RightSurface::Picker);
-        // The new-chat canvas ("" key) is its own session, also closed.
+        // With no selected chat there is no session to close.
         assert!(!panels.get("").terminal_open);
     }
 
@@ -8396,7 +6840,7 @@ mod tests {
     fn nav_push_then_back_and_forward() {
         let mut nav = NavHistory::new(chat("a"));
         nav.push(chat("b"));
-        nav.push(NavEntry::Settings(SettingsSection::Devices));
+        nav.push(NavEntry::Settings(SettingsSection::Appearance));
         assert!(nav.can_back());
         assert!(!nav.can_forward());
 
@@ -8415,7 +6859,7 @@ mod tests {
         assert_eq!(nav.forward(), Some(chat("b")));
         assert_eq!(
             nav.forward(),
-            Some(NavEntry::Settings(SettingsSection::Devices))
+            Some(NavEntry::Settings(SettingsSection::Appearance))
         );
         assert!(!nav.can_forward());
         assert_eq!(nav.forward(), None);
@@ -8427,9 +6871,6 @@ mod tests {
         nav.push(chat("a"));
         nav.push(chat("a"));
         assert_eq!(nav.len(), 1, "re-selecting the current route never stacks");
-        nav.push(NavEntry::Settings(SettingsSection::Agents));
-        nav.push(NavEntry::Settings(SettingsSection::Agents));
-        assert_eq!(nav.len(), 2);
     }
 
     #[test]
@@ -8452,7 +6893,7 @@ mod tests {
 
     #[test]
     fn nav_replace_swaps_in_place() {
-        // The boot auto-select replaces the untouched canvas entry, so Back
+        // The boot auto-select replaces the untouched empty-state entry, so Back
         // stays disabled after landing in the last-used chat.
         let mut nav = NavHistory::new(chat(""));
         nav.replace(chat("boot"));
@@ -8464,12 +6905,12 @@ mod tests {
     #[test]
     fn nav_settings_sections_are_distinct_entries() {
         let mut nav = NavHistory::new(chat("a"));
-        nav.push(NavEntry::Settings(SettingsSection::Devices));
+        nav.push(NavEntry::Settings(SettingsSection::Appearance));
         nav.push(NavEntry::Settings(SettingsSection::Shortcuts));
         assert_eq!(nav.len(), 3, "section changes are navigations");
         assert_eq!(
             nav.back(),
-            Some(NavEntry::Settings(SettingsSection::Devices))
+            Some(NavEntry::Settings(SettingsSection::Appearance))
         );
         assert_eq!(nav.back(), Some(chat("a")));
     }
@@ -8480,5 +6921,51 @@ mod tests {
         tween.started = std::time::Instant::now() - motion::COLLAPSE.total().mul_f32(2.0);
         assert_eq!(tween.current(), 0.0);
         assert!(!tween.animating());
+    }
+
+    #[test]
+    fn keiki_menu_is_scoped_to_the_selected_chat() {
+        assert!(keiki_menu_is_selected(
+            "keiki-conv:one",
+            Some("keiki-conv:one")
+        ));
+        assert!(!keiki_menu_is_selected(
+            "keiki-conv:one",
+            Some("keiki-conv:two")
+        ));
+        assert!(!keiki_menu_is_selected("engine-chat", Some("engine-chat")));
+    }
+
+    #[test]
+    fn empty_state_variant_matches_keiki_session_status() {
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::SignedOut),
+            EmptyStateVariant::SignIn
+        );
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::Error),
+            EmptyStateVariant::SignIn
+        );
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::Loading),
+            EmptyStateVariant::Loading
+        );
+        assert_eq!(
+            empty_state_variant(crate::keiki::SessionStatus::SignedIn),
+            EmptyStateVariant::Ready
+        );
+    }
+
+    #[test]
+    fn empty_state_action_label_matches_each_variant() {
+        assert_eq!(
+            empty_state_action_label(EmptyStateVariant::SignIn),
+            Some("Sign in to Keiki")
+        );
+        assert_eq!(
+            empty_state_action_label(EmptyStateVariant::Loading),
+            Some("Opening Keiki…")
+        );
+        assert_eq!(empty_state_action_label(EmptyStateVariant::Ready), None);
     }
 }

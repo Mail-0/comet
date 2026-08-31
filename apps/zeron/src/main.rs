@@ -1,10 +1,7 @@
-//! zeron — headed by default; `zeron headless` runs the engine alone. Both start
-//! local-only without credentials. `zeron login` and `zeron logout` select the
-//! profile used by the next engine start without mutating a live runtime.
+//! zeron — headed by default; `zeron headless` runs the engine alone. Both use
+//! the same device-local workspace profile.
 
-mod auth_cli;
 mod daemon;
-mod update_cli;
 
 use clap::{Parser, Subcommand};
 
@@ -13,81 +10,30 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-    /// Open a Zeron conversation URL.
+    /// Open a Keiki conversation URL.
     #[arg(value_name = "URL")]
     open_url: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the engine without a UI (local-only unless a saved session enables sync).
+    /// Run the engine without a UI.
     Headless,
-    /// Sign in and enable sync on the next engine start.
-    Login,
-    /// Remove the saved session and return to local-only on the next start.
-    Logout,
-    /// Show workspace mode, optional auth, and engine status.
-    Status,
-    /// Live sync introspection from the running engine: per-room connection
-    /// state, last pushed-frame/ack ages, rejoin/probe/resync counters.
-    Sync,
     /// Manage `zeron headless` as a background service (launchd / systemd --user).
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Check for a newer release and apply it (download → verify → swap →
-    /// service restart). `--check` only reports (exits 1 when one is available).
-    Update {
-        #[arg(long)]
-        check: bool,
-    },
 }
 
 #[derive(Subcommand)]
 enum DaemonCommand {
-    /// Install, enable, and start the service (captures ZERON_* env).
     Install,
-    /// Stop and remove the service.
     Uninstall,
-    /// Start the installed service.
     Start,
-    /// Stop the service.
     Stop,
-    /// Restart the service.
     Restart,
-    /// Show the service manager's view of the daemon.
     Status,
-}
-
-/// Production edge (Cloudflare Worker + Durable Objects on the zeron.sh zone).
-/// `ZERON_EDGE_URL` overrides (local dev / self-hosting).
-const DEFAULT_EDGE_URL: &str = "https://edge.zeron.sh";
-
-/// Production WorkOS AuthKit client id — public knowledge (it appears in every
-/// authorize URL), so baking it in is safe. Overridden by `ZERON_WORKOS_CLIENT_ID`;
-/// set it to the empty string — or set a dev bearer via `ZERON_EDGE_TOKEN` — to
-/// force dev-mode auth instead.
-const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01KWD0EAKZKD50YCQJNYSRE4BY";
-
-fn edge_url_from_env() -> String {
-    std::env::var("ZERON_EDGE_URL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_EDGE_URL.into())
-}
-
-/// WorkOS client id resolution: explicit env wins (empty string = dev mode);
-/// otherwise a `ZERON_EDGE_TOKEN` dev bearer keeps dev mode (smoke tests,
-/// local wrangler); otherwise the baked production client id makes optional
-/// sync available while a bare start remains local-only.
-fn workos_client_id_from_env(edge_token: &Option<String>) -> Option<String> {
-    match std::env::var("ZERON_WORKOS_CLIENT_ID") {
-        Ok(v) if v.trim().is_empty() => None,
-        Ok(v) => Some(v),
-        Err(_) if edge_token.is_some() => None,
-        Err(_) => Some(DEFAULT_WORKOS_CLIENT_ID.into()),
-    }
 }
 
 /// mimalloc: system malloc (macOS libmalloc especially) never returns the
@@ -113,9 +59,9 @@ fn main() -> anyhow::Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| default_filter.into());
     // Long-running modes mirror stdout logging to {data_dir}/logs — a headed
-    // app launched from Finder has no visible stdout, which left every sync
-    // wedge report ("stale until restart") with zero diagnostics even though
-    // the engine logs the exact failure line. One file per launch, previous
+    // app launched from Finder has no visible stdout, which left diagnostics
+    // unavailable even though the engine logs the exact failure line. One file
+    // per launch, previous
     // launch kept as `.old`.
     let log_file = if long_running {
         let mode = if cli.command.is_some() {
@@ -153,26 +99,6 @@ fn main() -> anyhow::Result<()> {
                 engine.run().await
             })
         }
-        Some(Command::Login) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(auth_cli::login(engine_config_from_env()))
-        }
-        Some(Command::Logout) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(auth_cli::logout(engine_config_from_env()))
-        }
-        Some(Command::Status) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(auth_cli::status(engine_config_from_env()))
-        }
-        Some(Command::Sync) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(sync_cli(engine_config_from_env().ipc_port))
-        }
-        Some(Command::Update { check }) => {
-            let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(update_cli::update(&edge_url_from_env(), check))
-        }
         Some(Command::Daemon { command }) => match command {
             DaemonCommand::Install => daemon::install(&engine_config_from_env().data_dir),
             DaemonCommand::Uninstall => daemon::uninstall(),
@@ -182,7 +108,6 @@ fn main() -> anyhow::Result<()> {
             DaemonCommand::Status => daemon::status(),
         },
         None => {
-            let edge_token = std::env::var("ZERON_EDGE_TOKEN").ok();
             // Headed: the UI probes ZERON_IPC_PORT and connects to a running
             // daemon, or embeds the engine in-process (ARCHITECTURE §1).
             zeron_ui::run_app(zeron_ui::UiConfig {
@@ -193,63 +118,46 @@ fn main() -> anyhow::Result<()> {
                     .ok()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(27654),
-                edge_url: edge_url_from_env(),
-                workos_client_id: workos_client_id_from_env(&edge_token),
-                edge_token,
-                org_id: std::env::var("ZERON_ORG_ID").ok(),
-                default_harness: zeron_ui::HarnessId::ClaudeCode,
+                default_harness: zeron_ui::HarnessId::Copilot,
                 initial_url: cli.open_url,
+                keiki_api_url: std::env::var("KEIKI_API_URL")
+                    .ok()
+                    .filter(|url| !url.trim().is_empty())
+                    .unwrap_or_else(|| "https://onkeiki.com".into()),
             });
             Ok(())
         }
     }
 }
 
-/// The env-resolved engine configuration shared by `headless`, `login`,
-/// `logout`, and `status` — one resolution so the CLI auth commands always
-/// operate on the exact session the daemon will load.
+/// Environment-resolved engine configuration shared by `headless` and the
+/// daemon, so both use the same local workspace.
 fn engine_config_from_env() -> zeron_engine::EngineConfig {
-    // Dev-mode bearer (no WorkOS): an explicit token enables sync.
-    let edge_token = std::env::var("ZERON_EDGE_TOKEN").ok();
     zeron_engine::EngineConfig {
         data_dir: std::env::var_os("ZERON_DATA_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(dirs_data_dir),
-        edge_url: edge_url_from_env(),
         ipc_port: std::env::var("ZERON_IPC_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(27654),
         default_harness: harness_from_env(),
-        // WorkOS mode: the signed-in session's org wins; ZERON_ORG_ID (dev
-        // default "dev-org") scopes the workspace room otherwise.
-        org_id: std::env::var("ZERON_ORG_ID").ok(),
-        // Real auth against production by default; see
-        // `workos_client_id_from_env` for the dev-mode escape hatches.
-        workos_client_id: workos_client_id_from_env(&edge_token),
-        edge_token,
     }
 }
 
-/// `ZERON_HARNESS` (kebab-case id) picks the default harness for chats without a
-/// config row — `mock` powers the e2e smoke; default `claude-code`.
+/// `ZERON_HARNESS` picks the default harness for chats without a config row.
 fn harness_from_env() -> zeron_engine::HarnessId {
     match std::env::var("ZERON_HARNESS").as_deref().map(str::trim) {
         Ok("mock") => zeron_engine::HarnessId::Mock,
-        Ok("codex") => zeron_engine::HarnessId::Codex,
-        Ok("cursor") => zeron_engine::HarnessId::Cursor,
-        Ok("grok") => zeron_engine::HarnessId::Grok,
-        Ok("hermes") => zeron_engine::HarnessId::Hermes,
-        Ok("pi") => zeron_engine::HarnessId::Pi,
-        _ => zeron_engine::HarnessId::ClaudeCode,
+        _ => zeron_engine::HarnessId::Copilot,
     }
 }
 
 fn dirs_data_dir() -> std::path::PathBuf {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("HOME not set"));
     let dir = home.join(".zeron");
-    // One-shot 0.2.0 migration: adopt the pre-rename data dir (sign-in,
-    // device identity, prefs) instead of starting fresh.
+    // One-shot 0.2.0 migration: adopt the pre-rename device-local data
+    // directory instead of starting fresh.
     if !dir.exists() {
         let old = home.join(".comet-native");
         if old.exists() && std::fs::rename(&old, &dir).is_ok() {
@@ -257,129 +165,6 @@ fn dirs_data_dir() -> std::path::PathBuf {
         }
     }
     dir
-}
-
-/// `zeron sync`: dial the running engine's IPC and print per-room sync state.
-/// The introspection surface every 2026-08 incident was missing — "is this
-/// device's workspace room actually receiving?" as a one-liner.
-async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
-    let client = zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!("no engine listening on 127.0.0.1:{ipc_port} ({e}) — is zeron running?")
-        })?;
-    let status = client
-        .call(zeron_rpc::methods::SYNC_STATUS, serde_json::json!({}))
-        .await
-        .map_err(|e| anyhow::anyhow!("SyncStatus failed: {e}"))?;
-    let now = status.get("nowMs").and_then(|v| v.as_i64()).unwrap_or(0);
-    let age = |ms: i64| -> String {
-        if ms <= 0 {
-            return "never".into();
-        }
-        let s = (now - ms).max(0) / 1000;
-        if s >= 3600 {
-            format!("{}h{}m ago", s / 3600, (s % 3600) / 60)
-        } else if s >= 60 {
-            format!("{}m{}s ago", s / 60, s % 60)
-        } else {
-            format!("{s}s ago")
-        }
-    };
-    let room_line = |room: Option<&serde_json::Value>| -> String {
-        let Some(room) = room else {
-            return "no room (dialing or edge-less)".into();
-        };
-        let get = |k: &str| room.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
-        // REJECTED is loud and only shown when nonzero: rejected writes with
-        // a fresh-looking room is exactly the latched-session wedge
-        // (2026-08-04) this readout previously masked.
-        let rejected = get("rejected");
-        format!(
-            "{} pushed {} · acked {} · rejoins {} probes {} resyncs {} drops {}{}",
-            if room.get("connected").and_then(|v| v.as_bool()) == Some(true) {
-                "connected ·"
-            } else {
-                "DISCONNECTED ·"
-            },
-            age(get("lastPushedMs")),
-            age(get("lastAckMs")),
-            get("rejoins"),
-            get("probes"),
-            get("fullResyncs"),
-            get("disconnects"),
-            if rejected > 0 {
-                format!(" REJECTED {rejected}")
-            } else {
-                String::new()
-            },
-        )
-    };
-    println!(
-        "Device:    {}",
-        status
-            .get("deviceId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?")
-    );
-    println!(
-        "Workspace: {}",
-        room_line(status.get("workspace").filter(|v| !v.is_null()))
-    );
-    let chats = status
-        .get("chats")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if chats.is_empty() {
-        println!("Chats:     none open");
-    }
-    // Chat rooms speak chat2: cursor/head tell "am I caught up?", pending
-    // tells "did my writes leave?", resets/rejected are the loud tells.
-    let chat_line = |room: Option<&serde_json::Value>| -> String {
-        let Some(room) = room else {
-            return "no room (dialing or edge-less)".into();
-        };
-        let get = |k: &str| room.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-        let resets = get("serverResets");
-        let rejected = get("rejected");
-        format!(
-            "{} cursor {}/{} · pending {} · rows {} ({}KB) · rejoins {} drops {}{}{}",
-            if room.get("connected").and_then(|v| v.as_bool()) == Some(true) {
-                "connected ·"
-            } else {
-                "DISCONNECTED ·"
-            },
-            get("cursor"),
-            get("headSeq"),
-            get("pendingPushes"),
-            get("rowCount"),
-            get("rowBytes") / 1024,
-            get("rejoins"),
-            get("disconnects"),
-            if resets > 0 {
-                format!(" RESETS {resets}")
-            } else {
-                String::new()
-            },
-            if rejected > 0 {
-                format!(" REJECTED {rejected}")
-            } else {
-                String::new()
-            },
-        )
-    };
-    for chat in &chats {
-        println!(
-            "Chat {}: {}",
-            chat.get("chatId")
-                .and_then(|v| v.as_str())
-                .map(|s| &s[..s.len().min(8)])
-                .unwrap_or("?"),
-            chat_line(chat.get("room").filter(|v| !v.is_null()))
-        );
-    }
-    Ok(())
 }
 
 /// `{data_dir}/logs/zeron-{mode}.log`, previous launch preserved as `.old`.

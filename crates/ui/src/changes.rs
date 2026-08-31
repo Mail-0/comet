@@ -4423,8 +4423,8 @@ impl Render for Changes {
         let active = self.active_diff(cx);
         let scope = self.scope;
         let base = self.base_ref.clone();
-        // With no session selected (new-chat canvas) there is nothing to
-        // prepare — show the quiet empty state, not an endless spinner.
+        // With no session selected there is nothing to prepare — show the
+        // quiet empty state, not an endless spinner.
         let no_chat = self.state.read(cx).selected_chat_row().is_none();
         let phase = if no_chat {
             DiffPhase::Clean
@@ -4451,7 +4451,7 @@ impl Render for Changes {
                 } else if message.contains("unknown method") {
                     (
                         SharedString::from(
-                            "This chat's device is running an older Zeron — update it to view branch and turn diffs",
+                            "This chat's device is running an older Keiki — update it to view branch and turn diffs",
                         ),
                         false,
                     )
@@ -5225,7 +5225,6 @@ rename to new_name.rs
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
-            room_gen: None,
         }
     }
 

@@ -29,16 +29,27 @@ use serde::de::DeserializeOwned;
 
 use crate::comments::DiffComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
-use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
+use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock};
 use zeron_proto::{
-    AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device,
-    EngineInfo, HarnessId, Session, Space, WorkspaceScope,
+    ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device, EngineInfo,
+    HarnessId, Session, Space,
 };
-use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
+use zeron_rpc::{RpcClient, RpcError, RpcService, connect_ws, memory_client, methods};
 
 use crate::change_requests::{
     ChangeRequestClientState, ChangeRequestWatchKey, desired_watch_targets, watch_params,
 };
+use crate::keiki::{
+    KeikiConversation, KeikiConversationPending, SessionStatus as KeikiSessionStatus,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeikiSessionInfo {
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub active_org_name: Option<String>,
+    pub role: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Engine handle
@@ -47,19 +58,8 @@ use crate::change_requests::{
 /// Everything needed to reach (or start) an engine.
 #[derive(Debug, Clone)]
 pub struct EngineBootConfig {
-    /// Data directory for the embedded engine (`~/.zeron`).
     pub data_dir: PathBuf,
-    /// Localhost IPC port to probe / serve.
     pub ipc_port: u16,
-    /// Edge base URL for the embedded engine.
-    pub edge_url: String,
-    /// Bearer for edge room joins; `None` runs offline.
-    pub edge_token: Option<String>,
-    /// Workspace org override for explicit dev-mode runs.
-    pub org_id: Option<String>,
-    /// WorkOS client id for production authentication.
-    pub workos_client_id: Option<String>,
-    /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
 }
 
@@ -116,77 +116,6 @@ impl EngineBackend for InProcessEngine {
     }
 }
 
-#[derive(Clone)]
-enum DeferredEngineState {
-    Waiting,
-    Ready,
-    Failed(String),
-}
-
-/// Serves engine identity and AuthRpc immediately, then holds data calls only
-/// while a captured synced profile still needs organization onboarding.
-/// Existing subscriptions attach to the assembled service without reconnecting.
-struct DeferredEngineRpc {
-    auth: AuthRpc,
-    engine_info: EngineInfo,
-    state: tokio::sync::watch::Receiver<DeferredEngineState>,
-    service: Arc<tokio::sync::OnceCell<Arc<dyn RpcService>>>,
-}
-
-#[async_trait]
-impl RpcService for DeferredEngineRpc {
-    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
-        if method == methods::ENGINE_INFO {
-            return RpcReply::value(&self.engine_info);
-        }
-        if method == methods::ENGINE_READY {
-            let mut state = self.state.clone();
-            return match wait_for_deferred_engine(&mut state).await {
-                Ok(()) => RpcReply::value(&serde_json::json!({ "ready": true })),
-                Err(message) => Err(RpcError::Failed(message)),
-            };
-        }
-        if AuthRpc::handles(method) {
-            return self.auth.handle(method, params).await;
-        }
-
-        let mut state = self.state.clone();
-        loop {
-            let current = { state.borrow().clone() };
-            match current {
-                DeferredEngineState::Waiting => {}
-                DeferredEngineState::Ready => {
-                    let service = self.service.get().ok_or_else(|| {
-                        RpcError::Failed(
-                            "embedded engine became ready without an RPC service".into(),
-                        )
-                    })?;
-                    return service.handle(method, params).await;
-                }
-                DeferredEngineState::Failed(message) => return Err(RpcError::Failed(message)),
-            }
-            state.changed().await.map_err(|_| RpcError::Closed)?;
-        }
-    }
-}
-
-async fn wait_for_deferred_engine(
-    state: &mut tokio::sync::watch::Receiver<DeferredEngineState>,
-) -> Result<(), String> {
-    loop {
-        let current = { state.borrow().clone() };
-        match current {
-            DeferredEngineState::Waiting => {}
-            DeferredEngineState::Ready => return Ok(()),
-            DeferredEngineState::Failed(message) => return Err(message),
-        }
-        state
-            .changed()
-            .await
-            .map_err(|_| "embedded engine assembly ended without a result".to_string())?;
-    }
-}
-
 /// External daemon over `ws://127.0.0.1:{port}`.
 struct RemoteEngine {
     client: Arc<RpcClient>,
@@ -217,7 +146,6 @@ impl EngineBackend for RemoteEngine {
 pub struct EngineHandle {
     inner: Arc<dyn EngineBackend>,
     engine_info: EngineInfo,
-    deferred_state: Option<tokio::sync::watch::Receiver<DeferredEngineState>>,
 }
 
 impl EngineHandle {
@@ -225,139 +153,34 @@ impl EngineHandle {
     /// Must run on the tokio runtime (`Tokio::spawn`): both transports spawn
     /// tokio tasks.
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
-        // Invariant: at most one bootstrap in this process runs probe+embed at
-        // a time. The winner binds the deferred IPC listener before releasing
-        // the gate, so a concurrent viewport's probe finds it and attaches as
-        // Remote instead of racing it for the data dir.
         static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _gate = BOOTSTRAP_GATE.lock().await;
-
         if let Some(handle) = Self::attach_to_daemon(config.ipc_port).await {
             return Ok(handle);
         }
-
-        tracing::info!(data_dir = %config.data_dir.display(), "no daemon on port; embedding engine");
         let engine_config = EngineConfig {
             data_dir: config.data_dir,
-            edge_url: config.edge_url,
-            edge_token: config.edge_token,
             ipc_port: config.ipc_port,
             default_harness: config.default_harness,
-            org_id: config.org_id,
-            workos_client_id: config.workos_client_id,
         };
-
-        // Own the data dir before opening anything under it or binding IPC —
-        // the lock, not the port bind, is the ownership decision. A failed
-        // acquire means an out-of-process engine holds the dir but was not
-        // serving IPC at probe time (a daemon mid-start): wait for its
-        // listener, re-trying the lock in case it dies instead.
         std::fs::create_dir_all(&engine_config.data_dir)?;
-        let lock_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let lock = loop {
-            match InstanceLock::acquire(&engine_config.data_dir) {
-                Ok(lock) => break lock,
-                Err(err) => {
-                    if std::time::Instant::now() >= lock_deadline {
-                        return Err(err.into());
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    if let Some(handle) = Self::attach_to_daemon(engine_config.ipc_port).await {
-                        return Ok(handle);
-                    }
-                }
-            }
-        };
-
-        let auth = Engine::build_auth(&engine_config).await;
-        let workspace_scope = Engine::initial_workspace_scope(&auth);
-        let initial_profile = Engine::resolve_profile(&engine_config, &auth, workspace_scope)?;
-        let profile_is_resolved = initial_profile.is_some();
-        let engine_info = Engine::engine_info(&engine_config, workspace_scope)?;
-        let refresh_task = auth.spawn_refresh_loop();
-        let (state_tx, mut state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        let assembled_service = Arc::new(tokio::sync::OnceCell::new());
-        let service: Arc<dyn RpcService> = Arc::new(DeferredEngineRpc {
-            auth: AuthRpc::new(auth.clone()),
-            engine_info: engine_info.clone(),
-            state: state_rx.clone(),
-            service: assembled_service.clone(),
-        });
+        let lock = InstanceLock::acquire(&engine_config.data_dir)?;
+        let profile = zeron_engine::EngineProfile::local(&engine_config.data_dir)?;
+        let engine_info = Engine::engine_info(&engine_config)?;
+        let runtime = Engine::assemble_runtime_with_lock(&engine_config, profile, lock).await?;
+        let service: Arc<dyn RpcService> = runtime.core().rpc_service();
         let client = memory_client(service.clone());
-
-        // Serve the same service on the IPC port so a terminal viewport can
-        // attach to this window's engine with no setup. Deliberately the
-        // *deferred* service, not the assembled one: a viewport that connects
-        // during cloud onboarding gets EngineInfo and AuthRpc immediately, and
-        // its data subscriptions wait exactly as this window's do.
-        //
-        // Best-effort — losing the bind race with another engine costs other
-        // viewports, not this one.
         let ipc_task = match zeron_engine::serve_ipc(engine_config.ipc_port, service).await {
             Ok(task) => Some(task),
             Err(err) => {
-                tracing::warn!(
-                    port = engine_config.ipc_port,
-                    error = %err,
-                    "IPC port unavailable; other viewports cannot attach to this window"
-                );
+                tracing::warn!(port = engine_config.ipc_port, error = %err, "IPC port unavailable");
                 None
             }
         };
-        let runtime = Arc::new(tokio::sync::Mutex::new(None));
-        let runtime_for_boot = runtime.clone();
-        let service_for_boot = assembled_service.clone();
-        // The instance lock rides into the boot task and is consumed by
-        // assembly — held through sign-in onboarding too, because this process
-        // owns the data dir from the moment it decided to embed.
-        let boot_task = tokio::spawn(async move {
-            let profile = match initial_profile {
-                Some(profile) => profile,
-                None => {
-                    let mut auth_state = auth.watch_state();
-                    while !auth_state.borrow().is_signed_in() {
-                        if auth_state.changed().await.is_err() {
-                            state_tx.send_replace(DeferredEngineState::Failed(
-                                "authentication state closed before workspace onboarding".into(),
-                            ));
-                            return;
-                        }
-                    }
-                    match Engine::resolve_profile(&engine_config, &auth, workspace_scope) {
-                        Ok(Some(profile)) => profile,
-                        Ok(None) => {
-                            state_tx.send_replace(DeferredEngineState::Failed(
-                                "workspace onboarding completed without an organization".into(),
-                            ));
-                            return;
-                        }
-                        Err(err) => {
-                            state_tx.send_replace(DeferredEngineState::Failed(err.to_string()));
-                            return;
-                        }
-                    }
-                }
-            };
-
-            match Engine::assemble_runtime_with_lock(&engine_config, auth, profile, lock).await {
-                Ok(engine_runtime) => {
-                    let service: Arc<dyn RpcService> = engine_runtime.core().rpc_service();
-                    *runtime_for_boot.lock().await = Some(engine_runtime);
-                    if service_for_boot.set(service).is_err() {
-                        state_tx.send_replace(DeferredEngineState::Failed(
-                            "embedded engine RPC service was assembled more than once".into(),
-                        ));
-                        return;
-                    }
-                    state_tx.send_replace(DeferredEngineState::Ready);
-                }
-                Err(err) => {
-                    tracing::error!(error = %err, "embedded engine assembly failed");
-                    state_tx.send_replace(DeferredEngineState::Failed(format!("{err:#}")));
-                }
-            }
-        });
-        let handle = EngineHandle {
+        let runtime = Arc::new(tokio::sync::Mutex::new(Some(runtime)));
+        let boot_task = tokio::spawn(async {});
+        let refresh_task = tokio::spawn(async {});
+        Ok(EngineHandle {
             inner: Arc::new(InProcessEngine {
                 runtime,
                 boot_task,
@@ -366,17 +189,7 @@ impl EngineHandle {
                 client,
             }),
             engine_info,
-            deferred_state: Some(state_rx.clone()),
-        };
-        // Local, development, and already-resolved synced profiles need no
-        // authentication UI while assembling. Keep the viewport Connecting
-        // until their stores and journals are actually open, and surface a
-        // boot failure through the existing bootstrap error path.
-        if profile_is_resolved && let Err(message) = wait_for_deferred_engine(&mut state_rx).await {
-            handle.shutdown().await;
-            return Err(anyhow::anyhow!(message));
-        }
-        Ok(handle)
+        })
     }
 
     /// Probe the IPC port and, if a live engine answers, attach as a remote
@@ -392,55 +205,23 @@ impl EngineHandle {
         if !matches!(probe, Ok(Ok(_))) {
             return None;
         }
-        tracing::info!(%url, "engine daemon detected; connecting");
         match connect_ws(&url).await {
             Ok(client) => match query_engine_info(&client).await {
-                Ok(engine_info) => {
-                    let client = Arc::new(client);
-                    let (state_tx, state_rx) =
-                        tokio::sync::watch::channel(DeferredEngineState::Waiting);
-                    let lifecycle_client = client.clone();
-                    let lifecycle_task = tokio::spawn(async move {
-                        let state = match lifecycle_client
-                            .call(methods::ENGINE_READY, serde_json::json!({}))
-                            .await
-                        {
-                            Ok(_) => DeferredEngineState::Ready,
-                            // EngineReady was added after EngineInfo. An older daemon
-                            // that does not expose the barrier is already assembled.
-                            Err(RpcError::UnknownMethod(method))
-                                if method == methods::ENGINE_READY =>
-                            {
-                                DeferredEngineState::Ready
-                            }
-                            Err(err) => DeferredEngineState::Failed(err.to_string()),
-                        };
-                        state_tx.send_replace(state);
-                    });
-                    Some(EngineHandle {
-                        inner: Arc::new(RemoteEngine {
-                            client,
-                            url,
-                            lifecycle_task: tokio::sync::Mutex::new(Some(lifecycle_task)),
-                        }),
-                        engine_info,
-                        deferred_state: Some(state_rx),
-                    })
-                }
+                Ok(engine_info) => Some(EngineHandle {
+                    inner: Arc::new(RemoteEngine {
+                        client: Arc::new(client),
+                        url,
+                        lifecycle_task: tokio::sync::Mutex::new(None),
+                    }),
+                    engine_info,
+                }),
                 Err(err) => {
-                    tracing::warn!(
-                        %url,
-                        error = %err,
-                        "listener did not provide engine identity; embedding instead"
-                    );
+                    tracing::debug!(%url, error = %err, "listener is not a zeron engine");
                     None
                 }
             },
-            // Something is on the port but it is not an engine (or it is
-            // wedged). Fall through and embed: a stranger holding 27654
-            // should cost other viewports, not this window.
             Err(err) => {
-                tracing::warn!(%url, error = %err, "not an engine; embedding instead");
+                tracing::debug!(%url, error = %err, "engine IPC connection failed");
                 None
             }
         }
@@ -456,10 +237,6 @@ impl EngineHandle {
 
     pub fn engine_info(&self) -> &EngineInfo {
         &self.engine_info
-    }
-
-    fn deferred_state(&self) -> Option<tokio::sync::watch::Receiver<DeferredEngineState>> {
-        self.deferred_state.clone()
     }
 
     pub async fn shutdown(&self) {
@@ -486,7 +263,6 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
                 .await?;
             Ok(EngineInfo {
                 device_id: legacy.device_id,
-                workspace_scope: WorkspaceScope::Synced,
             })
         }
         Err(err) => Err(err),
@@ -504,45 +280,8 @@ async fn query_engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
 pub use zeron_proto::view::{
     ChatGroup, ConnectionStatus, GatePhase, Indicator, SESSION_STALE_MS, attention_rank,
     chat_location, display_status, effective_indicator, format_time_ago, gate_phase, group_chats,
-    parse_auth_state, project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
+    project_label, sort_active, sort_chats, sort_spaces, sort_tabs,
 };
-
-// ---------------------------------------------------------------------------
-// Org gate (pure)
-// ---------------------------------------------------------------------------
-
-/// One org membership row (tolerant local mirror of the engine's ListOrgs
-/// reply — `{orgs: [{id, organizationId, name}]}`).
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrgRow {
-    pub organization_id: String,
-    pub name: String,
-}
-
-/// Parse a ListOrgs reply tolerantly (accepts a bare array too).
-pub fn parse_orgs(value: &serde_json::Value) -> Vec<OrgRow> {
-    let list = value.get("orgs").unwrap_or(value);
-    serde_json::from_value(list.clone()).unwrap_or_default()
-}
-
-/// Workspace names must be non-empty (trimmed) and reasonably short.
-pub fn org_name_valid(name: &str) -> bool {
-    let trimmed = name.trim();
-    !trimmed.is_empty() && trimmed.chars().count() <= 64
-}
-
-/// Memberships sorted by name (case-insensitive), deduped by organization id.
-pub fn sort_memberships(mut orgs: Vec<OrgRow>) -> Vec<OrgRow> {
-    orgs.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    orgs.dedup_by(|a, b| a.organization_id == b.organization_id);
-    orgs
-}
 
 // ---------------------------------------------------------------------------
 // AppState entity
@@ -581,26 +320,16 @@ pub struct UploadProgress {
 /// glue ([`Self::bootstrap`], [`Self::select_chat`]) layers subscriptions on top.
 pub struct AppState {
     pub connection: ConnectionStatus,
-    /// Fixed data boundary of the attached engine. Authentication may change
-    /// in place, but changing this scope requires assembling a new runtime.
-    pub workspace_scope: Option<WorkspaceScope>,
-    /// Auth stream value; `None` until the engine reports one (M4).
-    pub auth: Option<AuthState>,
     pub devices: Vec<Device>,
-    /// Live edge posture (WatchConnectivity): drives the connection pill,
-    /// composer honesty ("will queue"), and the Queued send badges.
-    pub connectivity: zeron_proto::Connectivity,
     /// Sorted (see [`sort_spaces`]).
     pub spaces: Vec<Space>,
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
-    /// The project the new-session canvas mints into. Healed by
-    /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
-    /// its project.
+    /// The currently selected project. Healed by [`Self::apply_spaces`] when
+    /// the row vanishes; selecting a chat implies its project.
     pub selected_space: Option<String>,
-    /// Deliberate "Don't work in a project" pick: while set, the canvas mints
-    /// project-less sessions (cwd `~` on the picked device) and
+    /// Deliberate "Don't work in a project" selection. While set,
     /// [`Self::selected_space_row`] reads as `None` — healing must NOT
     /// re-select a project underneath it.
     pub no_project: bool,
@@ -616,8 +345,6 @@ pub struct AppState {
     /// judge by the empty pre-sync lists.
     pub chats_synced: bool,
     pub spaces_synced: bool,
-    pending_deep_link: Option<crate::links::ConversationDeepLink>,
-    deep_link_notice: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
     /// The selected chat's opening `WatchDocMessages` reset has landed. An
@@ -632,20 +359,23 @@ pub struct AppState {
     pending_sends: HashMap<String, PendingSend>,
     /// The in-flight send's attachment upload, when it has one.
     upload_progress: Option<UploadProgress>,
-    /// Engine-side queued-attachment transfers by uploadId (`WatchTransfers`
-    /// snapshots): real relay-leg progress for the sending thumbnail's
-    /// percent ring, present exactly while bytes are moving.
-    transfers: HashMap<String, (u64, u64)>,
     /// Written by the changes pane, read by the composer.
     diff_comments: HashMap<String, Vec<DiffComment>>,
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
-    /// Latest `UpdateStatus` frame — drives the sidebar update strip.
-    pub update: Option<zeron_update::UpdateStatus>,
-    /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
-    /// bootstrap so child views can persist small preference files.
+    /// Data directory (`ui-settings.json`); set at bootstrap so child views
+    /// can persist small preference files.
     pub data_dir: Option<PathBuf>,
+    pub(crate) keiki_client: Option<keiki_api::Client>,
+    pub(crate) keiki_token: Option<keiki_api::TokenSet>,
+    pub(crate) keiki_credentials: Option<keiki_api::StoredCredentials>,
+    pub(crate) keiki_flow: Option<keiki_api::AuthorizationFlow>,
+    pub(crate) keiki_status: KeikiSessionStatus,
+    pub(crate) keiki_session: Option<KeikiSessionInfo>,
+    pub(crate) keiki_error: Option<String>,
+    pub(crate) keiki_task: Option<Task<()>>,
+    pub(crate) keiki_conversation: Option<KeikiConversation>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -673,10 +403,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             connection: ConnectionStatus::Connecting,
-            workspace_scope: None,
-            auth: None,
             devices: Vec::new(),
-            connectivity: zeron_proto::Connectivity::default(),
             spaces: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
@@ -689,11 +416,18 @@ impl AppState {
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
             upload_progress: None,
-            transfers: HashMap::new(),
             diff_comments: HashMap::new(),
             local_device_id: None,
-            update: None,
             data_dir: None,
+            keiki_client: None,
+            keiki_token: None,
+            keiki_credentials: None,
+            keiki_flow: None,
+            keiki_status: KeikiSessionStatus::SignedOut,
+            keiki_session: None,
+            keiki_error: None,
+            keiki_task: None,
+            keiki_conversation: None,
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -705,14 +439,10 @@ impl AppState {
             auto_selected: false,
             chats_synced: false,
             spaces_synced: false,
-            pending_deep_link: None,
-            deep_link_notice: None,
         }
     }
 
-    /// The selected chat, or `""` on the new-chat canvas. Identical to the
-    /// composer's own attachment/draft key, so a comment written before the
-    /// first send survives the chat being minted.
+    /// The selected chat key, or an empty key for unscoped diff comments.
     pub fn composer_key(&self) -> String {
         self.selected_chat.clone().unwrap_or_default()
     }
@@ -751,12 +481,25 @@ impl AppState {
     // ---- reducers (pure) ----
 
     pub fn apply_chats(&mut self, mut chats: Vec<Chat>) {
+        let incoming_ids = chats
+            .iter()
+            .map(|chat| chat.id.clone())
+            .collect::<HashSet<_>>();
+        chats.extend(
+            self.chats
+                .iter()
+                .filter(|chat| {
+                    crate::keiki::is_keiki_chat(&chat.id) && !incoming_ids.contains(&chat.id)
+                })
+                .cloned(),
+        );
         sort_chats(&mut chats);
         self.chats = chats;
         self.chats_synced = true;
         if let Some(selected) = &self.selected_chat
             && !self.chats.iter().any(|c| &c.id == selected)
         {
+            self.keiki_conversation = None;
             // Selected chat vanished (deleted elsewhere): drop selection + transcript.
             self.selected_chat = None;
             self.transcript.clear();
@@ -770,6 +513,18 @@ impl AppState {
     }
 
     pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
+        let incoming_ids = spaces
+            .iter()
+            .map(|space| space.id.clone())
+            .collect::<HashSet<_>>();
+        spaces.extend(
+            self.spaces
+                .iter()
+                .filter(|space| {
+                    crate::keiki::is_keiki_space(&space.id) && !incoming_ids.contains(&space.id)
+                })
+                .cloned(),
+        );
         sort_spaces(&mut spaces);
         self.spaces = spaces;
         self.spaces_synced = true;
@@ -777,16 +532,15 @@ impl AppState {
         // the first project; its chats died with it, so a matching chat
         // selection is healed by the accompanying chats frame (`apply_chats`).
         // The picker lists projects per-device, so healing prefers one on the
-        // picked device — a global fallback would silently re-aim the canvas
+        // picked device — a global fallback would silently re-aim the selection
         // at another machine.
         if let Some(selected) = &self.selected_space
             && !self.spaces.iter().any(|s| &s.id == selected)
         {
             self.selected_space = self.first_space_on_picked_device();
         }
-        // First frame with no selection yet: pick the first project so the
-        // canvas never boots project-less by accident — unless the user
-        // deliberately opted out.
+        // First frame with no selection yet: pick the first project unless the
+        // user deliberately opted out.
         if self.selected_space.is_none() && !self.no_project {
             self.selected_space = self.first_space_on_picked_device();
         }
@@ -801,65 +555,142 @@ impl AppState {
         }
     }
 
-    pub fn apply_connectivity(&mut self, connectivity: zeron_proto::Connectivity) {
-        self.connectivity = connectivity;
-    }
-
-    /// Is this chat's delivery path degraded — will a send QUEUE rather than
-    /// reach its executor promptly? Locally-hosted chats are never degraded
-    /// (a queued command executes on this device even fully offline). Remote
-    /// chats degrade when the OS says offline, when the chat's own edge room
-    /// is down, or when the host device has gone presence-dark.
-    pub fn chat_delivery_degraded(&self, chat_id: &str) -> bool {
-        use zeron_proto::ConnectivityState as S;
-        if self.connectivity.state == S::Disabled {
-            return false;
-        }
-        let Some(chat) = self.chats.iter().find(|c| c.id == chat_id) else {
-            // Unknown chat (a just-minted canvas send): only the global
-            // state can speak.
-            return self.connectivity.state == S::Offline;
-        };
-        if Some(chat.device_id.as_str()) == self.local_device_id.as_deref() {
-            return false;
-        }
-        if self.connectivity.state == S::Offline {
-            return true;
-        }
-        let room_down = match self
-            .connectivity
-            .chats
-            .iter()
-            .find(|c| c.chat_id == chat_id)
-        {
-            Some(net) => !net.connected,
-            None => self.connectivity.state != S::Connected,
-        };
-        room_down || !self.device_online(&chat.device_id, Utc::now())
-    }
-
-    /// A send is queued: in flight AND its delivery path is degraded — the
-    /// honest badge is "Queued", not a Working spinner.
-    pub fn send_queued(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
-        self.send_pending(chat_id, now) && self.chat_delivery_degraded(chat_id)
-    }
-
     pub fn apply_devices(&mut self, mut devices: Vec<Device>) {
-        // A local-only workspace has no remote device identity to distinguish.
-        // Keep the engine's legacy sentinel out of the UI while preserving real
-        // hostnames and user-assigned device names.
-        if self.workspace_scope == Some(WorkspaceScope::Local)
-            && let Some(local_id) = self.local_device_id.as_deref()
-            && let Some(device) = devices.iter_mut().find(|device| device.id == local_id)
-            && device.name == "unknown-device"
-        {
-            device.name = "Local".to_string();
-        }
+        let incoming_ids = devices
+            .iter()
+            .map(|device| device.id.clone())
+            .collect::<HashSet<_>>();
+        devices.extend(
+            self.devices
+                .iter()
+                .filter(|device| {
+                    device.id == crate::keiki::DEVICE_ID && !incoming_ids.contains(&device.id)
+                })
+                .cloned(),
+        );
         for device in &devices {
             self.change_requests
                 .clear_unsupported_on_version_change(&device.id, device.version.as_deref());
         }
         self.devices = devices;
+    }
+
+    /// Replace the Keiki provider snapshot without allowing its partial view
+    /// to overwrite rows owned by the local engine.
+    pub fn apply_keiki_snapshot(&mut self, spaces: Vec<Space>, chats: Vec<Chat>) {
+        self.devices
+            .retain(|device| device.id != crate::keiki::DEVICE_ID);
+        self.devices.push(crate::keiki::map_device());
+        for device in &self.devices {
+            self.change_requests
+                .clear_unsupported_on_version_change(&device.id, device.version.as_deref());
+        }
+
+        self.spaces
+            .retain(|space| !crate::keiki::is_keiki_space(&space.id));
+        self.spaces.extend(spaces);
+        sort_spaces(&mut self.spaces);
+        if let Some(selected) = &self.selected_space
+            && !self.spaces.iter().any(|space| &space.id == selected)
+        {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+        if self.selected_space.is_none() && !self.no_project {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+
+        self.chats
+            .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        self.chats.extend(chats);
+        sort_chats(&mut self.chats);
+        if let Some(selected) = &self.selected_chat
+            && !self.chats.iter().any(|chat| &chat.id == selected)
+        {
+            self.keiki_conversation = None;
+            self.selected_chat = None;
+            self.transcript.clear();
+            self.transcript_replayed = false;
+            self.transcript_task = None;
+        }
+    }
+
+    /// Remove all rows owned by Keiki without changing the engine snapshot
+    /// or its synchronization state.
+    pub fn clear_keiki_rows(&mut self) {
+        let selected_keiki_chat = self
+            .selected_chat
+            .as_deref()
+            .is_some_and(crate::keiki::is_keiki_chat);
+
+        self.devices
+            .retain(|device| device.id != crate::keiki::DEVICE_ID);
+        if self.selected_device.as_deref() == Some(crate::keiki::DEVICE_ID) {
+            self.selected_device = None;
+        }
+
+        self.spaces
+            .retain(|space| !crate::keiki::is_keiki_space(&space.id));
+        if let Some(selected) = &self.selected_space
+            && !self.spaces.iter().any(|space| &space.id == selected)
+        {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+
+        self.chats
+            .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        self.keiki_conversation = None;
+        if selected_keiki_chat {
+            self.selected_chat = None;
+            self.transcript.clear();
+            self.transcript_replayed = false;
+            self.transcript_task = None;
+        }
+    }
+
+    pub fn clear_keiki_agent_rows(&mut self, agent_id: &str) {
+        let space_id = crate::keiki::agent_id(agent_id);
+        let selected_chat_owned = self.selected_chat.as_deref().is_some_and(|chat_id| {
+            self.chats
+                .iter()
+                .find(|chat| chat.id == chat_id)
+                .and_then(|chat| chat.space_id.as_deref())
+                == Some(space_id.as_str())
+        });
+
+        self.spaces.retain(|space| space.id != space_id);
+        self.chats
+            .retain(|chat| chat.space_id.as_deref() != Some(space_id.as_str()));
+        if self.selected_space.as_deref() == Some(space_id.as_str()) {
+            self.selected_space = self.first_space_on_picked_device();
+        }
+        if selected_chat_owned {
+            self.selected_chat = None;
+            self.keiki_conversation = None;
+            self.transcript.clear();
+            self.transcript_replayed = false;
+            self.transcript_task = None;
+        } else if self
+            .keiki_conversation
+            .as_ref()
+            .is_some_and(|conversation| {
+                self.chats
+                    .iter()
+                    .all(|chat| chat.id != conversation.chat_id)
+            })
+        {
+            self.keiki_conversation = None;
+        }
+    }
+
+    pub(crate) fn mark_keiki_signed_out(&mut self, error: Option<String>) {
+        crate::avatars::clear();
+        self.clear_keiki_rows();
+        self.keiki_token = None;
+        self.keiki_credentials = None;
+        self.keiki_flow = None;
+        self.keiki_session = None;
+        self.keiki_status = KeikiSessionStatus::SignedOut;
+        self.keiki_error = error;
     }
 
     /// True when `device_id`'s engine (per its registry device row) is at
@@ -875,9 +706,8 @@ impl AppState {
             .is_some_and(|v| v >= min)
     }
 
-    /// First project on the composer's picked device (falling back through
-    /// the local device, then any project at all — better a cross-device
-    /// project than a surprise project-less canvas). Display order.
+    /// First project on the selected device (falling back through the local
+    /// device, then any project at all). Display order.
     fn first_space_on_picked_device(&self) -> Option<String> {
         let device = self
             .selected_device
@@ -888,30 +718,6 @@ impl AppState {
             .and_then(|d| sorted.iter().find(|s| s.device_id == d).copied())
             .or_else(|| sorted.first().copied())
             .map(|s| s.id.clone())
-    }
-
-    pub fn apply_update(&mut self, status: zeron_update::UpdateStatus) {
-        self.update = Some(status);
-    }
-
-    pub fn apply_auth(&mut self, auth: AuthState) {
-        self.auth = Some(auth);
-    }
-
-    /// Tolerant AuthStatus frame reducer (see [`parse_auth_state`]).
-    pub fn apply_auth_value(&mut self, value: serde_json::Value) {
-        match parse_auth_state(&value) {
-            Some(auth) => self.apply_auth(auth),
-            None => tracing::warn!("dropping unrecognized AuthStatus frame"),
-        }
-    }
-
-    /// The signed-in user, if the engine reports one.
-    pub fn auth_user(&self) -> Option<&zeron_proto::UserProfile> {
-        match self.auth.as_ref()? {
-            AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
-            AuthState::SignedOut => None,
-        }
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
@@ -1059,29 +865,6 @@ impl AppState {
         Some(((done * 100) / progress.total).min(99) as u8)
     }
 
-    /// A `WatchTransfers` snapshot: the engine-side relay leg's in-flight
-    /// queued-attachment transfers, replacing the whole set each frame.
-    pub fn apply_transfers(&mut self, transfers: Vec<zeron_proto::TransferProgress>) {
-        self.transfers = transfers
-            .into_iter()
-            .map(|t| (t.upload_id, (t.done, t.total)))
-            .collect();
-    }
-
-    /// Percent of one queued attachment's relay transfer, by the uploadId
-    /// its `pending://{uploadId}/…` ref names. Same 99-clamp as
-    /// [`Self::upload_progress_percent`]: the last point belongs to the
-    /// commit, so "100% but still spinning" never shows. `None` when no
-    /// bytes are moving for that upload (staged-but-waiting, retry backoff,
-    /// or done) — the thumbnail falls back to its indeterminate spinner.
-    pub fn transfer_percent(&self, upload_id: &str) -> Option<u8> {
-        let (done, total) = self.transfers.get(upload_id)?;
-        if *total == 0 {
-            return None;
-        }
-        Some(((done.min(total) * 100) / total).min(99) as u8)
-    }
-
     /// Is a send still in flight for this chat (unacked)? Inside the grace
     /// window normally; while the chat's delivery path is degraded the
     /// overlay holds indefinitely — the truth IS "Queued", and silently
@@ -1090,7 +873,6 @@ impl AppState {
     pub fn send_pending(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
         self.pending_sends.get(chat_id).is_some_and(|p| {
             now.signed_duration_since(p.started).num_milliseconds() <= UNDELIVERED_GRACE_MS
-                || self.chat_delivery_degraded(chat_id)
         })
     }
 
@@ -1121,7 +903,6 @@ impl AppState {
             .get(chat_id)
             .filter(|p| {
                 now.signed_duration_since(p.started).num_milliseconds() <= UNDELIVERED_GRACE_MS
-                    || self.chat_delivery_degraded(chat_id)
             })
             .map(|p| p.started)
     }
@@ -1162,8 +943,8 @@ impl AppState {
         self.spaces.iter().find(|s| s.id == id)
     }
 
-    /// The device the new-session canvas targets: the picked project's host
-    /// when one is selected, else the explicit device pick, else this device.
+    /// The device associated with the selected project or explicit device
+    /// selection, falling back to this device.
     pub fn effective_device_id(&self) -> Option<String> {
         if let Some(space) = self.selected_space_row() {
             return Some(space.device_id.clone());
@@ -1230,24 +1011,14 @@ impl AppState {
             .map(|d| d.name.as_str())
     }
 
-    /// Host-presence check: is this device's 15s presence heartbeat fresh?
-    /// Distinguishes "host offline" (its queued work syncs when it returns)
-    /// from slow sync. The local device is trivially online; unknown devices
-    /// get the benefit of the doubt (no evidence — don't cry wolf).
-    pub fn device_online(&self, device_id: &str, now: DateTime<Utc>) -> bool {
-        if self.local_device_id.as_deref() == Some(device_id) {
-            return true;
-        }
-        match self.devices.iter().find(|d| d.id == device_id) {
-            Some(d) => crate::settings::devices::device_online(d.last_seen_at, now),
-            None => true,
-        }
+    /// Local device availability check. A local engine is always reachable
+    /// through the current process or its localhost daemon.
+    pub fn device_online(&self, _device_id: &str, _now: DateTime<Utc>) -> bool {
+        true
     }
 
     /// The "@ device" tag for a space — shared by the space pickers' rows,
-    /// the sidebar filter trigger, and the composer's space chip. Returns
-    /// `(tag, offline)`; staleness renders as a disconnected GLYPH at the
-    /// call sites (user request), never words in the tag.
+    /// the sidebar filter trigger, and the composer's space chip.
     pub fn space_device_tag(&self, space: &Space, now: DateTime<Utc>) -> (String, bool) {
         let offline = !self.device_online(&space.device_id, now);
         let device = self
@@ -1257,14 +1028,14 @@ impl AppState {
     }
 
     /// Does the selected space's folder have git? Drives the branch picker and
-    /// the diff sidebar (owner-stamped, synced — no RPC).
+    /// the diff sidebar (owner-stamped in the local workspace doc).
     pub fn selected_space_git(&self) -> bool {
         self.selected_space_row().is_some_and(|s| s.git_detected)
     }
 
     /// Full display status for a chat (tab dots, Active list). A send in
-    /// flight ([`Self::begin_pending_send`]) reads as Working — the queued
-    /// command is as good as running.
+    /// flight ([`Self::begin_pending_send`]) reads as Working while its local
+    /// command is being drained.
     pub fn display_status_for(&self, chat: &Chat, now: DateTime<Utc>) -> ChatIndicator {
         if self.send_pending(&chat.id, now) {
             return ChatIndicator::Working;
@@ -1325,6 +1096,54 @@ impl AppState {
         self.chats.iter().find(|c| c.id == id)
     }
 
+    pub fn keiki_conversation(&self) -> Option<&KeikiConversation> {
+        self.keiki_conversation.as_ref().filter(|conversation| {
+            self.selected_chat.as_deref() == Some(conversation.chat_id.as_str())
+        })
+    }
+
+    pub(crate) fn set_keiki_conversation_detail(
+        &mut self,
+        chat_id: &str,
+        detail: &keiki_model::ConversationDetail,
+    ) {
+        if self.selected_chat.as_deref() != Some(chat_id) {
+            return;
+        }
+        let conversation = self
+            .keiki_conversation
+            .get_or_insert_with(|| KeikiConversation::new(chat_id.to_string()));
+        if conversation.chat_id != chat_id {
+            return;
+        }
+        conversation.blocked = detail.blocked;
+        conversation.takeover = detail.takeover.clone();
+        conversation.pending = None;
+        conversation.error = None;
+    }
+
+    pub(crate) fn replace_keiki_conversation(&mut self, chat_id: Option<&str>) {
+        self.keiki_conversation = chat_id
+            .filter(|id| crate::keiki::is_keiki_chat(id))
+            .map(|id| KeikiConversation::new(id.to_string()));
+    }
+
+    pub(crate) fn set_keiki_pending(
+        &mut self,
+        chat_id: &str,
+        pending: KeikiConversationPending,
+    ) -> bool {
+        let Some(conversation) = self.keiki_conversation.as_mut() else {
+            return false;
+        };
+        if conversation.chat_id != chat_id || self.selected_chat.as_deref() != Some(chat_id) {
+            return false;
+        }
+        conversation.pending = Some(pending);
+        conversation.error = None;
+        true
+    }
+
     /// The chat the Archive session shortcut acts on: the selected one, unless
     /// it is already archived. The shortcut archives and never unarchives, so
     /// an archived chat is left alone. Pure.
@@ -1341,16 +1160,16 @@ impl AppState {
     }
 
     pub fn gate(&self) -> GatePhase {
-        gate_phase(&self.connection, self.workspace_scope, self.auth.as_ref())
+        gate_phase(&self.connection)
     }
 
     pub fn engine(&self) -> Option<&EngineHandle> {
         self.engine.as_ref()
     }
 
-    /// Drop every account-scoped view and subscription after its runtime has
-    /// stopped. The next bootstrap must never render rows from the previous
-    /// account while the local profile is opening.
+    /// Drop runtime views and subscriptions after the engine has stopped.
+    /// The next bootstrap must not render rows from the previous runtime while
+    /// the local profile is opening.
     pub fn prepare_runtime_replacement(&mut self, cx: &mut Context<Self>) {
         self.engine = None;
         self.watch_tasks.clear();
@@ -1358,8 +1177,6 @@ impl AppState {
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
         self.connection = ConnectionStatus::Connecting;
-        self.workspace_scope = None;
-        self.auth = None;
         self.devices.clear();
         self.spaces.clear();
         self.chats.clear();
@@ -1368,6 +1185,7 @@ impl AppState {
         self.no_project = false;
         self.selected_device = None;
         self.selected_chat = None;
+        self.keiki_conversation = None;
         self.auto_selected = false;
         self.chats_synced = false;
         self.spaces_synced = false;
@@ -1376,9 +1194,7 @@ impl AppState {
         self.echoes.clear();
         self.pending_sends.clear();
         self.upload_progress = None;
-        self.transfers.clear();
         self.local_device_id = None;
-        self.update = None;
         cx.notify();
     }
 
@@ -1390,8 +1206,6 @@ impl AppState {
         let data_dir = config.data_dir.clone();
         state.update(cx, |s, cx| {
             s.connection = ConnectionStatus::Connecting;
-            s.workspace_scope = None;
-            s.auth = None;
             s.data_dir = Some(data_dir);
             cx.notify();
         });
@@ -1422,13 +1236,9 @@ impl AppState {
     /// workspace doc in M4) fail their subscribe and are skipped gracefully.
     fn attach_engine(&mut self, handle: EngineHandle, cx: &mut Context<Self>) {
         let engine_info = handle.engine_info();
-        self.workspace_scope = Some(engine_info.workspace_scope);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.engine = Some(handle.clone());
         let mut watch_tasks = Vec::with_capacity(8);
-        if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
-            watch_tasks.push(task);
-        }
         watch_tasks.extend([
             spawn_watch(
                 cx,
@@ -1446,33 +1256,8 @@ impl AppState {
             spawn_watch(
                 cx,
                 handle.clone(),
-                methods::WATCH_CONNECTIVITY,
-                AppState::apply_connectivity,
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_TRANSFERS,
-                AppState::apply_transfers,
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
-            ),
-            // Auth frames parse tolerantly — engine and proto tags differ today.
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::AUTH_STATUS,
-                AppState::apply_auth_value,
-            ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::UPDATE_STATUS,
-                AppState::apply_update,
             ),
             spawn_local_device_probe(cx, handle.clone()),
         ]);
@@ -1483,7 +1268,11 @@ impl AppState {
         self.connection = ConnectionStatus::Ready;
         // Re-subscribe the transcript if a chat was already selected (reconnect path).
         if let Some(chat_id) = self.selected_chat.clone() {
-            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
+            self.transcript_task = if crate::keiki::is_keiki_chat(&chat_id) {
+                Some(crate::keiki::spawn_transcript_watch(cx, chat_id))
+            } else {
+                Some(spawn_transcript_watch(cx, handle, chat_id))
+            };
         }
         cx.notify();
     }
@@ -1527,45 +1316,8 @@ impl AppState {
         }
     }
 
-    pub fn open_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
-        match crate::links::parse_zeron_conversation_link(url) {
-            Ok(link) => {
-                self.pending_deep_link = Some(link);
-                self.apply_pending_deep_link(cx);
-            }
-            Err(error) => self.deep_link_notice = Some(error.to_string()),
-        }
-        cx.notify();
-    }
-
-    fn apply_pending_deep_link(&mut self, cx: &mut Context<Self>) {
-        let Some(link) = self.pending_deep_link.clone() else {
-            return;
-        };
-        let Some(locator) = crate::links::workspace_locator(
-            self.workspace_scope,
-            self.auth.as_ref(),
-            self.local_device_id.as_deref(),
-        ) else {
-            return;
-        };
-        if locator != link.workspace {
-            self.pending_deep_link = None;
-            self.deep_link_notice =
-                Some("This conversation link belongs to another workspace".into());
-            return;
-        }
-        if self.chats.iter().any(|chat| chat.id == link.chat_id) {
-            self.pending_deep_link = None;
-            self.select_chat(Some(link.chat_id), cx);
-        } else if self.chats_synced {
-            self.pending_deep_link = None;
-            self.deep_link_notice = Some("The linked conversation was not found".into());
-        }
-    }
-
-    pub fn take_deep_link_notice(&mut self) -> Option<String> {
-        self.deep_link_notice.take()
+    pub fn open_keiki_deep_link(&mut self, url: &str, cx: &mut Context<Self>) {
+        crate::keiki::handle_callback(self, url, cx);
     }
 
     /// Select a chat (or clear). Swaps the per-chat doc-transcript subscription:
@@ -1581,13 +1333,13 @@ impl AppState {
             return;
         }
         self.selected_chat = chat_id.clone();
+        self.replace_keiki_conversation(chat_id.as_deref());
         self.auto_selected = true;
         self.transcript.clear();
         self.transcript_replayed = false;
         self.transcript_task = None;
         if let Some(id) = chat_id.as_deref() {
-            // A chat implies its project (or the lack of one); `select_chat(None)`
-            // (the new-session canvas) keeps the current project pick.
+            // A chat implies its project (or the lack of one).
             if let Some(chat) = self.chats.iter().find(|c| c.id == id) {
                 match chat.space_id.clone() {
                     Some(space_id) => {
@@ -1602,8 +1354,14 @@ impl AppState {
             }
             self.mark_chat_seen(id, cx);
         }
-        if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
-            self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
+        if let Some(chat_id) = chat_id {
+            self.transcript_task = if crate::keiki::is_keiki_chat(&chat_id) {
+                Some(crate::keiki::spawn_transcript_watch(cx, chat_id))
+            } else {
+                self.engine
+                    .clone()
+                    .map(|handle| spawn_transcript_watch(cx, handle, chat_id))
+            };
         }
         cx.notify();
     }
@@ -1631,25 +1389,6 @@ impl AppState {
         cx.notify();
     }
 
-    /// Synced seen marker: only fires when the chat is currently unseen
-    /// (idempotence — no mutate spam), stamps the local row optimistically so
-    /// the LWW round-trip is invisible, and fire-and-forgets the mutate.
-    /// Window-focus liveness sweep: ask the engine to probe every open room
-    /// (workspace + chat docs). Fire-and-forget; each room ignores the hint
-    /// unless it has been broadcast-quiet ≥30s, so spamming is harmless.
-    pub fn probe_sync(&mut self, cx: &mut Context<Self>) {
-        let Some(handle) = self.engine.clone() else {
-            return;
-        };
-        cx.spawn(async move |_, _| {
-            let params = serde_json::json!({});
-            if let Err(err) = handle.client().call(methods::PROBE_SYNC, params).await {
-                tracing::debug!(error = %err, "probe sync failed");
-            }
-        })
-        .detach();
-    }
-
     pub fn mark_chat_seen(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
@@ -1671,32 +1410,6 @@ impl AppState {
         })
         .detach();
     }
-}
-
-/// Observe assembly after an early attach (cloud onboarding or another viewport
-/// reaching the embedded engine over IPC). Data subscriptions wait on the same
-/// result, but their individual errors are not authoritative: older engines may
-/// legitimately omit a watch method. Only the assembly result may fail the
-/// whole connection.
-fn spawn_deferred_engine_watch(
-    cx: &mut Context<AppState>,
-    handle: EngineHandle,
-) -> Option<Task<()>> {
-    let mut deferred = handle.deferred_state()?;
-    Some(cx.spawn(async move |this, cx| {
-        let Err(failure) = wait_for_deferred_engine(&mut deferred).await else {
-            return;
-        };
-        tracing::error!(error = %failure, "engine assembly failed after attachment");
-        // Embedded handles release their IPC listener before exposing Retry;
-        // remote handles stop their completed readiness probe.
-        handle.shutdown().await;
-        this.update(cx, |state, cx| {
-            state.connection = ConnectionStatus::Failed(failure);
-            cx.notify();
-        })
-        .ok();
-    }))
 }
 
 /// Chats watch. Boot selection is the shell's job (it lands on the first
@@ -1735,7 +1448,6 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
                 };
                 let alive = this.update(cx, |state, cx| {
                     state.apply_chats(parsed);
-                    state.apply_pending_deep_link(cx);
                     state.reconcile_change_request_watches(cx);
                     cx.notify();
                 });
@@ -1882,7 +1594,6 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
                 };
                 let alive = this.update(cx, |state, cx| {
                     apply(state, parsed);
-                    state.apply_pending_deep_link(cx);
                     if matches!(method, methods::WATCH_SPACES | methods::WATCH_DEVICES) {
                         state.reconcile_change_request_watches(cx);
                     }
@@ -1921,7 +1632,6 @@ fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) ->
         if let Some(id) = id {
             this.update(cx, |state, cx| {
                 state.local_device_id = Some(id);
-                state.apply_pending_deep_link(cx);
                 // Watches opened before this probe conservatively route through
                 // targetDeviceId. Recreate them now that local routing is known.
                 state.change_request_tasks.clear();
@@ -2076,112 +1786,12 @@ mod tests {
     use super::*;
     use chrono::TimeDelta;
     use zeron_engine::{EngineCore, default_registry};
-    // `SessionStatus` is only needed to build the fixtures below — the module
-    // itself derives everything through `zeron_proto::view`.
-    use zeron_proto::{SessionStatus, UserProfile};
+    use zeron_proto::SessionStatus;
 
     /// A localhost port that was just free (bind :0, read, drop).
     async fn free_port() -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
-    }
-
-    struct LegacyIdentityRpc;
-
-    #[async_trait]
-    impl RpcService for LegacyIdentityRpc {
-        async fn handle(
-            &self,
-            method: &str,
-            _params: serde_json::Value,
-        ) -> Result<RpcReply, RpcError> {
-            match method {
-                methods::LOCAL_DEVICE => {
-                    RpcReply::value(&serde_json::json!({ "deviceId": "legacy-device" }))
-                }
-                other => Err(RpcError::UnknownMethod(other.into())),
-            }
-        }
-    }
-
-    struct DeferredIdentityRpc {
-        engine_info: EngineInfo,
-        state: tokio::sync::watch::Receiver<DeferredEngineState>,
-    }
-
-    #[async_trait]
-    impl RpcService for DeferredIdentityRpc {
-        async fn handle(
-            &self,
-            method: &str,
-            _params: serde_json::Value,
-        ) -> Result<RpcReply, RpcError> {
-            match method {
-                methods::ENGINE_INFO => RpcReply::value(&self.engine_info),
-                methods::ENGINE_READY => {
-                    let mut state = self.state.clone();
-                    wait_for_deferred_engine(&mut state)
-                        .await
-                        .map_err(RpcError::Failed)?;
-                    RpcReply::value(&serde_json::json!({ "ready": true }))
-                }
-                other => Err(RpcError::UnknownMethod(other.into())),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn legacy_daemon_identity_falls_back_to_synced_scope() {
-        let client = memory_client(Arc::new(LegacyIdentityRpc));
-
-        let info = query_engine_info(&client).await.unwrap();
-
-        assert_eq!(info.device_id, "legacy-device");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(info.workspace_scope),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_viewport_treats_legacy_daemon_as_ready() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
-            listener,
-            Arc::new(LegacyIdentityRpc),
-        ));
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .expect("legacy daemon remains attachable");
-
-        let mut deferred = handle
-            .deferred_state()
-            .expect("remote viewport tracks readiness");
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            wait_for_deferred_engine(&mut deferred),
-        )
-        .await
-        .expect("legacy readiness fallback completes")
-        .expect("unknown EngineReady means the old daemon is assembled");
-
-        handle.shutdown().await;
-        server.abort();
     }
 
     #[tokio::test]
@@ -2190,23 +1800,11 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
         })
         .await
         .unwrap();
         assert_eq!(handle.mode(), EngineMode::InProcess);
-        assert!(matches!(
-            handle
-                .deferred_state()
-                .expect("embedded lifecycle")
-                .borrow()
-                .clone(),
-            DeferredEngineState::Ready
-        ));
         // Same protocol over the in-memory transport: a real engine answers.
         let harnesses = handle
             .client()
@@ -2228,10 +1826,6 @@ mod tests {
         let error = match EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2253,65 +1847,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deferred_engine_failure_remains_observable_after_early_attach() {
-        let (state_tx, mut state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        state_tx.send_replace(DeferredEngineState::Failed("store failed".into()));
-
-        assert_eq!(
-            wait_for_deferred_engine(&mut state_rx).await,
-            Err("store failed".into())
-        );
-    }
-
-    #[tokio::test]
-    async fn remote_viewport_observes_deferred_engine_failure() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (state_tx, state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
-        let server = tokio::spawn(zeron_rpc::serve_ws_listener(
-            listener,
-            Arc::new(DeferredIdentityRpc {
-                engine_info: EngineInfo {
-                    device_id: "owner-device".into(),
-                    workspace_scope: WorkspaceScope::Local,
-                },
-                state: state_rx,
-            }),
-        ));
-
-        let dir = tempfile::tempdir().unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .expect("second viewport attaches over IPC");
-        assert!(matches!(handle.mode(), EngineMode::Remote { .. }));
-
-        let mut deferred = handle
-            .deferred_state()
-            .expect("remote viewport tracks engine readiness");
-        state_tx.send_replace(DeferredEngineState::Failed("store failed".into()));
-        assert_eq!(
-            tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                wait_for_deferred_engine(&mut deferred),
-            )
-            .await
-            .expect("remote readiness probe completes"),
-            Err("store failed".into())
-        );
-
-        handle.shutdown().await;
-        server.abort();
-    }
-
-    #[tokio::test]
     async fn an_embedded_engine_serves_the_ipc_port_for_other_viewports() {
         // The whole point of embedding-and-serving: a second viewport (the
         // terminal app) can attach to this window's engine with no setup, no
@@ -2321,10 +1856,6 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2363,10 +1894,6 @@ mod tests {
         let config = EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None, // offline
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
         };
         let (a, b) = tokio::join!(
@@ -2394,17 +1921,6 @@ mod tests {
             "the other attaches over IPC: {modes:?}"
         );
 
-        for handle in [&a, &b] {
-            let mut deferred = handle.deferred_state().expect("lifecycle tracked");
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                wait_for_deferred_engine(&mut deferred),
-            )
-            .await
-            .expect("readiness resolves")
-            .expect("both viewports reach Ready");
-        }
-
         b.shutdown().await;
         a.shutdown().await;
     }
@@ -2423,10 +1939,6 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2450,16 +1962,10 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: dir.path().to_path_buf(),
             ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
             default_harness: HarnessId::Mock,
         })
         .await
         .unwrap();
-
-        assert_eq!(handle.engine_info().workspace_scope, WorkspaceScope::Local);
         let info: EngineInfo = handle
             .client()
             .call_as(methods::ENGINE_INFO, serde_json::json!({}))
@@ -2467,15 +1973,6 @@ mod tests {
             .unwrap();
         assert_eq!(info, *handle.engine_info());
 
-        let mut auth = handle
-            .client()
-            .subscribe(methods::AUTH_STATUS, serde_json::json!({}))
-            .await
-            .unwrap();
-        assert_eq!(
-            parse_auth_state(&auth.recv().await.unwrap()),
-            Some(AuthState::SignedOut)
-        );
         let harnesses = handle
             .client()
             .call(methods::LIST_HARNESSES, serde_json::json!({}))
@@ -2484,59 +1981,9 @@ mod tests {
         assert!(harnesses.as_array().is_some_and(|items| !items.is_empty()));
         assert!(
             !dir.path().join("orgs/dev-org/dev-user").exists(),
-            "production boot must not create dev-user data"
+            "production boot must not create account-scoped data"
         );
         assert!(dir.path().join("profiles/local").is_dir());
-        handle.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn engine_info_is_available_while_cloud_onboarding_is_deferred() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("session.json"),
-            r#"{"refreshToken":"saved","user":{"id":"user_1","email":"u@example.com"}}"#,
-        )
-        .unwrap();
-        let handle = EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: free_port().await,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        .unwrap();
-
-        assert!(matches!(
-            handle
-                .deferred_state()
-                .expect("embedded lifecycle")
-                .borrow()
-                .clone(),
-            DeferredEngineState::Waiting
-        ));
-
-        let info: EngineInfo = handle
-            .client()
-            .call_as(methods::ENGINE_INFO, serde_json::json!({}))
-            .await
-            .expect("EngineInfo bypasses deferred cloud stores");
-        assert_eq!(info.workspace_scope, WorkspaceScope::Synced);
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                handle
-                    .client()
-                    .call(methods::LIST_HARNESSES, serde_json::json!({})),
-            )
-            .await
-            .is_err(),
-            "cloud data waits for organization onboarding"
-        );
-        assert!(!dir.path().join("orgs").exists());
         handle.shutdown().await;
     }
 
@@ -2548,7 +1995,6 @@ mod tests {
             daemon_dir.path(),
             Arc::new(default_registry()),
             HarnessId::Mock,
-            None,
         )
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2559,10 +2005,6 @@ mod tests {
         let handle = EngineHandle::bootstrap(EngineBootConfig {
             data_dir: ui_dir.path().to_path_buf(),
             ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: None,
             default_harness: HarnessId::Mock,
         })
         .await
@@ -2572,10 +2014,6 @@ mod tests {
             EngineMode::Remote {
                 url: format!("ws://127.0.0.1:{port}")
             }
-        );
-        assert_eq!(
-            handle.engine_info().workspace_scope,
-            WorkspaceScope::Development
         );
         let harnesses = handle
             .client()
@@ -2613,7 +2051,6 @@ mod tests {
             harness_session_cwd: None,
             space_id: None,
             last_seen_at: None,
-            room_gen: None,
         }
     }
 
@@ -2672,24 +2109,6 @@ mod tests {
     }
 
     #[test]
-    fn local_workspace_hides_the_unknown_device_sentinel() {
-        let mut state = AppState::new();
-        state.workspace_scope = Some(WorkspaceScope::Local);
-        state.local_device_id = Some("local".into());
-
-        state.apply_devices(vec![
-            device("local", "unknown-device"),
-            device("remote", "unknown-device"),
-        ]);
-
-        assert_eq!(state.device_name("local"), Some("Local"));
-        assert_eq!(state.device_name("remote"), Some("unknown-device"));
-
-        state.apply_devices(vec![device("local", "José's MacBook Pro")]);
-        assert_eq!(state.device_name("local"), Some("José's MacBook Pro"));
-    }
-
-    #[test]
     fn device_version_change_reenables_change_request_capability() {
         let mut state = AppState::new();
         state
@@ -2705,63 +2124,6 @@ mod tests {
         state.apply_devices(vec![upgraded]);
         assert!(state.change_requests.is_supported("remote"));
     }
-
-    #[test]
-    fn transfer_percent_tracks_snapshots_by_upload_id() {
-        let mut s = AppState::new();
-        assert_eq!(s.transfer_percent("u1"), None);
-
-        let frame = |id: &str, done, total| zeron_proto::TransferProgress {
-            upload_id: id.into(),
-            file_name: "a.png".into(),
-            done,
-            total,
-        };
-        s.apply_transfers(vec![frame("u1", 430, 1_000), frame("u2", 0, 400)]);
-        assert_eq!(s.transfer_percent("u1"), Some(43));
-        assert_eq!(s.transfer_percent("u2"), Some(0));
-        assert_eq!(s.transfer_percent("other"), None);
-
-        // The last point belongs to the commit — never a stuck 100%; b64
-        // padding overshoot stays clamped too.
-        s.apply_transfers(vec![frame("u1", 1_000, 1_000), frame("u3", 12, 0)]);
-        assert_eq!(s.transfer_percent("u1"), Some(99));
-        // Zero-total renders indeterminate, not a division blowup.
-        assert_eq!(s.transfer_percent("u3"), None);
-        // Snapshots REPLACE: u2's transfer retired with its entry.
-        assert_eq!(s.transfer_percent("u2"), None);
-
-        s.apply_transfers(Vec::new());
-        assert_eq!(s.transfer_percent("u1"), None);
-    }
-
-    #[test]
-    fn upload_progress_percent_clamps_and_clears() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        let mut s = AppState::new();
-        assert_eq!(s.upload_progress_percent(), None);
-
-        let done = Arc::new(AtomicU64::new(0));
-        s.begin_upload_progress(1_000, done.clone());
-        assert_eq!(s.upload_progress_percent(), Some(0));
-        done.store(430, Ordering::Relaxed);
-        assert_eq!(s.upload_progress_percent(), Some(43));
-        // The last point belongs to commit+queue — never show a stuck 100%.
-        done.store(1_000, Ordering::Relaxed);
-        assert_eq!(s.upload_progress_percent(), Some(99));
-        // Overshoot (b64 padding rounding) stays clamped.
-        done.store(1_002, Ordering::Relaxed);
-        assert_eq!(s.upload_progress_percent(), Some(99));
-
-        s.end_upload_progress();
-        assert_eq!(s.upload_progress_percent(), None);
-
-        // A zero-byte total renders as plain "Sending…", not a percent.
-        s.begin_upload_progress(0, Arc::new(AtomicU64::new(0)));
-        assert_eq!(s.upload_progress_percent(), None);
-    }
-
     #[test]
     fn send_pending_overlays_working_until_the_grace_window() {
         let now = Utc::now();
@@ -3021,12 +2383,293 @@ mod tests {
     }
 
     #[test]
+    fn keiki_snapshot_replaces_only_keiki_rows() {
+        let mut state = AppState::new();
+        assert!(!state.spaces_synced);
+        assert!(!state.chats_synced);
+        state.apply_devices(vec![device("engine-device", "Engine")]);
+        state.devices.push(crate::keiki::map_device());
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:old", crate::keiki::DEVICE_ID, "Old agent", 2),
+        ]);
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:old:+1555", 2, None),
+        ]);
+        state.spaces_synced = false;
+        state.chats_synced = false;
+
+        let mut fresh_space = space("keiki-agent:new", crate::keiki::DEVICE_ID, "New agent", 3);
+        fresh_space.name = Some("New agent".into());
+        let mut fresh_chat = chat("keiki-conv:new:+1666", 4, None);
+        fresh_chat.device_id = crate::keiki::DEVICE_ID.into();
+        state.apply_keiki_snapshot(vec![fresh_space], vec![fresh_chat]);
+
+        assert!(!state.spaces_synced);
+        assert!(!state.chats_synced);
+        assert!(
+            state
+                .devices
+                .iter()
+                .any(|device| device.id == "engine-device")
+        );
+        assert_eq!(
+            state
+                .devices
+                .iter()
+                .filter(|device| device.id == crate::keiki::DEVICE_ID)
+                .count(),
+            1
+        );
+        assert!(state.spaces.iter().any(|space| space.id == "engine-space"));
+        assert!(
+            state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:new")
+        );
+        assert!(
+            !state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:old")
+        );
+        assert!(state.chats.iter().any(|chat| chat.id == "engine-chat"));
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:new:+1666")
+        );
+        assert!(
+            !state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:old:+1555")
+        );
+    }
+
+    #[test]
+    fn engine_chat_snapshot_keeps_keiki_rows() {
+        let mut state = AppState::new();
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:agent:+1555", 2, None),
+        ]);
+        state.apply_chats(vec![chat("engine-chat-2", 3, None)]);
+        assert!(state.chats.iter().any(|chat| chat.id == "engine-chat-2"));
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:agent:+1555")
+        );
+    }
+
+    #[test]
+    fn clearing_keiki_rows_preserves_engine_state() {
+        let mut state = AppState::new();
+        state.apply_devices(vec![device("engine-device", "Engine")]);
+        state.devices.push(crate::keiki::map_device());
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:agent", crate::keiki::DEVICE_ID, "Agent", 2),
+        ]);
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:agent:+1555", 2, None),
+        ]);
+        state.spaces_synced = true;
+        state.chats_synced = false;
+        state.selected_device = Some(crate::keiki::DEVICE_ID.into());
+        state.selected_space = Some("keiki-agent:agent".into());
+        state.selected_chat = Some("engine-chat".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:agent:+1555".into(),
+        ));
+        state.transcript = vec![user_entry("engine-entry")];
+        state.transcript_replayed = true;
+
+        state.clear_keiki_rows();
+
+        assert_eq!(state.devices, vec![device("engine-device", "Engine")]);
+        assert_eq!(state.spaces[0].id, "engine-space");
+        assert_eq!(state.chats[0].id, "engine-chat");
+        assert_eq!(state.selected_space.as_deref(), Some("engine-space"));
+        assert_eq!(state.selected_device, None);
+        assert_eq!(state.selected_chat.as_deref(), Some("engine-chat"));
+        assert!(state.keiki_conversation.is_none());
+        assert_eq!(state.transcript, vec![user_entry("engine-entry")]);
+        assert!(state.transcript_replayed);
+        assert!(state.spaces_synced);
+        assert!(!state.chats_synced);
+
+        state.chats.push(chat("keiki-conv:agent:+1666", 3, None));
+        state.selected_chat = Some("keiki-conv:agent:+1666".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:agent:+1666".into(),
+        ));
+        state.transcript = vec![user_entry("keiki-entry")];
+        state.transcript_replayed = true;
+        state.clear_keiki_rows();
+
+        assert_eq!(state.selected_chat, None);
+        assert!(state.keiki_conversation.is_none());
+        assert!(state.transcript.is_empty());
+        assert!(!state.transcript_replayed);
+        assert!(
+            state
+                .chats
+                .iter()
+                .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
+        );
+    }
+
+    #[test]
+    fn clearing_one_keiki_agent_preserves_other_agents_and_selection_cleanup() {
+        let mut state = AppState::new();
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:keep", crate::keiki::DEVICE_ID, "Keep", 2),
+            space("keiki-agent:remove", crate::keiki::DEVICE_ID, "Remove", 3),
+        ]);
+        let mut removed_chat = chat("keiki-conv:remove:+1666", 3, None);
+        removed_chat.space_id = Some("keiki-agent:remove".into());
+        let mut kept_chat = chat("keiki-conv:keep:+1555", 2, None);
+        kept_chat.space_id = Some("keiki-agent:keep".into());
+        state.apply_chats(vec![chat("engine-chat", 1, None), kept_chat, removed_chat]);
+        state.selected_chat = Some("keiki-conv:remove:+1666".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:remove:+1666".into(),
+        ));
+        state.transcript = vec![user_entry("remove-entry")];
+        state.transcript_replayed = true;
+
+        state.clear_keiki_agent_rows("remove");
+
+        assert!(
+            state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:keep")
+        );
+        assert!(
+            !state
+                .spaces
+                .iter()
+                .any(|space| space.id == "keiki-agent:remove")
+        );
+        assert!(
+            state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:keep:+1555")
+        );
+        assert!(
+            !state
+                .chats
+                .iter()
+                .any(|chat| chat.id == "keiki-conv:remove:+1666")
+        );
+        assert_eq!(state.selected_chat, None);
+        assert!(state.keiki_conversation.is_none());
+        assert!(state.transcript.is_empty());
+        assert!(!state.transcript_replayed);
+    }
+
+    #[test]
+    fn marking_keiki_signed_out_clears_session_and_owned_rows() {
+        let mut state = AppState::new();
+        state.apply_devices(vec![
+            device("engine-device", "Engine"),
+            crate::keiki::map_device(),
+        ]);
+        state.apply_spaces(vec![
+            space("engine-space", "engine-device", "/engine", 1),
+            space("keiki-agent:agent", crate::keiki::DEVICE_ID, "Agent", 2),
+        ]);
+        state.apply_chats(vec![
+            chat("engine-chat", 1, None),
+            chat("keiki-conv:agent:+1555", 2, None),
+        ]);
+        state.selected_chat = Some("keiki-conv:agent:+1555".into());
+        state.keiki_credentials = Some(keiki_api::StoredCredentials {
+            client_id: "client".into(),
+            refresh_token: "refresh".into(),
+        });
+        state.keiki_error = Some("old error".into());
+        state.keiki_status = crate::keiki::SessionStatus::SignedIn;
+
+        state.mark_keiki_signed_out(Some("Keiki session expired".into()));
+
+        assert_eq!(state.keiki_status, crate::keiki::SessionStatus::SignedOut);
+        assert_eq!(state.keiki_error.as_deref(), Some("Keiki session expired"));
+        assert!(state.keiki_credentials.is_none());
+        assert!(
+            state
+                .devices
+                .iter()
+                .all(|device| device.id != crate::keiki::DEVICE_ID)
+        );
+        assert!(
+            state
+                .spaces
+                .iter()
+                .all(|space| !crate::keiki::is_keiki_space(&space.id))
+        );
+        assert!(
+            state
+                .chats
+                .iter()
+                .all(|chat| !crate::keiki::is_keiki_chat(&chat.id))
+        );
+        assert_eq!(state.selected_chat, None);
+        assert!(state.transcript.is_empty());
+    }
+
+    #[test]
+    fn keiki_conversation_pending_state_is_scoped_to_selection() {
+        let mut state = AppState::new();
+        state.selected_chat = Some("keiki-conv:agent:+1555".into());
+        state.keiki_conversation = Some(crate::keiki::KeikiConversation::new(
+            "keiki-conv:agent:+1555".into(),
+        ));
+
+        assert!(state.set_keiki_pending(
+            "keiki-conv:agent:+1555",
+            crate::keiki::KeikiConversationPending::Takeover
+        ));
+        assert_eq!(
+            state
+                .keiki_conversation
+                .as_ref()
+                .and_then(|conversation| conversation.pending),
+            Some(crate::keiki::KeikiConversationPending::Takeover)
+        );
+        assert!(!state.set_keiki_pending(
+            "keiki-conv:agent:+1666",
+            crate::keiki::KeikiConversationPending::Block
+        ));
+        state.replace_keiki_conversation(Some("keiki-conv:agent:+1666"));
+        assert_eq!(
+            state
+                .keiki_conversation
+                .as_ref()
+                .map(|conversation| conversation.chat_id.as_str()),
+            Some("keiki-conv:agent:+1666")
+        );
+        state.replace_keiki_conversation(Some("engine-chat"));
+        assert!(state.keiki_conversation.is_none());
+    }
+
+    #[test]
     fn apply_chat_config_stamps_the_row() {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
         let config = zeron_proto::ChatConfig {
-            harness: HarnessId::ClaudeCode,
-            model: Some("claude-fable-5".into()),
+            harness: HarnessId::Copilot,
+            model: Some("copilot".into()),
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
@@ -3049,7 +2692,7 @@ mod tests {
         state.apply_chat_config(
             "missing",
             zeron_proto::ChatConfig {
-                harness: HarnessId::ClaudeCode,
+                harness: HarnessId::Copilot,
                 model: None,
                 reasoning: None,
                 model_options: serde_json::Map::new(),
@@ -3187,119 +2830,6 @@ mod tests {
         assert!(state.transcript_replayed);
     }
 
-    #[test]
-    fn gate_phases() {
-        let user = UserProfile {
-            id: "u".into(),
-            email: "w@example.com".into(),
-            name: None,
-        };
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Connecting, None, None),
-            GatePhase::Loading
-        );
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Failed("boom".into()), None, None),
-            GatePhase::Failed("boom".into())
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Local),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::Ready
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
-            GatePhase::SignIn
-        );
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedIn {
-                    user: user.clone(),
-                    org_id: None
-                })
-            ),
-            GatePhase::Ready
-        );
-        // No org yet → org gate.
-        assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::NeedsOrganization { user })
-            ),
-            GatePhase::OrgGate
-        );
-    }
-
-    #[test]
-    fn auth_changes_do_not_change_a_local_runtime_scope_or_watches() {
-        let mut state = AppState::new();
-        state.workspace_scope = Some(WorkspaceScope::Local);
-        state.watch_tasks.push(Task::ready(()));
-
-        state.apply_auth(AuthState::NeedsOrganization {
-            user: UserProfile {
-                id: "u".into(),
-                email: "w@example.com".into(),
-                name: None,
-            },
-        });
-        assert_eq!(state.workspace_scope, Some(WorkspaceScope::Local));
-        assert_eq!(state.watch_tasks.len(), 1);
-
-        state.apply_auth(AuthState::SignedIn {
-            user: UserProfile {
-                id: "u".into(),
-                email: "w@example.com".into(),
-                name: None,
-            },
-            org_id: Some("org-1".into()),
-        });
-        assert_eq!(state.workspace_scope, Some(WorkspaceScope::Local));
-        assert_eq!(state.watch_tasks.len(), 1);
-    }
-
-    #[test]
-    fn auth_frames_parse_both_wire_shapes() {
-        // Proto shape.
-        let proto = serde_json::json!({ "state": "signedOut" });
-        assert_eq!(parse_auth_state(&proto), Some(AuthState::SignedOut));
-        // Engine shape (`_tag`, PascalCase, orgId).
-        let engine = serde_json::json!({
-            "_tag": "SignedIn",
-            "user": { "id": "u1", "email": "w@example.com" },
-            "orgId": "org-1",
-        });
-        let Some(AuthState::SignedIn { user, org_id }) = parse_auth_state(&engine) else {
-            panic!("expected SignedIn");
-        };
-        assert_eq!(user.email, "w@example.com");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-        let needs = serde_json::json!({
-            "_tag": "NeedsOrganization",
-            "user": { "id": "u1", "email": "w@example.com", "name": "W" },
-        });
-        assert!(matches!(
-            parse_auth_state(&needs),
-            Some(AuthState::NeedsOrganization { .. })
-        ));
-        // Garbage → None (frame dropped, not a crash).
-        assert_eq!(
-            parse_auth_state(&serde_json::json!({ "_tag": "Wat" })),
-            None
-        );
-        assert_eq!(parse_auth_state(&serde_json::json!(42)), None);
-    }
-
     fn chat_with_cwd(id: &str, created_min: i64, cwd: Option<&str>) -> Chat {
         let mut c = chat(id, created_min, None);
         c.cwd = cwd.map(str::to_string);
@@ -3310,8 +2840,8 @@ mod tests {
     fn project_labels_from_cwd() {
         assert_eq!(project_label(Some("/home/w/dev/zeron")), "zeron");
         assert_eq!(project_label(Some("/home/w/dev/zeron/")), "zeron");
-        assert_eq!(project_label(None), "No project");
-        assert_eq!(project_label(Some("   ")), "No project");
+        assert_eq!(project_label(None), "No agent");
+        assert_eq!(project_label(Some("   ")), "No agent");
         assert_eq!(project_label(Some("/")), "/");
     }
 
@@ -3327,7 +2857,7 @@ mod tests {
         let groups = group_chats(chats.iter());
         let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
         // Groups ordered by their most recent chat; rows keep order.
-        assert_eq!(labels, ["zeron", "zed", "No project"]);
+        assert_eq!(labels, ["zeron", "zed", "No agent"]);
         let zeron_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(zeron_ids, ["a", "c"]);
         assert!(group_chats(std::iter::empty()).is_empty());
@@ -3376,36 +2906,6 @@ mod tests {
     }
 
     #[test]
-    fn org_gate_reducers() {
-        assert!(org_name_valid("Acme"));
-        assert!(org_name_valid("  padded  "));
-        assert!(!org_name_valid(""));
-        assert!(!org_name_valid("   "));
-        assert!(!org_name_valid(&"x".repeat(65)));
-
-        let rows = parse_orgs(&serde_json::json!({ "orgs": [
-            { "id": "m2", "organizationId": "o2", "name": "beta" },
-            { "id": "m1", "organizationId": "o1", "name": "Alpha" },
-            { "id": "m3", "organizationId": "o1", "name": "Alpha" },
-        ]}));
-        assert_eq!(rows.len(), 3);
-        let sorted = sort_memberships(rows);
-        let names: Vec<&str> = sorted.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["Alpha", "beta"],
-            "case-insensitive sort + dedupe by org id"
-        );
-        // Bare-array replies parse too; garbage yields empty.
-        assert_eq!(
-            parse_orgs(&serde_json::json!([{ "id": "m", "organizationId": "o", "name": "n" }]))
-                .len(),
-            1
-        );
-        assert!(parse_orgs(&serde_json::json!("nope")).is_empty());
-    }
-
-    #[test]
     fn version_triple_parses_and_gates_device_features() {
         assert_eq!(version_triple("0.2.12"), Some((0, 2, 12)));
         assert_eq!(version_triple("0.2.12-beta.1"), Some((0, 2, 12)));
@@ -3433,78 +2933,5 @@ mod tests {
             !s.device_version_at_least("d1", (0, 2, 12)),
             "unstamped version conservatively fails the gate"
         );
-    }
-
-    #[test]
-    fn delivery_degradation_and_queued_sends_tell_the_truth() {
-        use zeron_proto::{ChatConnectivity, ConnectivityState};
-        let now = Utc::now();
-        let mut s = AppState::default();
-        s.local_device_id = Some("local".into());
-        let mut remote = chat("c-remote", 0, None);
-        remote.device_id = "remote".into();
-        let mut local = chat("c-local", 0, None);
-        local.device_id = "local".into();
-        s.chats = vec![remote, local];
-        s.devices = vec![Device {
-            id: "remote".into(),
-            name: "vps".into(),
-            platform: "linux".into(),
-            last_seen_at: Some(now),
-            created_at: None,
-            version: None,
-        }];
-        s.connectivity.state = ConnectivityState::Connected;
-        s.connectivity.chats = vec![ChatConnectivity {
-            chat_id: "c-remote".into(),
-            connected: true,
-            pending_pushes: 0,
-        }];
-
-        // Healthy: nothing degraded.
-        assert!(!s.chat_delivery_degraded("c-remote"));
-        assert!(!s.chat_delivery_degraded("c-local"));
-
-        // The chat's own room down → degraded even while globally Connected.
-        s.connectivity.chats[0].connected = false;
-        assert!(s.chat_delivery_degraded("c-remote"));
-        s.connectivity.chats[0].connected = true;
-
-        // Host gone presence-dark → degraded (a send would queue at best).
-        s.devices[0].last_seen_at = Some(now - TimeDelta::minutes(10));
-        assert!(s.chat_delivery_degraded("c-remote"));
-        s.devices[0].last_seen_at = Some(now);
-
-        // OS offline: remote degrades; a locally-hosted chat NEVER does (the
-        // queued command executes on this device even fully offline).
-        s.connectivity.state = ConnectivityState::Offline;
-        assert!(s.chat_delivery_degraded("c-remote"));
-        assert!(!s.chat_delivery_degraded("c-local"));
-
-        // Local profile (Disabled): nothing degrades.
-        s.connectivity.state = ConnectivityState::Disabled;
-        assert!(!s.chat_delivery_degraded("c-remote"));
-
-        // Queued = pending send + degraded path — and degradation HOLDS the
-        // overlay past the grace window instead of silently expiring (the
-        // no-trace hole).
-        s.connectivity.state = ConnectivityState::Offline;
-        s.begin_pending_send("c-remote", "m1", now - TimeDelta::seconds(200));
-        assert!(s.send_pending("c-remote", now));
-        assert!(s.send_queued("c-remote", now));
-        // Past the grace: the explicit failed state surfaces alongside.
-        assert!(s.send_undelivered("c-remote", now));
-        // Retry restarts the clock: back to Queued, no longer failed.
-        s.retry_pending_send("c-remote", now);
-        assert!(!s.send_undelivered("c-remote", now));
-        assert!(s.send_queued("c-remote", now));
-        // Path healed with a stale unacked send: the overlay expires after
-        // the grace rather than holding forever.
-        s.retry_pending_send("c-remote", now - TimeDelta::seconds(200));
-        s.connectivity.state = ConnectivityState::Connected;
-        assert!(!s.send_pending("c-remote", now));
-        assert!(!s.send_queued("c-remote", now));
-        // …but the explicit undelivered flag still tells the truth.
-        assert!(s.send_undelivered("c-remote", now));
     }
 }

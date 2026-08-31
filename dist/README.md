@@ -7,12 +7,21 @@ scripts/package-linux.sh            # release build (thin LTO, stripped)
 PROFILE=debug scripts/package-linux.sh   # fast smoke package
 ```
 
-Produces `target/package/zeron-<version>-linux-<arch>.tar.gz` containing:
+Produces three Linux artifacts (narrow with `FORMATS="tarball deb appimage"`):
 
-- `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
-- `zeron.desktop` — XDG desktop entry
-- `zeron.png` — 1024×1024 Zeron app icon
-- `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
+- `target/package/zeron-<version>-linux-<arch>.tar.gz`, containing:
+  - `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
+  - `zeron.desktop` — XDG desktop entry
+  - `zeron.png` — 1024×1024 Zeron app icon
+  - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
+- `target/package/zeron-<version>-linux-<debarch>.deb` — a Debian package
+  installing the binary, desktop entry, icon, and font licenses under `/usr`.
+  Its `Depends` come from `dpkg-shlibdeps` plus the two libraries gpui
+  `dlopen`s (`libvulkan1`, `libwayland-client0`), which shlibdeps cannot see.
+- `target/package/zeron-<version>-linux-<arch>.AppImage` — a self-contained
+  AppImage for systems without a package manager.
+
+The `.deb` and AppImage payloads are stripped; the tarball's is not.
 
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 `strip = "symbols"` for distribution builds.
@@ -25,8 +34,7 @@ scripts/package-macos.sh    # → target/package/zeron-<version>-macos-<arch>.dm
 
 Builds the release binary, assembles `Zeron.app` (Info.plist + icns), ad-hoc
 signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
-dmg. The auto-update tarball retains an internal `Zeron.app` path so older
-installed builds can update into Zeron. CI runs this on tags
+ dmg. CI runs this on tags
 (`.github/workflows/release.yml`). The manual steps it automates, for reference
 (run on a macOS host — gpui needs Metal; no cross-build from Linux):
 

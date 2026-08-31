@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # macOS packaging: build the release binary for the host arch and produce
 #   target/package/zeron-<version>-macos-<arch>.dmg          (user download)
-#   target/package/zeron-<version>-macos-<arch>-app.tar.gz   (auto-updater)
 # containing Zeron.app (unsigned unless CODESIGN_IDENTITY is set).
 #
 # Usage: scripts/package-macos.sh
 # Env:   CODESIGN_IDENTITY="Developer ID Application: …" to sign the bundle.
-#        NOTARY_KEY_PATH + NOTARY_KEY_ID + NOTARY_ISSUER_ID — App Store Connect
-#        API key (.p8) for notarization; all three set → notarize + staple the
-#        app and the dmg, which removes the Gatekeeper warning entirely.
+#        NOTARY_APPLE_ID + NOTARY_PASSWORD + NOTARY_TEAM_ID — Apple ID,
+#        app-specific password (from account.apple.com), and 10-char team id
+#        for notarization; all three set → notarize + staple the app and the
+#        dmg, which removes the Gatekeeper warning entirely.
 
 set -euo pipefail
 
@@ -19,12 +19,11 @@ ARCH="$(uname -m)" # arm64 on Apple silicon runners
 OUT_DIR="$ROOT/target/package"
 APP="$OUT_DIR/Zeron.app"
 DMG="$OUT_DIR/zeron-$VERSION-macos-$ARCH.dmg"
-APP_TARBALL="$OUT_DIR/zeron-$VERSION-macos-$ARCH-app.tar.gz"
 
 cd "$ROOT"
 cargo build --release -p zeron
 
-rm -rf "$APP" "$DMG" "$APP_TARBALL"
+rm -rf "$APP" "$DMG"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 755 "$ROOT/target/release/zeron" "$APP/Contents/MacOS/zeron"
 sed "s/__VERSION__/$VERSION/" "$ROOT/dist/macos/Info.plist" >"$APP/Contents/Info.plist"
@@ -59,26 +58,19 @@ fi
 # follows each call has no ticket to attach then, and fails the build for us.
 notarize() {
   xcrun notarytool submit "$1" \
-    --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" \
-    --issuer "$NOTARY_ISSUER_ID" --wait
+    --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_PASSWORD" \
+    --team-id "$NOTARY_TEAM_ID" --wait
 }
 NOTARIZE=false
-[[ -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER_ID:-}" ]] && NOTARIZE=true
+[[ -n "${NOTARY_APPLE_ID:-}" && -n "${NOTARY_PASSWORD:-}" && -n "${NOTARY_TEAM_ID:-}" ]] && NOTARIZE=true
 
 if $NOTARIZE; then
-  # Staple the bundle BEFORE tarring it: the auto-updater swaps the .app with
-  # no dmg involved, so the tarball copy must carry its own ticket to pass
-  # Gatekeeper offline.
   ZIP="$OUT_DIR/zeron-notarize.zip"
   ditto -c -k --keepParent "$APP" "$ZIP"
   notarize "$ZIP"
   rm -f "$ZIP"
   xcrun stapler staple "$APP"
 fi
-
-# The auto-updater artifact.
-tar -czf "$APP_TARBALL" -C "$OUT_DIR" Zeron.app
-echo "packaged: $APP_TARBALL"
 
 # The dmg presents the classic drag-into-Applications layout over the
 # ascii-hands artwork (committed renders from scripts/dmg-background.py).

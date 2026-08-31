@@ -15,6 +15,7 @@
 pub mod app_menus;
 pub mod appearance;
 pub mod attachments;
+pub mod avatars;
 pub mod badges;
 pub mod change_requests;
 pub mod changes;
@@ -24,7 +25,7 @@ pub mod edge_fade;
 pub mod frost;
 pub mod history;
 pub mod icons;
-pub mod links;
+pub mod keiki;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
@@ -59,19 +60,12 @@ pub struct UiConfig {
     pub data_dir: PathBuf,
     /// Localhost IPC port: connect if an engine daemon is listening, embed if not.
     pub ipc_port: u16,
-    /// Edge base URL for the embedded engine.
-    pub edge_url: String,
-    /// Edge bearer; `None` runs offline.
-    pub edge_token: Option<String>,
-    /// Workspace org override for explicit dev-mode runs.
-    pub org_id: Option<String>,
-    /// WorkOS client id; `Some` makes the embedded headed engine require a
-    /// production session before opening identity-scoped stores.
-    pub workos_client_id: Option<String>,
     /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
     /// Conversation URL passed by the OS on a cold launch.
     pub initial_url: Option<String>,
+    /// Keiki API base URL. Defaults to Keiki production when unset.
+    pub keiki_api_url: String,
 }
 
 impl UiConfig {
@@ -79,10 +73,6 @@ impl UiConfig {
         EngineBootConfig {
             data_dir: self.data_dir.clone(),
             ipc_port: self.ipc_port,
-            edge_url: self.edge_url.clone(),
-            edge_token: self.edge_token.clone(),
-            org_id: self.org_id.clone(),
-            workos_client_id: self.workos_client_id.clone(),
             default_harness: self.default_harness,
         }
     }
@@ -149,17 +139,28 @@ pub fn run_app(config: UiConfig) {
         composer::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);
-        cx.register_url_scheme("zeron").detach();
+        cx.spawn(
+            async move |cx| match cx.update(|cx| cx.register_url_scheme("keiki")).await {
+                Ok(()) => {}
+                Err(error) => tracing::warn!(%error, "Keiki URL scheme registration failed"),
+            },
+        )
+        .detach();
 
         let state = cx.new(|_| state::AppState::new());
         let url_state = state.clone();
         cx.spawn(async move |cx| {
             while let Some(url) = url_rx.next().await {
-                url_state.update(cx, |state, cx| state.open_deep_link(&url, cx));
+                url_state.update(cx, |state, cx| {
+                    if url.starts_with("keiki://") {
+                        state.open_keiki_deep_link(&url, cx);
+                    }
+                });
             }
         })
         .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        keiki::start(state.clone(), config.keiki_api_url.clone(), cx);
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).
@@ -267,4 +268,5 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
     // `WindowOptions` value is applied during creation, before the view is
     // attached; re-pushing it here means a window is never left opaque.
     appearance::reapply_window_background(cx);
+    tracing::info!("main window opened");
 }

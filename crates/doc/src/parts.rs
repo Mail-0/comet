@@ -9,66 +9,10 @@ use zeron_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInput
 
 use crate::constants::MSG_INLINE_MAX;
 
-/// Char cap for the tool-output SUMMARY persisted into the doc: first
-/// non-empty line, nothing more. The per-part 4KB cap (c951c3e) bounded each
-/// part but not the session — chat 1b65e93d measured 917KB (85%) of a 1MB doc
-/// in capped outputs across 426 tool parts (docs/chat2-sync.md). Full outputs
-/// live in the R2 sidecar behind `output_ref`; t3code ships an 84-char
-/// summary, so 160 is generous.
-pub const TOOL_OUTPUT_SUMMARY_MAX: usize = 160;
-
-/// The doc-resident form of a tool output (docs/chat2-sync.md A1; the R2
-/// sidecar is PARKED as of 2026-08-10, so this IS the whole record in the
-/// doc — the full text survives only in the host's local run journal):
-///
-/// - Markdown code fences are stripped first — ACP harnesses fence every
-///   output, so the fence is transport wrapping, never content (pre-fix,
-///   every summary read "```console…").
-/// - Outputs that fit [`TOOL_OUTPUT_SUMMARY_MAX`] chars ride whole — a
-///   summary of a two-line output is more UI than the output.
-/// - Bigger outputs keep the first non-empty line, capped, with a `…`
-///   marker meaning "there was more".
-///
-/// `None` for blank output.
-pub fn summarize_tool_output(text: &str) -> Option<String> {
-    let kept: Vec<&str> = text
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("```"))
-        .collect();
-    let stripped = kept.join("\n");
-    let stripped = stripped.trim();
-    if stripped.is_empty() {
-        return None;
-    }
-    if stripped.chars().count() <= TOOL_OUTPUT_SUMMARY_MAX {
-        return Some(stripped.to_owned());
-    }
-    // Too big to inline: first non-empty line, capped. There is always more
-    // than the summary here (whole output exceeded the budget), so the
-    // marker is unconditional.
-    let line = stripped
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or(stripped)
-        .trim_end();
-    let mut chars = 0usize;
-    let mut end = line.len();
-    for (i, _) in line.char_indices() {
-        if chars == TOOL_OUTPUT_SUMMARY_MAX {
-            end = i;
-            break;
-        }
-        chars += 1;
-    }
-    let mut out = line[..end].to_owned();
-    out.push('…');
-    Some(out)
-}
-
 /// Per-file diff stats persisted in place of inline diff text (t3's shape).
 /// The inline diff was the bigger bomb than outputs — 32KB/edit, unexercised
-/// only because the claude harness emits none. Full diff text lives in the
-/// sidecar behind `diff_ref`.
+/// only because some clients emit none. Full diff text lived behind the
+/// legacy `diff_ref` field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDiffStat {
@@ -130,8 +74,8 @@ pub enum MessagePart {
     /// Model thinking. Carries its body in a dedicated doc field (`reasoning`,
     /// never `text`) so pre-reasoning desktop builds — whose unknown-kind
     /// fallback renders `text` as prose — degrade to an invisible empty text
-    /// part instead of leaking raw thinking into the transcript. iOS drops
-    /// unknown kinds entirely.
+    /// part instead of leaking raw thinking into the transcript. Clients may
+    /// drop unknown kinds entirely.
     Reasoning {
         id: String,
         text: String,
@@ -145,31 +89,30 @@ pub enum MessagePart {
         /// True once a ToolResult arrived.
         #[serde(default)]
         resolved: bool,
-        /// One-line tool output summary ([`summarize_tool_output`]). Old
-        /// entries (pre-strip) still carry up to 4KB here; old app versions
-        /// render this field either way, so the strip is invisible to them.
+        /// Legacy inline tool output retained so old snapshots still load.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
         /// Inline file diff — written by pre-strip app versions only; new
-        /// folds persist [`Self::Tool::diff_stats`] + `diff_ref` instead.
+        /// folds persist [`Self::Tool::diff_stats`] instead.
         /// Kept so old docs render their diffs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
-        /// Sidecar key (`{chatId}/{partId}`) of the full output — additive;
-        /// stamped by [`apply_sidecar_refs`] (the fold is chat-agnostic).
+        /// Legacy key (`{chatId}/{partId}`) of the full output, retained for
+        /// old snapshots.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_ref: Option<String>,
         /// Full-output byte length, so the UI can say "Show full output (12 KB)".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_bytes: Option<u64>,
-        /// Sidecar key (`{chatId}/{partId}.diff`) of the full diff JSON.
+        /// Legacy key (`{chatId}/{partId}.diff`) of the full diff JSON.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff_ref: Option<String>,
         /// Per-file diff stats (additive replacement for inline `diff`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff_stats: Option<Vec<ToolDiffStat>>,
         /// The SUBAGENT doc id this spawn chip indexes (additive; stamped by
-        /// the engine like the sidecar refs — the fold is chat-agnostic).
+        /// the engine like the legacy full-output refs — the fold is
+        /// chat-agnostic).
         /// The chip IS the index: the client learns the doc/blob id from it,
         /// there is no listing endpoint.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,9 +274,8 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     *resolved = true;
                     // Tool OUTPUTS never enter the doc (2026-08-10 product
                     // call: chips are one-liners — name + call info — like
-                    // pre-output builds; the R2 sidecar is parked with them,
-                    // docs/chat2-sync.md A2). Full text lives only in the
-                    // host's run journal. Inline diffs die the same way:
+                    // pre-output builds. Full text lives only in the host's run
+                    // journal. Inline diffs die the same way:
                     // stats only, never text. `is_error` still folds so
                     // failed chips read as failed.
                     let _ = output; // journal-only
@@ -404,7 +346,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     _ => SubagentStatus::Done,
                 }),
                 // A steer RESURRECTS a settled chip — it announces more work
-                // (claude: a queued SendMessage relaunches the agent), so
+                // a queued SendMessage relaunches the agent, so
                 // this is the one event allowed past the no-regress guard.
                 AgentEvent::UserMessage { .. } => Some(SubagentStatus::Running),
                 _ => None,
@@ -418,7 +360,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 } = p
                     && id == parent_tool_use_id
                     // Genus gate: only a SPAWN call ever carries subagent
-                    // lifecycle. A driver keying bug (claude's background
+                    // lifecycle. A driver keying bug in background
                     // shells settled through the subagent subtype,
                     // 2026-08-20) must not decorate an ordinary chip.
                     && call.is_subagent_spawn()
@@ -449,12 +391,12 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
     }
 }
 
-/// Stamp sidecar keys onto resolved tool parts that have sidecar content.
+/// Stamp legacy full-output keys onto resolved tool parts for old snapshots.
 ///
 /// Separate from the fold because the fold is chat-agnostic and pure; the
 /// caller (who knows the chat id) runs this right after each fold step, before
 /// the parts hit the doc. Idempotent. Key shape `{chatId}/{partId}` (+
-/// `.diff`) matches the edge's `/blob/{chatId}/{partId}` route.
+/// `.diff`) is retained for compatibility with older snapshots.
 pub fn apply_sidecar_refs(chat_id: &str, parts: &mut [MessagePart]) {
     for part in parts.iter_mut() {
         if let MessagePart::Tool {
@@ -475,34 +417,6 @@ pub fn apply_sidecar_refs(chat_id: &str, parts: &mut [MessagePart]) {
             }
         }
     }
-}
-
-/// What a [`AgentEvent::ToolResult`] owes the sidecar: the full output text
-/// and/or the full diff (as JSON), keyed by part id. `None` when the event
-/// carries nothing worth uploading.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SidecarPayload {
-    pub part_id: String,
-    pub output: Option<String>,
-    pub diff: Option<ToolDiff>,
-}
-
-pub fn sidecar_payload(event: &AgentEvent) -> Option<SidecarPayload> {
-    let AgentEvent::ToolResult {
-        id, output, diff, ..
-    } = event
-    else {
-        return None;
-    };
-    let output = output.clone().filter(|o| !o.trim().is_empty());
-    if output.is_none() && diff.is_none() {
-        return None;
-    }
-    Some(SidecarPayload {
-        part_id: id.clone(),
-        output,
-        diff: diff.clone(),
-    })
 }
 
 /// Render-only privacy policy — strip heavy/sensitive tool inputs before a call enters the doc.
@@ -932,43 +846,6 @@ mod tests {
         assert_eq!(continuation_id("m1", 1), "m1#c1");
     }
 
-    // ── A1 strip (docs/chat2-sync.md) ───────────────────────────────────────
-
-    #[test]
-    fn summarize_inlines_small_outputs_and_marks_big_cuts() {
-        assert_eq!(summarize_tool_output(""), None);
-        assert_eq!(summarize_tool_output("  \n\t\n"), None);
-        assert_eq!(summarize_tool_output("one line"), Some("one line".into()));
-        // Small multi-line outputs ride whole — no summary, no "…".
-        assert_eq!(
-            summarize_tool_output("\n\nfirst real\nsecond"),
-            Some("first real\nsecond".into())
-        );
-        assert_eq!(
-            summarize_tool_output("only line\n\n  \n"),
-            Some("only line".into())
-        );
-        // Markdown fences are transport wrapping, never content: stripped
-        // even when they'd otherwise be the first line, and a fence-only
-        // output is blank.
-        assert_eq!(
-            summarize_tool_output("```console\nreal content\n```"),
-            Some("real content".into())
-        );
-        assert_eq!(summarize_tool_output("```\n```"), None);
-        // Big outputs: first non-empty (post-fence) line + unconditional "…".
-        let big = format!("```console\nhead line\n{}\n```", "x".repeat(300));
-        assert_eq!(summarize_tool_output(&big), Some("head line…".into()));
-        let long = "x".repeat(TOOL_OUTPUT_SUMMARY_MAX + 40);
-        let summary = summarize_tool_output(&long).unwrap();
-        assert_eq!(summary.chars().count(), TOOL_OUTPUT_SUMMARY_MAX + 1);
-        assert!(summary.ends_with('…'));
-        // Char-boundary safety on multibyte input.
-        let wide = "é".repeat(TOOL_OUTPUT_SUMMARY_MAX + 5);
-        let summary = summarize_tool_output(&wide).unwrap();
-        assert_eq!(summary.chars().count(), TOOL_OUTPUT_SUMMARY_MAX + 1);
-    }
-
     #[test]
     fn diff_stat_counts_line_changes() {
         let stat = diff_stat(&ToolDiff {
@@ -1030,59 +907,6 @@ mod tests {
                 let stats = diff_stats.as_ref().unwrap();
                 assert_eq!(stats.len(), 1);
                 assert_eq!((stats[0].additions, stats[0].deletions), (1, 1));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sidecar_refs_stamp_once_and_only_where_content_exists() {
-        let mut parts = Vec::new();
-        fold_event_into_parts(
-            &mut parts,
-            &AgentEvent::ToolCall {
-                id: "t1".into(),
-                call: ToolCall::Exec {
-                    command: "ls".into(),
-                },
-            },
-        );
-        // Unresolved: no refs yet.
-        apply_sidecar_refs("chat-9", &mut parts);
-        assert!(matches!(
-            &parts[0],
-            MessagePart::Tool {
-                output_ref: None,
-                diff_ref: None,
-                ..
-            }
-        ));
-        fold_event_into_parts(
-            &mut parts,
-            &AgentEvent::ToolResult {
-                id: "t1".into(),
-                is_error: false,
-                output: Some("hello".into()),
-                diff: Some(ToolDiff {
-                    path: "/w/a".into(),
-                    old_text: None,
-                    new_text: "x\n".into(),
-                }),
-            },
-        );
-        apply_sidecar_refs("chat-9", &mut parts);
-        apply_sidecar_refs("chat-9", &mut parts); // idempotent
-        match &parts[0] {
-            MessagePart::Tool {
-                output_ref,
-                diff_ref,
-                ..
-            } => {
-                // One-liner fold: outputs never reach the doc, so there is
-                // no output content to key even after resolution; diff
-                // STATS exist, so the diff ref still stamps.
-                assert_eq!(output_ref.as_deref(), None);
-                assert_eq!(diff_ref.as_deref(), Some("chat-9/t1.diff"));
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1158,7 +982,7 @@ mod tests {
 
     #[test]
     fn subagent_events_never_decorate_a_non_spawn_chip() {
-        // Mis-keyed tagged traffic (claude's background shells settled
+        // Mis-keyed tagged traffic from background shells settled
         // through the subagent subtype, 2026-08-20) must not stamp lifecycle
         // onto an ordinary tool chip — the genus gate is the CALL.
         use zeron_proto::DoneStatus;
@@ -1190,32 +1014,5 @@ mod tests {
             } => assert_eq!(*subagent_status, None),
             other => panic!("{other:?}"),
         }
-    }
-
-    #[test]
-    fn sidecar_payload_carries_full_texts() {
-        assert_eq!(
-            sidecar_payload(&AgentEvent::TextDelta { text: "x".into() }),
-            None
-        );
-        assert_eq!(
-            sidecar_payload(&AgentEvent::ToolResult {
-                id: "t".into(),
-                is_error: false,
-                output: Some("   \n".into()),
-                diff: None,
-            }),
-            None,
-            "blank output uploads nothing"
-        );
-        let payload = sidecar_payload(&AgentEvent::ToolResult {
-            id: "t".into(),
-            is_error: true,
-            output: Some("full output".into()),
-            diff: None,
-        })
-        .unwrap();
-        assert_eq!(payload.part_id, "t");
-        assert_eq!(payload.output.as_deref(), Some("full output"));
     }
 }

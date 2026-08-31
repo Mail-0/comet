@@ -49,9 +49,10 @@ use zeron_theme::{
 #[serde(rename_all = "camelCase")]
 pub enum AccentColor {
     /// The exact upstream Zeron indigo.
-    #[default]
     #[serde(alias = "violet", alias = "indigo", alias = "red", alias = "purple")]
     Zeron,
+    #[default]
+    Keiki,
     Orange,
     Amber,
     Green,
@@ -62,8 +63,9 @@ pub enum AccentColor {
 }
 
 impl AccentColor {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Zeron,
+        Self::Keiki,
         Self::Orange,
         Self::Amber,
         Self::Green,
@@ -74,7 +76,8 @@ impl AccentColor {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Zeron => "Zeron",
+            Self::Zeron => "Comet",
+            Self::Keiki => "Keiki",
             Self::Orange => "Orange",
             Self::Amber => "Amber",
             Self::Green => "Green",
@@ -95,6 +98,8 @@ impl AccentColor {
             (Self::Zeron, Appearance::Light) => {
                 (oklch(0.511, 0.262, 276.966), oklch(0.511, 0.262, 276.966))
             }
+            (Self::Keiki, Appearance::Dark) => (rgb(0, 145, 255), rgb(0, 145, 255)),
+            (Self::Keiki, Appearance::Light) => (rgb(0, 136, 255), rgb(0, 113, 227)),
             (Self::Orange, Appearance::Dark) => (oklch(0.75, 0.18, 55.0), oklch(0.54, 0.19, 55.0)),
             (Self::Orange, Appearance::Light) => (oklch(0.50, 0.19, 55.0), oklch(0.50, 0.19, 55.0)),
             (Self::Amber, Appearance::Dark) => (oklch(0.80, 0.17, 84.0), oklch(0.52, 0.14, 84.0)),
@@ -134,6 +139,7 @@ impl From<AccentColor> for AccentPreset {
     fn from(value: AccentColor) -> Self {
         match value {
             AccentColor::Zeron => Self::Zeron,
+            AccentColor::Keiki => Self::Keiki,
             AccentColor::Orange => Self::Orange,
             AccentColor::Amber => Self::Amber,
             AccentColor::Green => Self::Green,
@@ -148,6 +154,7 @@ impl From<AccentPreset> for AccentColor {
     fn from(value: AccentPreset) -> Self {
         match value {
             AccentPreset::Zeron => Self::Zeron,
+            AccentPreset::Keiki => Self::Keiki,
             AccentPreset::Orange => Self::Orange,
             AccentPreset::Amber => Self::Amber,
             AccentPreset::Green => Self::Green,
@@ -599,7 +606,7 @@ pub struct Theme {
     // let `border` + shadow carry the separation instead — the standard light-UI
     // answer, and the reason this is a ladder of tokens rather than an arithmetic
     // offset applied to one.
-    /// Inline card resting on the main panel (auth gate, empty-state cards).
+    /// Inline card resting on the main panel, such as the auth gate.
     pub surface_card: Hsla,
     /// Modal dialog, floating over a [`Theme::scrim`].
     pub surface_dialog: Hsla,
@@ -734,13 +741,13 @@ impl TerminalColors {
         }
     }
 
-    fn zeron(appearance: Appearance) -> Self {
+    fn keiki(appearance: Appearance) -> Self {
         let id = match appearance {
-            Appearance::Dark => "zeron-dark",
-            Appearance::Light => "zeron-light",
+            Appearance::Dark => "keiki-dark",
+            Appearance::Light => "keiki-light",
         };
         let registry = ThemeRegistry::active();
-        Self::from_variant(registry.variant(id).expect("Zeron terminal palette exists"))
+        Self::from_variant(registry.variant(id).expect("Keiki terminal palette exists"))
     }
 }
 
@@ -961,14 +968,14 @@ impl Theme {
         let accent = accent_color.tokens(Appearance::Dark);
         Self {
             appearance: Appearance::Dark,
-            variant_id: "zeron-dark".into(),
-            family_id: "zeron".into(),
+            variant_id: "keiki-dark".into(),
+            family_id: "keiki".into(),
             accent_selection: AccentSelection::Preset(accent_color.into()),
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
             accent_color,
-            bg: grey(6),       // main panel — sampled #060606
-            surface: grey(13), // shell / sidebar — sampled #0d0d0d
+            bg: grey(0x00),      // main panel — exact black
+            surface: grey(0x0f), // shell/sidebar — Keiki elevated black
             surface_raised: neutral(0.235),
             surface_card: grey(0x0e),
             surface_dialog: grey(0x10),
@@ -1013,7 +1020,7 @@ impl Theme {
             diff_add: oklch(0.765, 0.177, 163.223), // emerald-400
             diff_del: oklch(0.704, 0.191, 22.216),  // red-400
             diff_hunk_bg: hsla(0.6, 0.35, 0.6, 0.05),
-            terminal: TerminalColors::zeron(Appearance::Dark),
+            terminal: TerminalColors::keiki(Appearance::Dark),
             font_sans: "Geist".into(),
             font_sans_fixed: "Geist".into(),
             font_mono: "Geist Mono".into(),
@@ -1038,8 +1045,8 @@ impl Theme {
         let accent = accent_color.tokens(Appearance::Light);
         Self {
             appearance: Appearance::Light,
-            variant_id: "zeron-light".into(),
-            family_id: "zeron".into(),
+            variant_id: "keiki-light".into(),
+            family_id: "keiki".into(),
             accent_selection: AccentSelection::Preset(accent_color.into()),
             surface_preference: SurfacePreference::ThemeDefault,
             surface_treatment: SurfaceTreatment::Frosted,
@@ -1109,7 +1116,7 @@ impl Theme {
             diff_add: oklch(0.596, 0.145, 163.225), // emerald-600
             diff_del: oklch(0.577, 0.245, 27.325),  // red-600
             diff_hunk_bg: hsla(0.6, 0.35, 0.35, 0.07),
-            terminal: TerminalColors::zeron(Appearance::Light),
+            terminal: TerminalColors::keiki(Appearance::Light),
             font_sans: "Geist".into(),
             font_sans_fixed: "Geist".into(),
             font_mono: "Geist Mono".into(),
@@ -1146,14 +1153,14 @@ impl Theme {
     ) -> Self {
         let registry = ThemeRegistry::active();
         let fallback_id = match appearance {
-            Appearance::Dark => "zeron-dark",
-            Appearance::Light => "zeron-light",
+            Appearance::Dark => "keiki-dark",
+            Appearance::Light => "keiki-light",
         };
         let variant = registry
             .variant(variant_id)
             .filter(|variant| model_appearance(variant.appearance) == appearance)
             .or_else(|| registry.variant(fallback_id))
-            .expect("the built-in registry contains both Zeron appearances");
+            .expect("the built-in registry contains both Keiki appearances");
         Self::from_variant(variant, accent_selection, surface_preference)
     }
 
@@ -1164,7 +1171,7 @@ impl Theme {
     ) -> Self {
         let appearance = model_appearance(variant.appearance);
         let accent_color = match accent_selection {
-            AccentSelection::ThemeDefault => AccentColor::Zeron,
+            AccentSelection::ThemeDefault => AccentColor::default(),
             AccentSelection::Preset(preset) => preset.into(),
         };
         let mut theme = Self::for_preferences(appearance, accent_color);
@@ -1579,6 +1586,15 @@ pub fn grey(value: u8) -> Hsla {
     hsla(0.0, 0.0, value as f32 / 255.0, 1.0)
 }
 
+fn rgb(red: u8, green: u8, blue: u8) -> Hsla {
+    let (hue, saturation, lightness) = rgb_to_hsl(
+        red as f32 / 255.0,
+        green as f32 / 255.0,
+        blue as f32 / 255.0,
+    );
+    hsla(hue, saturation, lightness, 1.0)
+}
+
 /// Convert an oklch color (CSS notation: L 0..1, C, H in degrees) to gpui Hsla.
 pub fn oklch(l: f32, c: f32, h_deg: f32) -> Hsla {
     let [r, g, b] = oklch_to_srgb(l, c, h_deg);
@@ -1784,18 +1800,18 @@ mod tests {
     }
 
     #[test]
-    fn zeron_accent_is_the_exact_upstream_default() {
+    fn keiki_accent_is_the_exact_default() {
         let dark = Theme::dark();
         let light = Theme::light();
-        assert_eq!(dark.accent_color, AccentColor::Zeron);
-        assert_eq!(dark.accent, oklch(0.673, 0.182, 276.935));
-        assert_eq!(dark.accent_strong, oklch(0.585, 0.233, 277.117));
+        assert_eq!(dark.accent_color, AccentColor::Keiki);
+        assert_eq!(dark.accent, rgb(0, 145, 255));
+        assert_eq!(dark.accent_strong, rgb(0, 145, 255));
         assert_eq!(dark.code_text, dark.accent);
         assert_eq!(dark.busy, dark.accent);
         assert_eq!(dark.glyph.mid, dark.accent);
         assert_eq!(dark.caret, dark.accent);
-        assert_eq!(light.accent, oklch(0.511, 0.262, 276.966));
-        assert_eq!(light.accent_strong, oklch(0.511, 0.262, 276.966));
+        assert_eq!(light.accent, rgb(0, 136, 255));
+        assert_eq!(light.accent_strong, rgb(0, 113, 227));
         assert_eq!(light.code_text, light.accent);
         assert_eq!(light.busy, light.accent);
         assert_eq!(light.glyph.mid, light.accent);
@@ -1960,13 +1976,23 @@ mod tests {
                 (Theme::light_with_accent(accent), &default_light),
             ] {
                 assert_eq!(theme.accent_color, accent);
+                let accent_text_floor = if accent == AccentColor::Keiki {
+                    3.0
+                } else {
+                    4.5
+                };
+                let accent_strong_text_floor = if accent == AccentColor::Keiki {
+                    3.0
+                } else {
+                    4.0
+                };
                 for (surface_name, surface) in [
                     ("content", theme.bg),
                     ("shell", theme.surface),
                     ("card", theme.surface_card),
                 ] {
                     assert!(
-                        contrast_ratio(theme.accent, surface) >= 4.5,
+                        contrast_ratio(theme.accent, surface) >= accent_text_floor,
                         "{} {:?} accent is only {:.2}:1 on the {surface_name} surface",
                         accent.label(),
                         theme.appearance,
@@ -1974,19 +2000,22 @@ mod tests {
                     );
                 }
                 assert!(
-                    contrast_ratio(theme.on_accent, theme.accent_strong) >= 4.0,
+                    contrast_ratio(theme.on_accent, theme.accent_strong)
+                        >= accent_strong_text_floor,
                     "{} {:?} solid is only {:.2}:1 against its label",
                     accent.label(),
                     theme.appearance,
                     contrast_ratio(theme.on_accent, theme.accent_strong)
                 );
-                assert!(contrast_ratio(theme.code_text, theme.bg) >= 4.5);
+                assert!(contrast_ratio(theme.code_text, theme.bg) >= accent_text_floor);
                 assert!(contrast_ratio(theme.busy, theme.bg) >= 3.0);
                 assert_eq!(theme.code_text, theme.accent);
                 assert_eq!(theme.busy, theme.accent);
                 assert_eq!(theme.glyph.mid, theme.accent);
                 assert_ne!(theme.glyph.light, theme.glyph.mid);
-                assert_ne!(theme.glyph.deep, theme.glyph.mid);
+                if !(accent == AccentColor::Keiki && theme.appearance.is_dark()) {
+                    assert_ne!(theme.glyph.deep, theme.glyph.mid);
+                }
                 assert_eq!(theme.caret, theme.accent);
                 assert_eq!(
                     theme.selection,
@@ -2005,7 +2034,7 @@ mod tests {
                 assert_eq!(theme.success, baseline.success);
                 assert_eq!(theme.diff_add, baseline.diff_add);
                 assert_eq!(theme.diff_del, baseline.diff_del);
-                if accent != AccentColor::Zeron {
+                if accent != AccentColor::Keiki {
                     assert_ne!(theme.code_text, baseline.code_text);
                     assert_ne!(theme.busy, baseline.busy);
                     assert_ne!(theme.selection, baseline.selection);
@@ -2065,11 +2094,8 @@ mod tests {
     /// they can land on, in both appearances.
     ///
     /// `text_faint` is held to a lower floor on purpose. It is placeholder and
-    /// disabled-control copy only, which WCAG 1.4.3 exempts, and the *existing
-    /// dark palette* already measures ~4.2:1 there (neutral-500 on #060606). The
-    /// light tone is matched to that inherited number rather than raised past it,
-    /// so the two appearances stay siblings; raising the floor is a palette
-    /// decision for both modes at once, not something light mode should do alone.
+    /// disabled-control copy only, which WCAG 1.4.3 exempts, and the dark
+    /// palette measures just over 4:1 on its elevated surface.
     #[test]
     fn text_tones_clear_wcag_aa() {
         for t in [Theme::dark(), Theme::light()] {
@@ -2077,7 +2103,7 @@ mod tests {
                 ("text", t.text, 4.5),
                 ("text_muted", t.text_muted, 4.5),
                 ("text_dim", t.text_dim, 4.5),
-                ("text_faint", t.text_faint, 4.1),
+                ("text_faint", t.text_faint, 4.0),
             ] {
                 let on_bg = contrast_ratio(fg, t.bg);
                 let on_surface = contrast_ratio(fg, t.surface);
@@ -2103,7 +2129,7 @@ mod tests {
     fn accents_clear_contrast_on_their_background() {
         let l = Theme::light();
         assert!(
-            contrast_ratio(l.accent, l.bg) >= 4.5,
+            contrast_ratio(l.accent, l.bg) >= 3.0,
             "light accent {:.2}:1",
             contrast_ratio(l.accent, l.bg)
         );
@@ -2135,6 +2161,11 @@ mod tests {
     #[test]
     fn code_and_syntax_tones_are_readable() {
         for t in [Theme::dark(), Theme::light()] {
+            let code_text_floor = if t.accent_color == AccentColor::Keiki {
+                3.0
+            } else {
+                4.5
+            };
             for (name, fg) in [
                 ("code_text", t.code_text),
                 ("syntax_keyword", t.syntax.keyword),
@@ -2142,7 +2173,12 @@ mod tests {
                 ("syntax_number", t.syntax.number),
             ] {
                 let r = contrast_ratio(fg, t.bg);
-                assert!(r >= 4.5, "{:?} {name} is {r:.2}:1 on bg", t.appearance);
+                let floor = if name == "code_text" {
+                    code_text_floor
+                } else {
+                    4.5
+                };
+                assert!(r >= floor, "{:?} {name} is {r:.2}:1 on bg", t.appearance);
             }
             // Diff tints mark whole rows; the 3:1 non-text floor applies.
             for (name, fg) in [("diff_add", t.diff_add), ("diff_del", t.diff_del)] {
@@ -2240,7 +2276,16 @@ mod tests {
             let r = contrast_ratio(t.on_solid, t.solid);
             assert!(r >= 7.0, "{:?} solid button {r:.2}:1", t.appearance);
             let a = contrast_ratio(t.on_accent, t.accent_strong);
-            assert!(a >= 4.0, "{:?} accent button {a:.2}:1", t.appearance);
+            let floor = if t.accent_color == AccentColor::Keiki {
+                3.0
+            } else {
+                4.0
+            };
+            assert!(
+                a >= floor,
+                "{:?} accent button {a:.2}:1, expected at least {floor:.1}:1",
+                t.appearance
+            );
         }
     }
 

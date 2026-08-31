@@ -1,25 +1,50 @@
 //! Agent-side wire types: harness identity, run requests, streaming events, tool calls.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HarnessId {
-    ClaudeCode,
-    Codex,
-    Cursor,
-    /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
-    Grok,
-    /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
-    Hermes,
-    /// The pi coding agent (pi.dev), driven over ACP via the `pi-acp` adapter.
-    Pi,
-    /// SST's opencode agent, driven natively over its own HTTP/SSE server
-    /// protocol (`opencode serve` — the same wire the opencode desktop app
-    /// speaks).
-    Opencode,
+    Unknown(&'static str),
+    /// Dashboard Copilot, driven over the authenticated AG-UI HTTP stream.
+    Copilot,
     /// Test harness; never shown in production pickers.
     Mock,
+}
+
+impl Serialize for HarnessId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Unknown(value) => value,
+            Self::Copilot => "copilot",
+            Self::Mock => "mock",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Cow::<str>::deserialize(deserializer)?;
+        Ok(match value.as_ref() {
+            "copilot" => Self::Copilot,
+            "mock" => Self::Mock,
+            "claude-code" => Self::Unknown("claude-code"),
+            "codex" => Self::Unknown("codex"),
+            "cursor" => Self::Unknown("cursor"),
+            "grok" => Self::Unknown("grok"),
+            "hermes" => Self::Unknown("hermes"),
+            "pi" => Self::Unknown("pi"),
+            "opencode" => Self::Unknown("opencode"),
+            _ => Self::Unknown("unknown"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -125,8 +150,8 @@ pub struct RunRequest {
 
 /// Isolated-worktree directive riding [`RunRequest`]. The worktree is created
 /// by the HOST while draining the queued Run — not by the sender over a
-/// blocking CreateWorktree RPC — so the send path stays durable: a lost relay
-/// frame can't wedge the composer on "Sending…" while the session runs anyway
+/// blocking CreateWorktree RPC — so the send path stays durable and a slow
+/// filesystem operation cannot wedge the composer on "Sending…".
 /// (2026-08-18 user report).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -544,10 +569,25 @@ mod tests {
     }
 
     #[test]
-    fn harness_id_uses_kebab_case() {
-        assert_eq!(
-            serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
-            "\"claude-code\""
-        );
+    fn legacy_harness_ids_round_trip_without_allocating_unknown_values() {
+        for legacy in [
+            "claude-code",
+            "codex",
+            "cursor",
+            "grok",
+            "hermes",
+            "pi",
+            "opencode",
+        ] {
+            let id: HarnessId = serde_json::from_str(&format!("\"{legacy}\"")).unwrap();
+            assert_eq!(serde_json::to_string(&id).unwrap(), format!("\"{legacy}\""));
+        }
+    }
+
+    #[test]
+    fn unknown_harness_id_uses_bounded_fallback() {
+        let id: HarnessId = serde_json::from_str("\"harness-from-the-future\"").unwrap();
+        assert_eq!(id, HarnessId::Unknown("unknown"));
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"unknown\"");
     }
 }

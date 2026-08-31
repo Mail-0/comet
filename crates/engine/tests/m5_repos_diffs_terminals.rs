@@ -74,7 +74,6 @@ fn assemble(dir: &Path) -> EngineCore {
         dir,
         Arc::new(HarnessRegistry::new()),
         zeron_proto::HarnessId::Mock,
-        None,
     )
     .expect("engine assembles")
 }
@@ -661,7 +660,7 @@ async fn diff_capture_truncates_at_patch_cap() {
     let snapshot = capture_diff(&repos, &repo_dir).await.expect("capture");
     assert!(snapshot.truncated, "patch cap hit");
     assert!(snapshot.patch.len() <= 3 * 1024 * 1024 + 64);
-    assert!(snapshot.patch.contains("# Zeron diff truncated"));
+    assert!(snapshot.patch.contains("# Keiki diff truncated"));
 }
 
 // ---------------------------------------------------------------------------

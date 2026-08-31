@@ -14,3 +14,7 @@ thiserror.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 similar.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

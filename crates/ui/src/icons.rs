@@ -8,15 +8,14 @@
 //! - The terminal tab glyphs (`terminal`, `plus`, `close`) and the stop square
 //!   are ports of the hand-drawn inline SVGs in zeron's `terminal-panel.tsx` /
 //!   `composer-actions.tsx`.
-//! - The harness brand marks (`claude-mark`, `openai-mark`, `cursor-mark`) are
-//!   ports of zeron's `icons.tsx`. gpui tints SVGs with the text color, so the
-//!   Claude mark's brand orange is applied at the call site ([`CLAUDE_BRAND`]).
+//! - The Copilot launcher uses the neutral monitor glyph, matching the
+//!   product's provider-neutral shell.
 //!
 //! Icons render via [`icon`]: `icon(icons::PAPERCLIP).size(px(16.)).text_color(…)`.
 
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Hsla, Result, SharedString, Styled as _, Svg, svg};
+use gpui::{AssetSource, Result, SharedString, Styled as _, Svg, svg};
 
 macro_rules! icon_assets {
     ($(($const_name:ident, $path:literal)),+ $(,)?) => {
@@ -155,25 +154,11 @@ icon_assets![
     (COPY, "copy"),
     // Hand-drawn star pair in the Solar Linear style (like the terminal/
     // plus/return ports) — outline for the favorite affordance, bold for the
-    // favorited state and the picker's favorites rail tab.
+    // favorited state.
     (STAR, "star"),
     (STAR_BOLD, "star-bold"),
     (ZERON_LOGO, "zeron-logo"),
-    // Harness brand marks (icons.tsx).
-    (CLAUDE_MARK, "claude-mark"),
-    (OPENAI_MARK, "openai-mark"),
-    (CURSOR_MARK, "cursor-mark"),
-    (GROK_MARK, "grok-mark"),
-    (HERMES_MARK, "hermes-mark"),
-    (PI_MARK, "pi-mark"),
-    (OPENCODE_MARK, "opencode-mark"),
 ];
-
-/// The Claude mark's brand orange (`#D97757`) — zeron keeps it even on the
-/// monochrome surface.
-pub fn claude_brand() -> Hsla {
-    gpui::rgb(0xD97757).into()
-}
 
 /// An icon element for an embedded asset path. Size and colour are set by the
 /// caller (`.size(..)`, `.text_color(..)`), matching the web app's

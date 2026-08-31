@@ -12,7 +12,8 @@ pub fn builtin_registry() -> &'static ThemeRegistry {
     static REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
     REGISTRY.get_or_init(|| ThemeRegistry {
         families: vec![
-            family("zeron", "Zeron", vec![zeron_light(), zeron_dark()]),
+            family("keiki", "Keiki", vec![keiki_light(), keiki_dark()]),
+            family("zeron", "Comet", vec![zeron_light(), zeron_dark()]),
             family(
                 "vscode-default",
                 "VS Code Default",
@@ -240,7 +241,7 @@ fn zeron_dark() -> ThemeVariant {
     variant(Seeds {
         id: "zeron-dark",
         family_id: "zeron",
-        name: "Zeron Dark",
+        name: "Comet Dark",
         appearance: Appearance::Dark,
         treatment: SurfaceTreatment::Frosted,
         background: "#060606",
@@ -270,11 +271,79 @@ fn zeron_dark() -> ThemeVariant {
     })
 }
 
+fn keiki_dark() -> ThemeVariant {
+    variant(Seeds {
+        id: "keiki-dark",
+        family_id: "keiki",
+        name: "Keiki Dark",
+        appearance: Appearance::Dark,
+        treatment: SurfaceTreatment::Opaque,
+        background: "#000000",
+        shell: "#0f0f0f",
+        raised: "#0f0f0f",
+        card: "#0f0f0f",
+        text: "#ededed",
+        muted: "#a1a1a6",
+        faint: "#8e8e93",
+        accent: "#0091ff",
+        danger: "#ff4245",
+        warning: "#ff9230",
+        success: "#30d158",
+        terminal_background: "#0d1117",
+        ansi: ANSI_DARK,
+        syntax: [
+            "#8b949e", "#ff7b72", "#a5d6ff", "#79c0ff", "#ffa657", "#a5d6ff", "#ff7b72", "#ededed",
+            "#8b949e", "#ff7b72", "#ffa657", "#ff4245",
+        ],
+        source: source(
+            "keiki-dark",
+            "native",
+            "https://onkeiki.com",
+            "builtin",
+            "MIT",
+        ),
+    })
+}
+
+fn keiki_light() -> ThemeVariant {
+    variant(Seeds {
+        id: "keiki-light",
+        family_id: "keiki",
+        name: "Keiki Light",
+        appearance: Appearance::Light,
+        treatment: SurfaceTreatment::Opaque,
+        background: "#ffffff",
+        shell: "#ffffff",
+        raised: "#ebebeb",
+        card: "#ffffff",
+        text: "#171717",
+        muted: "#5f6368",
+        faint: "#6e6e73",
+        accent: "#0088ff",
+        danger: "#ff383c",
+        warning: "#ff8d28",
+        success: "#34c759",
+        terminal_background: "#f6f8fa",
+        ansi: ANSI_LIGHT,
+        syntax: [
+            "#59636e", "#cf222e", "#248a3d", "#9a6700", "#0088ff", "#0088ff", "#c80014", "#171717",
+            "#59636e", "#c80014", "#c93400", "#d70015",
+        ],
+        source: source(
+            "keiki-light",
+            "native",
+            "https://onkeiki.com",
+            "builtin",
+            "MIT",
+        ),
+    })
+}
+
 fn zeron_light() -> ThemeVariant {
     variant(Seeds {
         id: "zeron-light",
         family_id: "zeron",
-        name: "Zeron Light",
+        name: "Comet Light",
         appearance: Appearance::Light,
         treatment: SurfaceTreatment::Frosted,
         background: "#ffffff",

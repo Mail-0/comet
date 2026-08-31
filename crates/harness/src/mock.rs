@@ -241,7 +241,7 @@ impl Harness for MockHarness {
                 "Inline styles hold while text arrives: **bold stays bold**, ",
                 "*italic stays italic*, `code stays code`, and ~~this stays struck~~.\n\n",
                 "- **Fold** — parts diff into the [Loro doc](https://loro.dev) on a 120ms cadence\n",
-                "- **Relay** — commits fan out through the [session room](https://developers.cloudflare.com/durable-objects/) to every device\n",
+                "- **Queue** — commands remain in the local session doc until the host processes them\n",
                 "- **Paint** — the [display tree](https://github.com/pulldown-cmark/pulldown-cmark) mends hanging markers in the last block only\n\n",
                 "Links above never flash their URLs, and closing markers never reflow the paragraph.\n",
             )
@@ -308,7 +308,7 @@ impl Harness for MockHarness {
                 };
                 let spawn = |id: &str, description: &str, prompt: &str| AgentEvent::ToolCall {
                     id: id.into(),
-                    // The claude-driver spawn shape: `Agent: {description}`
+                    // The driver spawn shape: `Agent: {description}`
                     // with the task in the input (names the chip AND the tab).
                     call: zeron_proto::ToolCall::Unknown {
                         name: format!("Agent: {description}"),
@@ -345,7 +345,7 @@ impl Harness for MockHarness {
                         "Measure the 120ms coalesced commit cadence under a scripted delta burst.",
                     ),
                     // The spawn prompts seed each subagent's opening user
-                    // entry (like the claude driver's Task-prompt seeding).
+                    // entry (like a driver's Task-prompt seeding).
                     tag(
                         "mock-sub-1",
                         AgentEvent::UserMessage {
@@ -382,7 +382,7 @@ impl Harness for MockHarness {
                     ),
                     resolve("mock-sub-1"),
                     tag("mock-sub-1", done.clone()),
-                    // A steer AFTER the subagent settled (claude's queued
+                    // A steer AFTER the subagent settled (a queued
                     // SendMessage shape): resurrects the chip and reopens
                     // the frozen transcript for the resumed segment.
                     tag(
@@ -424,8 +424,8 @@ impl Harness for MockHarness {
                         },
                     ),
                     // A parent→subagent steer: splits the transcript into a
-                    // user entry + fresh assistant segment (like the claude
-                    // driver's tagged user text blocks).
+                    // user entry + fresh assistant segment (like tagged user
+                    // text blocks).
                     tag(
                         "mock-sub-2",
                         AgentEvent::UserMessage {

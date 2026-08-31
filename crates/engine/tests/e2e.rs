@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
+use zeron_doc::DocsStore;
 use zeron_doc::{
     MessagePart, MessageRole, MessageStatus, SegmentWriter, SessionCommandEntry,
     SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry,
@@ -20,7 +21,6 @@ use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SessionStatus, SteeringMode, ToolCall,
 };
-use zeron_sync::DocsStore;
 
 const CHAT: &str = "chat-e2e";
 const VIEWER: &str = "viewer-device";
@@ -143,7 +143,7 @@ fn registry_with(harness: Arc<dyn Harness>) -> Arc<HarnessRegistry> {
 }
 
 fn assemble(dir: &std::path::Path, harness: Arc<dyn Harness>) -> EngineCore {
-    EngineCore::assemble(dir, registry_with(harness), HarnessId::Mock, None)
+    EngineCore::assemble(dir, registry_with(harness), HarnessId::Mock)
         .expect("engine core assembles")
 }
 
@@ -438,7 +438,7 @@ async fn interrupt_stamps_streaming_entry_aborted() {
         Some((SessionCommandStatus::Applied, None))
     );
     // Journal closed with a Done — nothing left to recover.
-    let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
+    let journal = RunJournal::open(dir.path().join("profiles/local/journals")).unwrap();
     assert!(journal.stale_sessions().unwrap().is_empty());
     assert_eq!(
         core.sessions.session_status(CHAT).map(|s| s.status),
@@ -533,7 +533,7 @@ async fn processed_commands_are_skipped_on_redelivery() {
     // Simulate a crash AFTER mark-processed but BEFORE execute/outcome: the ledger has
     // the id, the doc still says pending.
     {
-        let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
+        let store = DocsStore::open(dir.path().join("profiles/local")).unwrap();
         assert!(store.mark_processed("cmd-crashed").unwrap());
     }
 
@@ -576,7 +576,7 @@ async fn processed_commands_are_skipped_on_redelivery() {
     assert!(core.sessions.session_status(CHAT).is_none());
 
     // Direct ledger-evaluation check: re-evaluating a processed command = Skip.
-    let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
+    let store = DocsStore::open(dir.path().join("profiles/local")).unwrap();
     let commands = handle.doc().read_commands().unwrap();
     let entry = commands.iter().find(|c| c.id == "cmd-crashed").unwrap();
     let is_processed = |id: &str| store.is_processed(id).unwrap_or(false);
@@ -597,85 +597,6 @@ async fn processed_commands_are_skipped_on_redelivery() {
 /// The v0.2.12 field report: a send whose command was consumed by the ledger
 /// but never executed (crash between mark and resolve) was invisible to
 /// every retry — the drain filters processed ids, so the session was dead
-/// forever while new sessions worked. Retry must mint a FRESH attempt.
-#[tokio::test]
-async fn retry_reissues_a_swallowed_send() {
-    let dir = tempfile::tempdir().unwrap();
-    {
-        let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
-        assert!(store.mark_processed("cmd-dead").unwrap());
-    }
-    let core = assemble(
-        dir.path(),
-        Arc::new(MockHarness {
-            script: mock_script(),
-        }),
-    );
-    let handle = core.doc_host.open(CHAT).unwrap();
-    queue_as_viewer(
-        handle.doc(),
-        "cmd-dead",
-        SessionCommandPayload::Run {
-            request: run_request("try again"),
-            message_id: "m-retry".into(),
-        },
-    );
-    // The sweep terminalizes the dead attempt without executing it…
-    wait_for(
-        || {
-            matches!(
-                command_status(&core, "cmd-dead"),
-                Some((SessionCommandStatus::Rejected, _))
-            )
-        },
-        "dead attempt rejected",
-    )
-    .await;
-    assert!(entries(&core).is_empty(), "dead attempt must not execute");
-
-    // …and the user's retry mints a fresh attempt that actually runs.
-    core.doc_host.retry_delivery(CHAT).unwrap();
-    wait_for(
-        || {
-            entries_now(&core)
-                .iter()
-                .any(|e| e.id == "m-retry" && e.role == MessageRole::User)
-        },
-        "re-issued send writes the user entry",
-    )
-    .await;
-    wait_for(
-        || {
-            entries_now(&core)
-                .iter()
-                .any(|e| e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete))
-        },
-        "re-issued send runs to completion",
-    )
-    .await;
-    let run_attempts = |cmds: &[SessionCommandEntry]| {
-        cmds.iter()
-            .filter(|c| {
-                matches!(&c.payload,
-                    SessionCommandPayload::Run { message_id, .. } if message_id == "m-retry")
-            })
-            .count()
-    };
-    assert_eq!(
-        run_attempts(&handle.doc().read_commands().unwrap()),
-        2,
-        "original + exactly one re-issue"
-    );
-    // A delivered message must never re-issue: retry while healthy is a no-op.
-    core.doc_host.retry_delivery(CHAT).unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        run_attempts(&handle.doc().read_commands().unwrap()),
-        2,
-        "retry after delivery must not duplicate the send"
-    );
-}
-
 #[tokio::test]
 async fn recover_stale_journal_stamps_aborted_on_boot() {
     let dir = tempfile::tempdir().unwrap();
@@ -686,7 +607,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
     // Craft the crash state: a journal without a terminal Done + a doc snapshot whose
     // assistant entry is still `streaming`.
     {
-        let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
+        let journal = RunJournal::open(dir.path().join("profiles/local/journals")).unwrap();
         journal
             .append(
                 CHAT,
@@ -718,7 +639,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
             }])
             .unwrap();
         // No finish — the "process" dies here with the entry still streaming.
-        let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
+        let store = DocsStore::open(dir.path().join("profiles/local")).unwrap();
         store
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
@@ -742,7 +663,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
     }
 
     // Journal closed with a synthetic Done{interrupted}; no longer stale.
-    let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
+    let journal = RunJournal::open(dir.path().join("profiles/local/journals")).unwrap();
     assert!(journal.stale_sessions().unwrap().is_empty());
     let (_, last) = journal.last_event(CHAT).unwrap().unwrap();
     assert!(matches!(
@@ -774,7 +695,7 @@ async fn rpc_surface_over_in_memory_transport() {
         .call(zeron_rpc::methods::LIST_HARNESSES, serde_json::Value::Null)
         .await
         .unwrap();
-    assert_eq!(harnesses[0]["id"], "mock");
+    assert_eq!(harnesses[0]["id"], "copilot");
     let models = client
         .call(
             zeron_rpc::methods::LIST_MODELS,
@@ -1678,131 +1599,6 @@ async fn attachment_upload_then_run_threads_refs_and_paths() {
         .expect("ReadAttachmentChunk");
     assert_eq!(chunk["mimeType"], "image/png");
     assert_eq!(chunk["name"], "e2e-att-red.png");
-}
-
-/// Real-CLI proof of the image pipeline: upload a tiny solid-red PNG through
-/// the chunked RPC path, run claude (haiku) with the staged path on
-/// `attachments` + the refs in the prompt, and check the reply names the
-/// color — it can only know it by SEEING the inline image block (the sandbox
-/// prompt forbids opening the file). Ignored by default: needs an installed,
-/// authenticated `claude` CLI and spends real tokens.
-/// Run with: `cargo test -p zeron-engine --test e2e -- --ignored`
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires installed+authenticated claude CLI; spends tokens"]
-async fn real_claude_sees_uploaded_image_inline() {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    let cwd = tmp.path().join("project");
-    std::fs::create_dir_all(&cwd).unwrap();
-
-    let core = EngineCore::assemble(
-        &dir,
-        Arc::new(zeron_engine::default_registry()),
-        HarnessId::ClaudeCode,
-        None,
-    )
-    .expect("engine core assembles");
-    // Pre-title the chat so the auto-titler doesn't spend a second model call.
-    core.workspace
-        .create_chat(CHAT, None, Some(&core.device_id), None, Some("/tmp".into()))
-        .expect("create chat row");
-    core.workspace
-        .rename_chat(CHAT, "Pre-titled")
-        .expect("rename chat");
-
-    // 8×8 solid-red PNG, uploaded exactly as the composer does.
-    const RED_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAB+GTG2wAAJP0GeGuMDBnAAAAAElFTkSuQmCC";
-    let client = zeron_rpc::memory_client(core.rpc_service());
-    client
-        .call(
-            zeron_rpc::methods::UPLOAD_CHUNK,
-            serde_json::json!({ "uploadId": "real-img", "seq": 0, "data": RED_PNG_B64 }),
-        )
-        .await
-        .expect("UploadChunk");
-    let committed = client
-        .call(
-            zeron_rpc::methods::UPLOAD_COMMIT,
-            serde_json::json!({ "uploadId": "real-img", "fileName": "swatch.png" }),
-        )
-        .await
-        .expect("UploadCommit");
-    let path = committed["path"].as_str().expect("path").to_string();
-    assert_eq!(
-        std::fs::read(&path).expect("committed file"),
-        b64.decode(RED_PNG_B64).unwrap()
-    );
-
-    let prompt = format!(
-        "Without running any tools or opening any files, answer from the attached image alone: \
-         what solid color is this image? Reply with exactly one lowercase word.\n\n\
-         Attached images (local files — open them to view):\n- {path}"
-    );
-    let request = RunRequest {
-        prompt,
-        harness: None,
-        model: Some("haiku".into()),
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: cwd.to_string_lossy().to_string(),
-        sandbox: SandboxLevel::WorkspaceWrite,
-        auto_approve: false,
-        attachments: vec![path],
-        resume: None,
-        worktree: None,
-    };
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request,
-                message_id: "msg-img-1".into(),
-            },
-        )
-        .expect("queue real image run");
-    wait_for_within_secs(
-        || {
-            entries_now(&core).iter().any(|e| {
-                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
-            })
-        },
-        "real claude image turn",
-        120,
-    )
-    .await;
-
-    let reply: String = entries(&core)
-        .iter()
-        .filter(|e| e.role == MessageRole::Assistant)
-        .flat_map(|e| e.parts.iter())
-        .filter_map(|p| match p {
-            MessagePart::Text { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    assert!(
-        reply.contains("red"),
-        "claude should name the image's color; got: {reply:?}"
-    );
-    core.shutdown().await;
-}
-
-async fn wait_for_within_secs<F>(mut predicate: F, what: &str, secs: u64)
-where
-    F: FnMut() -> bool,
-{
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    while !predicate() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 // ---------------------------------------------------------------------------

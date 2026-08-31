@@ -14,12 +14,8 @@ use std::time::Duration;
 use gpui::{App, Global, Task};
 use serde::{Deserialize, Serialize};
 
-pub mod accounts;
 pub mod appearance;
 pub mod archived;
-pub mod composer;
-pub mod devices;
-pub mod harnesses;
 pub mod notifications;
 pub mod shortcuts;
 pub mod widgets;
@@ -174,6 +170,7 @@ pub enum SidebarOrganization {
     /// project selector and is normalized to [`Self::InOneList`] on load.
     ByProject,
     ByDevice,
+    ByAgent,
     #[default]
     InOneList,
 }
@@ -198,6 +195,10 @@ pub struct UiSettings {
     pub sidebar_organization: SidebarOrganization,
     /// Timestamp used to order active sessions (newest first).
     pub sidebar_sort: SidebarSort,
+    /// Device-local Keiki conversation ids pinned to the top of their agent
+    /// group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_keiki_conversations: Vec<String>,
     /// Optional harness branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_harness: bool,
@@ -273,6 +274,7 @@ impl Default for UiSettings {
             sidebar_grouped: false,
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
+            pinned_keiki_conversations: Vec::new(),
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
@@ -645,8 +647,8 @@ pub fn display_combo_on(mac: bool, combo: &str) -> String {
 
 /// Compact combo for badge surfaces (the sidebar jump hints): macOS spells
 /// the modifiers as their key glyphs in canonical ⌃⌥⇧⌘ order and drops the
-/// separators ("⌘1", "⇧⌘A") — the form the model picker's ⌘N chips already
-/// use — while other platforms keep the textual [`display_combo`] ("Ctrl+1").
+/// separators ("⌘1", "⇧⌘A") while other platforms keep the textual
+/// [`display_combo`] ("Ctrl+1").
 pub fn badge_combo(combo: &str) -> String {
     badge_combo_on(cfg!(target_os = "macos"), combo)
 }
@@ -769,6 +771,7 @@ mod tests {
             sidebar_grouped: true,
             sidebar_organization: SidebarOrganization::ByDevice,
             sidebar_sort: SidebarSort::Created,
+            pinned_keiki_conversations: vec![],
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,

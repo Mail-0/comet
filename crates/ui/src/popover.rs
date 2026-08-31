@@ -154,8 +154,7 @@ impl<T> Popup<T> {
     }
 
     /// [`Self::note_trigger_press`] for popups whose state distinguishes
-    /// which trigger owns them (e.g. one `Popup<PickerKind>` shared by
-    /// several triggers): only a press on the OWNING trigger counts, so
+    /// which trigger owns them: only a press on the OWNING trigger counts, so
     /// clicking a different trigger switches menus instead of swallowing.
     pub fn note_trigger_press_matching(&mut self, owns: impl FnOnce(&T) -> bool) {
         self.pressed_while_open = self.inner.as_ref().is_some_and(|(value, _)| owns(value));
@@ -322,12 +321,6 @@ pub fn popover_card(theme: &Theme) -> gpui::Div {
     } else {
         card.bg(theme.surface_overlay)
     }
-}
-
-/// [`popover_card`] without the `p-1` inset — for popovers that manage their
-/// own internal panes (the harness/model picker's rail + list split).
-pub fn popover_card_flush(theme: &Theme) -> gpui::Div {
-    popover_card(theme).p(px(0.0))
 }
 
 /// Pin a floating layer's origin to the trigger's top-left. The anchored
@@ -1139,7 +1132,7 @@ pub fn error_row(theme: &Theme, message: &str) -> gpui::Div {
 }
 
 // ---------------------------------------------------------------------------
-// Floating menu scrollbar — the model-list treatment, shared
+// Floating menu scrollbar, shared by composer popups.
 // ---------------------------------------------------------------------------
 
 /// Track inset top/bottom; the thumb travels inside it.
@@ -1240,8 +1233,8 @@ impl MenuScrollbarState {
         )
     }
 
-    /// Whether the rail paints at all — an on-demand affordance like the
-    /// model list's: hidden until the list is hovered or a drag holds it.
+    /// Whether the rail paints at all — an on-demand affordance hidden until
+    /// the list is hovered or a drag holds it.
     pub fn visible(&self) -> bool {
         self.list_hovered || self.grab.is_some()
     }

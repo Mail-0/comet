@@ -272,7 +272,7 @@ pub struct ToolItem {
     pub is_error: bool,
     pub resolved: bool,
     /// Expandable detail: a code-block of output lines, or a real diff
-    /// section rendered by the changes pane's component (ACP harnesses).
+    /// section rendered by the changes pane's component.
     /// Precomputed here because rows are cached by fingerprint — diffing and
     /// tokenizing per paint would run on every scroll frame.
     pub detail: Option<Arc<ToolDetail>>,
@@ -281,13 +281,6 @@ pub struct ToolItem {
     /// to one truncated line. Rendered above `detail` in the open card.
     /// Precomputed for the same reason as `detail`.
     pub invocation: Option<Arc<ToolDetail>>,
-    /// Sidecar key of the full output (chat2-sync A3) — the doc carries only
-    /// a one-line summary; expanding offers a lazy "Show full output" fetch.
-    pub output_ref: Option<SharedString>,
-    /// Full-output size, for the affordance label ("Show full output (12 KB)").
-    pub output_bytes: Option<u64>,
-    /// Sidecar key of the full diff (doc carries only per-file stats).
-    pub diff_ref: Option<SharedString>,
     /// The spawned SUBAGENT's doc id — the chip IS the index (there is no
     /// listing endpoint); with it the chip offers "Open subagent".
     pub subagent_ref: Option<SharedString>,
@@ -316,7 +309,7 @@ fn is_agent_call(call: &ToolCall) -> bool {
 }
 
 /// The chip's GENUS is the call itself, never the ref: docs written before
-/// the claude-driver fix carry stray `subagent_ref`s on ordinary Run chips
+/// older clients carry stray `subagent_ref`s on ordinary Run chips
 /// (a background shell's `task_notification` was mis-tagged as subagent
 /// traffic), and honoring the ref alone turned those Runs into spawn chips
 /// that opened empty, never-created subagent docs.
@@ -646,9 +639,6 @@ fn thought_item(tree: &BlockTree, live: bool) -> ToolItem {
             })
         }),
         invocation: None,
-        output_ref: None,
-        output_bytes: None,
-        diff_ref: None,
         subagent_ref: None,
         subagent_status: None,
         subagent_tail: None,
@@ -680,9 +670,7 @@ pub enum ToolDetail {
         old_text: Option<Arc<str>>,
         new_text: Option<Arc<str>>,
     },
-    /// Per-file `+N −N` stat rows — what the thin doc keeps of an edit
-    /// (chat2-sync A1). The full diff upgrades this to [`ToolDetail::Diff`]
-    /// via the sidecar fetch.
+    /// Per-file `+N −N` stat rows — what the thin doc keeps of an edit.
     Stats {
         stats: Arc<Vec<zeron_doc::ToolDiffStat>>,
     },
@@ -1077,9 +1065,6 @@ fn tool_fingerprint(tools: &[ToolItem], auto_open: bool) -> u64 {
             }
             acc.extend_from_slice(&(*truncated_by as u32).to_le_bytes());
         }
-        // Sidecar refs arriving after the resolve tick must re-splice too —
-        // they add the fetch affordance without changing the detail payload.
-        acc.push(t.output_ref.is_some() as u8 | (t.diff_ref.is_some() as u8) << 1);
         // Subagent lifecycle mutates the chip in place (status flips, the
         // live tail grows) — hash it so the row re-splices on every change.
         acc.push(
@@ -1213,9 +1198,6 @@ pub fn rows_for_entry(
                 resolved,
                 output,
                 diff,
-                output_ref,
-                output_bytes,
-                diff_ref,
                 diff_stats,
                 subagent_ref,
                 subagent_status,
@@ -1229,9 +1211,6 @@ pub fn rows_for_entry(
                     detail: tool_detail(output.as_deref(), diff.as_ref(), diff_stats.as_deref())
                         .map(Arc::new),
                     invocation: call_block(call).map(Arc::new),
-                    output_ref: output_ref.clone().map(SharedString::from),
-                    output_bytes: *output_bytes,
-                    diff_ref: diff_ref.clone().map(SharedString::from),
                     subagent_ref: subagent_ref.clone().map(SharedString::from),
                     subagent_status: *subagent_status,
                     subagent_tail: subagent_tail.clone().map(SharedString::from),
@@ -1636,58 +1615,6 @@ pub fn detail_height(detail: &ToolDetail) -> f32 {
         ToolDetail::Stats { stats } => stats.len() as f32 * OUTPUT_LINE_HEIGHT + OUTPUT_BODY_PAD,
     };
     DETAIL_SEPARATOR + body
-}
-
-/// Height of the "Show full output/diff" affordance row appended below an
-/// open detail whose full payload lives in the sidecar (chat2-sync A3).
-pub const BLOB_AFFORDANCE_HEIGHT: f32 = 24.0;
-
-/// What an open chip's [`BLOB_AFFORDANCE_HEIGHT`] row offers: a lazy sidecar
-/// fetch ("Show full output/diff"). One slot, so the analytic height sums
-/// stay a single `is_some` check.
-#[derive(Clone)]
-struct ChipAffordance {
-    blob_ref: SharedString,
-    label: SharedString,
-}
-
-/// Line cap for a FETCHED full output (a defensive ceiling, not a doc cap —
-/// the harness bounds outputs at 4KiB, so this is rarely reached).
-const FULL_OUTPUT_MAX_LINES: usize = 400;
-
-/// Build the upgraded detail from a fetched sidecar blob. Diff blobs parse
-/// the `ToolDiff` JSON through the same pipeline as inline diffs; output
-/// blobs render (near-)uncapped — fetching past the summary was the point.
-fn blob_detail(text: &str, is_diff: bool) -> Option<ToolDetail> {
-    if is_diff {
-        let diff: zeron_proto::ToolDiff = serde_json::from_str(text).ok()?;
-        return tool_detail(None, Some(&diff), None);
-    }
-    let mut lines: Vec<SharedString> = text
-        .lines()
-        .map(|l| SharedString::from(l.to_owned()))
-        .collect();
-    while lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    let truncated_by = lines.len().saturating_sub(FULL_OUTPUT_MAX_LINES);
-    lines.truncate(FULL_OUTPUT_MAX_LINES);
-    Some(ToolDetail::Output {
-        lines,
-        truncated_by,
-    })
-}
-
-/// Compact byte size for the fetch affordance label ("812 B", "12 KB").
-fn format_kb(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else {
-        format!("{} KB", bytes.div_ceil(1024))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2289,26 +2216,7 @@ pub struct Transcript {
     attachment_loads: HashMap<(String, String), Task<()>>,
     /// Scheduled retry wake-ups for errored sources (the 2s→15s ladder).
     attachment_retries: HashMap<(String, String), Task<()>>,
-    /// Sidecar blob fetches keyed by doc ref (`chatId/partId[.diff]`,
-    /// chat2-sync A3). `Ready` holds the UPGRADED detail, built once on
-    /// arrival — render swaps it in per chip; rows never rebuild for it.
-    /// Deliberately NOT cleared on chat switch: refs are chat-qualified and a
-    /// fetched blob stays valid.
-    blob_details: HashMap<SharedString, BlobFetch>,
-    /// Monotonic fetch order per blob ref: when a tool has BOTH a diff and
-    /// an output blob fetched, the chip shows the one requested most
-    /// recently (click "Show full output" after a diff → see the output).
-    blob_fetch_order: HashMap<SharedString, u64>,
-    blob_fetch_counter: u64,
     _observe: Subscription,
-}
-
-/// One sidecar blob fetch's lifecycle.
-enum BlobFetch {
-    Loading(#[allow(dead_code)] Task<()>),
-    /// Failed with the affordance re-armed as a retry.
-    Failed,
-    Ready(Arc<ToolDetail>),
 }
 
 /// Shell-facing events (the transcript itself hosts no surfaces).
@@ -2445,9 +2353,6 @@ impl Transcript {
             attachment_preview_focus: cx.focus_handle(),
             attachment_loads: HashMap::new(),
             attachment_retries: HashMap::new(),
-            blob_details: HashMap::new(),
-            blob_fetch_order: HashMap::new(),
-            blob_fetch_counter: 0,
             _observe: observe,
         };
         this.sync(cx);
@@ -3618,60 +3523,6 @@ impl Transcript {
         rows
     }
 
-    /// Fetch a sidecar blob (full tool output or diff) and build its upgraded
-    /// [`ToolDetail`] once, off the render path. Re-entry while Loading/Ready
-    /// is a no-op; Failed re-arms as a retry (the affordance label says so).
-    fn spawn_blob_fetch(&mut self, blob_ref: SharedString, cx: &mut Context<Self>) {
-        // Rank BEFORE the already-fetched guard: clicking a Ready ref is the
-        // "show me this one again" toggle (recency bump + repaint, no
-        // re-fetch) — with both a diff and an output fetched, the two
-        // affordances must be able to trade places forever.
-        self.blob_fetch_counter += 1;
-        self.blob_fetch_order
-            .insert(blob_ref.clone(), self.blob_fetch_counter);
-        match self.blob_details.get(&blob_ref) {
-            Some(BlobFetch::Ready(_)) => {
-                cx.notify();
-                return;
-            }
-            Some(BlobFetch::Loading(_)) => return,
-            Some(BlobFetch::Failed) | None => {}
-        }
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
-        let is_diff = blob_ref.ends_with(".diff");
-        let ref_key = blob_ref.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let reply = crate::attachments::call_with_timeout(
-                &engine,
-                cx.background_executor(),
-                zeron_rpc::methods::FETCH_TOOL_BLOB,
-                serde_json::json!({ "blobRef": ref_key.as_ref() }),
-                Duration::from_secs(20),
-            )
-            .await;
-            let fetched = match reply {
-                Ok(value) => {
-                    let text = value
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or_default();
-                    blob_detail(text, is_diff)
-                        .map(|d| BlobFetch::Ready(Arc::new(d)))
-                        .unwrap_or(BlobFetch::Failed)
-                }
-                Err(_) => BlobFetch::Failed,
-            };
-            this.update(cx, |this, cx| {
-                this.blob_details.insert(ref_key, fetched);
-                cx.notify();
-            })
-            .ok();
-        });
-        self.blob_details.insert(blob_ref, BlobFetch::Loading(task));
-    }
-
     fn toggle_fold(&mut self, row_id: SharedString, open_height: f32, auto_open: bool) {
         let entry = self.folds.entry(row_id).or_default();
         let currently_open = entry.open.unwrap_or(auto_open);
@@ -3853,33 +3704,12 @@ impl Transcript {
             .pt(px(4.0));
         for (aix, att) in atts.iter().enumerate() {
             let state = self.attachment_state(&device_ids, &att.path, cx);
-            // The in-flight send's progress belongs ON the thumbnail
-            // (2026-08-18 user request). Two ref shapes mean "still
-            // crossing": the queued flow's `pending://` (bytes ship
-            // engine-side after the send; the host rewrites the ref to an
-            // absolute path once they land and the run starts) and the
-            // legacy echo's synthetic `pending/`. Percent sources, in order:
-            // this attachment's own relay transfer (`WatchTransfers`, by the
-            // uploadId its ref names — the leg that actually takes time),
-            // else the send-wide staging/legacy upload percent. Neither → the
-            // indeterminate spinner (staged-but-waiting, retry backoff, or
-            // committed-awaiting-rewrite), so the ring never shows a number
-            // that isn't a real transfer position (2026-08-20 report: the
-            // staging-only percent blinked out in ~100ms and lied about the
-            // slow part).
-            let sending = att.path.starts_with("pending://") || att.path.starts_with("pending/");
-            let upload_id = att
-                .path
-                .strip_prefix("pending://")
-                .and_then(|rest| rest.split_once('/'))
-                .map(|(id, _)| id);
-            let uploading = upload_id
-                .and_then(|id| self.state.read(cx).transfer_percent(id))
-                .or_else(|| {
-                    sending
-                        .then(|| self.state.read(cx).upload_progress_percent())
-                        .flatten()
-                });
+            // The in-flight send's progress belongs on the thumbnail while
+            // local attachment bytes are being committed.
+            let sending = att.path.starts_with("pending/");
+            let uploading = sending
+                .then(|| self.state.read(cx).upload_progress_percent())
+                .flatten();
             let frame = div()
                 .flex_none()
                 .w(px(ATT_THUMB_W))
@@ -3989,32 +3819,15 @@ impl Transcript {
     /// — user request), so it reads as part of the streaming reply and
     /// scrolls away with it. The spinner drives this entity's frames, which
     /// keeps the elapsed timer ticking through delta-quiet tool runs.
-    /// The failed-send retry (trailer affordance): re-kick every delivery
-    /// road engine-side (fresh chat2 socket, host nudge, delivery escorts)
-    /// and restart the grace clock so the trailer returns to Sending/Queued
-    /// while the retry runs.
+    /// The failed-send retry restarts the local grace clock.
     fn retry_send(&mut self, cx: &mut Context<Self>) {
         let Some(chat_id) = self.chat_id.clone() else {
             return;
         };
-        let engine = self.state.read(cx).engine().cloned();
         self.state.update(cx, |s, cx| {
             s.retry_pending_send(&chat_id, chrono::Utc::now());
             cx.notify();
         });
-        if let Some(engine) = engine {
-            cx.spawn(async move |_, _| {
-                let params = serde_json::json!({ "chatId": chat_id });
-                if let Err(err) = engine
-                    .client()
-                    .call(zeron_rpc::methods::RETRY_DELIVERY, params)
-                    .await
-                {
-                    tracing::warn!(error = %err, "delivery retry RPC failed");
-                }
-            })
-            .detach();
-        }
     }
 
     fn render_working_trailer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -4078,7 +3891,7 @@ impl Transcript {
                 // waiting on connectivity — say so instead of faking
                 // progress. (The overlay holds while degraded, so this line
                 // owns the surface until the ack or the failed state.)
-                let queued = sending && state.chat_delivery_degraded(&chat_id);
+                let queued = false;
                 let elapsed = turn_started
                     .map(|t| now.signed_duration_since(t).num_seconds().max(0))
                     .unwrap_or(0);
@@ -4593,32 +4406,15 @@ impl Transcript {
         // no "Called N tools" header — a running subagent stays visible.
         let collapses = tool_group_collapses(tools);
         let open = !collapses || fold.open.unwrap_or(auto_open);
-        // Chips render their EFFECTIVE detail: the precomputed doc-resident
-        // one, upgraded in place by a fetched sidecar blob (chat2-sync A3).
-        // Resolved per paint (a HashMap probe per chip) so fetched content
-        // needs no row rebuild — arrival is a cx.notify, like a fold toggle.
+        // Chips render the detail computed from the local transcript.
         let details: Vec<Option<Arc<ToolDetail>>> = tools
             .iter()
             .map(|tool| {
-                // Spawn chips never expand — the subagent doc is the record
-                // of what the tool did, and an inline body would only repeat
-                // it. The whole chip is the "open that doc" click instead.
                 if is_spawn_link(tool) {
-                    return None;
+                    None
+                } else {
+                    tool.detail.clone()
                 }
-                // Among fetched blobs, the most recently REQUESTED one wins —
-                // a tool can carry both a diff and an output ref, and the
-                // user's last click decides which upgrade is showing.
-                let mut best: Option<(u64, Arc<ToolDetail>)> = None;
-                for blob_ref in [&tool.diff_ref, &tool.output_ref].into_iter().flatten() {
-                    if let Some(BlobFetch::Ready(detail)) = self.blob_details.get(blob_ref) {
-                        let order = self.blob_fetch_order.get(blob_ref).copied().unwrap_or(0);
-                        if best.as_ref().is_none_or(|(o, _)| order > *o) {
-                            best = Some((order, detail.clone()));
-                        }
-                    }
-                }
-                best.map(|(_, d)| d).or_else(|| tool.detail.clone())
             })
             .collect();
         // Full-invocation blocks — with them, EVERY chip expands: the click
@@ -4626,59 +4422,6 @@ impl Transcript {
         let invocations: Vec<Option<Arc<ToolDetail>>> = tools
             .iter()
             .map(|tool| tool.invocation.clone().filter(|_| !is_spawn_link(tool)))
-            .collect();
-        // Fetch affordance under each open detail whose full payload is still
-        // sidecar-only: `(ref, label)`. Diff offered first (the richer
-        // upgrade), then the output — a fetched ref hands the affordance to
-        // the NEXT unfetched one instead of retiring it (both must stay
-        // reachable when a tool has both).
-        let affordances: Vec<Option<ChipAffordance>> = tools
-            .iter()
-            .map(|tool| {
-                // The currently-displayed ref (same recency rule as
-                // `details` above): its affordance is spent; any OTHER
-                // Ready ref stays offered as a no-fetch toggle.
-                let shown: Option<&SharedString> = {
-                    let mut best: Option<(u64, &SharedString)> = None;
-                    for blob_ref in [&tool.diff_ref, &tool.output_ref].into_iter().flatten() {
-                        if matches!(self.blob_details.get(blob_ref), Some(BlobFetch::Ready(_))) {
-                            let order = self.blob_fetch_order.get(blob_ref).copied().unwrap_or(0);
-                            if best.is_none_or(|(o, _)| order > o) {
-                                best = Some((order, blob_ref));
-                            }
-                        }
-                    }
-                    best.map(|(_, r)| r)
-                };
-                let candidates = [
-                    (tool.diff_ref.as_ref(), "diff", None),
-                    (tool.output_ref.as_ref(), "output", tool.output_bytes),
-                ];
-                for (blob_ref, what, bytes) in candidates {
-                    let Some(blob_ref) = blob_ref else { continue };
-                    let label = match self.blob_details.get(blob_ref) {
-                        Some(BlobFetch::Ready(_)) => {
-                            if shown == Some(blob_ref) {
-                                continue;
-                            }
-                            format!("Show full {what}")
-                        }
-                        Some(BlobFetch::Loading(_)) => format!("Loading full {what}…"),
-                        Some(BlobFetch::Failed) => {
-                            format!("Couldn't load full {what} — tap to retry")
-                        }
-                        None => match bytes {
-                            Some(b) => format!("Show full {what} ({})", format_kb(b)),
-                            None => format!("Show full {what}"),
-                        },
-                    };
-                    return Some(ChipAffordance {
-                        blob_ref: blob_ref.clone(),
-                        label: SharedString::from(label),
-                    });
-                }
-                None
-            })
             .collect();
         // Which chips have their detail block open (render-local, analytic —
         // the FINAL state; a mid-tween detail already counts as its target).
@@ -4723,17 +4466,11 @@ impl Transcript {
             + details
                 .iter()
                 .zip(&invocations)
-                .zip(&affordances)
                 .zip(&detail_opens)
                 .filter(|(_, open)| **open)
-                .map(|(((detail, invocation), affordance), _)| {
+                .map(|((detail, invocation), _)| {
                     invocation.as_deref().map_or(0.0, detail_height)
                         + detail.as_deref().map_or(0.0, detail_height)
-                        + if affordance.is_some() {
-                            BLOB_AFFORDANCE_HEIGHT
-                        } else {
-                            0.0
-                        }
                 })
                 .sum::<f32>();
         let target = if open { open_height } else { 0.0 };
@@ -4825,12 +4562,6 @@ impl Transcript {
                 if detail.is_none() && invocation.is_none() {
                     return tool_chip(tool, collapses, theme, cx.entity_id(), cx);
                 }
-                let affordance = affordances[ix].clone();
-                let affordance_h = if affordance.is_some() {
-                    BLOB_AFFORDANCE_HEIGHT
-                } else {
-                    0.0
-                };
                 let open = detail_opens[ix];
                 let dfold = detail_folds[ix];
                 let key = SharedString::from(format!("{row_id}#d{ix}"));
@@ -4848,8 +4579,7 @@ impl Transcript {
                 let closed_h = CHIP_CARD_HEIGHT;
                 let open_h = CHIP_CARD_HEIGHT
                     + invocation.as_deref().map_or(0.0, detail_height)
-                    + detail.as_deref().map_or(0.0, detail_height)
-                    + affordance_h;
+                    + detail.as_deref().map_or(0.0, detail_height);
                 let card_target = if open { open_h } else { closed_h };
                 let animating = dfold.epoch > 0
                     && dfold
@@ -4929,32 +4659,6 @@ impl Transcript {
                                     .bg(crate::theme::hairline(0.06)),
                             )
                             .child(detail_body(detail, detail_highlights[ix].clone(), theme));
-                    }
-                    if let Some(ChipAffordance { blob_ref, label }) = affordance {
-                        let loading = matches!(
-                            self.blob_details.get(&blob_ref),
-                            Some(BlobFetch::Loading(_))
-                        );
-                        let mut row = div()
-                            .id(SharedString::from(format!("{key}-blob")))
-                            .h(px(BLOB_AFFORDANCE_HEIGHT))
-                            .flex_none()
-                            .px(px(12.0))
-                            .flex()
-                            .items_center()
-                            .text_size(px(10.5))
-                            .text_color(theme.text_faint)
-                            .child(label);
-                        if !loading {
-                            row = row
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(theme.text_muted))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.spawn_blob_fetch(blob_ref.clone(), cx);
-                                    cx.notify();
-                                }));
-                        }
-                        card = card.child(row);
                     }
                 }
                 let card: AnyElement = if animating {
@@ -6871,7 +6575,7 @@ mod tests {
 
     #[test]
     fn stray_subagent_ref_on_a_run_chip_stays_an_ordinary_tool() {
-        // Docs written before the claude-driver fix carry subagent refs on
+        // Docs written by older clients carry subagent refs on
         // ordinary Run chips (a background shell's task_notification was
         // mis-tagged as subagent traffic). The ref alone must not change the
         // chip's genus: it folds with its neighbors and renders as a plain
@@ -7209,9 +6913,6 @@ mod tests {
             resolved: true,
             detail: None,
             invocation: None,
-            output_ref: None,
-            output_bytes: None,
-            diff_ref: None,
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
@@ -7227,9 +6928,6 @@ mod tests {
             resolved: true,
             detail: None,
             invocation: None,
-            output_ref: None,
-            output_bytes: None,
-            diff_ref: None,
             subagent_ref: None,
             subagent_status: None,
             subagent_tail: None,
@@ -7261,9 +6959,6 @@ mod tests {
                 resolved: true,
                 detail: None,
                 invocation: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
@@ -7277,9 +6972,6 @@ mod tests {
                 resolved: true,
                 detail: None,
                 invocation: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,
@@ -7291,9 +6983,6 @@ mod tests {
                 resolved: true,
                 detail: None,
                 invocation: None,
-                output_ref: None,
-                output_bytes: None,
-                diff_ref: None,
                 subagent_ref: None,
                 subagent_status: None,
                 subagent_tail: None,

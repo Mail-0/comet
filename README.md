@@ -1,6 +1,6 @@
 # Zeron
 
-Control your coding agents (Claude Code, Codex, Cursor, Grok, Hermes, Pi) locally by default, with optional multi-device sync.
+Control your Keiki coding agents locally, with Copilot available as a built-in local chat.
 
 *English | [简体中文](README.zh-CN.md)*
 
@@ -10,9 +10,24 @@ Every device runs a small engine that stores sessions on that device. A new inst
 
 ## Install and run locally (Linux)
 
+Linux releases are available as tarballs, `.deb` packages, and AppImages.
+Download the `zeron-<version>-linux-<arch>.tar.gz` asset from the GitHub
+Release to use the bundled installer:
+
 ```bash
-curl -fsSL https://zeron.sh/install.sh | sh
+tar -xzf zeron-<version>-linux-<arch>.tar.gz
+cd zeron-<version>-linux-<arch>
+./install.sh
 zeron status
+```
+
+Alternatively, install the matching `.deb` with `apt`, or run the AppImage
+directly (using `--appimage-extract-and-run` is only needed on systems without
+FUSE support):
+
+```bash
+sudo apt install ./zeron-<version>-linux-<debarch>.deb
+./zeron-<version>-linux-<arch>.AppImage
 ```
 
 The installer starts the daemon immediately and keeps it running across reboots. No sign-in or sync configuration is required.
@@ -20,32 +35,13 @@ The installer starts the daemon immediately and keeps it running across reboots.
 Day-to-day:
 
 ```bash
-zeron status      # local/synced mode and engine status
-zeron update      # update to the latest release
+zeron status      # local engine status
 zeron daemon start|stop|restart|status
 ```
 
-## Optional multi-device sync
-
-Sign in only when you want to open your account's synced workspace. Authentication changes the profile selected by the next engine start, so stop the daemon before changing it:
-
-```bash
-zeron daemon stop
-zeron login
-zeron daemon start
-```
-
-You can then start an agent on one synced device and follow or drive it from another. An always-on machine such as a VPS can keep those agents working after you close your laptop.
-
-Signing in does not upload, move, or import existing local sessions. Local sessions and their attachments remain under the local profile and reappear when you return to local-only mode:
-
-```bash
-zeron daemon stop
-zeron logout
-zeron daemon start
-```
-
-`zeron login` and `zeron logout` refuse to modify credentials while an engine owns the data directory. The desktop app follows the same next-restart profile boundary.
+Sign in to Keiki from the desktop app to manage your organization agents. Chats,
+sessions, and their attachments remain on this device; Comet does not provide
+an account or cloud synchronization layer.
 
 On macOS: use the desktop release, or build `zeron` from source and run `zeron daemon install` to install the launchd service.
 

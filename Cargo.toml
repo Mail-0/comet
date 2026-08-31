@@ -2,42 +2,40 @@
 resolver = "2"
 members = [
     "crates/theme",
+    "crates/keiki-model",
+    "crates/keiki-api",
+    "crates/copilot",
     "crates/proto",
     "crates/doc",
-    "crates/sync",
     "crates/harness",
     "crates/engine",
     "crates/rpc",
-    "crates/update",
     "crates/ui",
     "crates/syntax",
     "apps/zeron",
 ]
 
 [workspace.package]
-version = "0.2.29"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 publish = false
 
 [workspace.dependencies]
+keiki-model = { path = "crates/keiki-model" }
+keiki-api = { path = "crates/keiki-api" }
 zeron-proto = { path = "crates/proto" }
+zeron-copilot = { path = "crates/copilot" }
 zeron-doc = { path = "crates/doc" }
-zeron-sync = { path = "crates/sync" }
 zeron-harness = { path = "crates/harness" }
 zeron-engine = { path = "crates/engine" }
 zeron-rpc = { path = "crates/rpc" }
-zeron-update = { path = "crates/update" }
 zeron-ui = { path = "crates/ui" }
 zeron-syntax = { path = "crates/syntax" }
 zeron-theme = { path = "crates/theme" }
 
 # CRDT
 loro = "1.13"
-# Wire protocol for the SessionRoom DO rooms — official Rust twin of the npm
-# `loro-protocol` package the TS edge speaks (same monorepo, byte-identical
-# frames, cross-checked by its js_snapshots tests).
-loro-protocol = "0.3"
 
 # gpui — the wingleeio/zed fork: upstream f14fea9 + commits on
 # `comet/edge-fade-horizontal` (tip of `comet/line-wrap-closing-punctuation`
@@ -85,6 +83,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 json5 = "0.4"
 plist = "1"
+base64 = "0.22"
+rand = "0.9"
+percent-encoding = "2.3.2"
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # storage
