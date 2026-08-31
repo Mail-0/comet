@@ -5,9 +5,10 @@
 #
 # Usage: scripts/package-macos.sh
 # Env:   CODESIGN_IDENTITY="Developer ID Application: …" to sign the bundle.
-#        NOTARY_KEY_PATH + NOTARY_KEY_ID + NOTARY_ISSUER_ID — App Store Connect
-#        API key (.p8) for notarization; all three set → notarize + staple the
-#        app and the dmg, which removes the Gatekeeper warning entirely.
+#        NOTARY_APPLE_ID + NOTARY_PASSWORD + NOTARY_TEAM_ID — Apple ID,
+#        app-specific password (from account.apple.com), and 10-char team id
+#        for notarization; all three set → notarize + staple the app and the
+#        dmg, which removes the Gatekeeper warning entirely.
 
 set -euo pipefail
 
@@ -57,11 +58,11 @@ fi
 # follows each call has no ticket to attach then, and fails the build for us.
 notarize() {
   xcrun notarytool submit "$1" \
-    --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" \
-    --issuer "$NOTARY_ISSUER_ID" --wait
+    --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_PASSWORD" \
+    --team-id "$NOTARY_TEAM_ID" --wait
 }
 NOTARIZE=false
-[[ -n "${NOTARY_KEY_PATH:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER_ID:-}" ]] && NOTARIZE=true
+[[ -n "${NOTARY_APPLE_ID:-}" && -n "${NOTARY_PASSWORD:-}" && -n "${NOTARY_TEAM_ID:-}" ]] && NOTARIZE=true
 
 if $NOTARIZE; then
   ZIP="$OUT_DIR/zeron-notarize.zip"

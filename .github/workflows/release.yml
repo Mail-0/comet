@@ -60,18 +60,19 @@ jobs:
   # ad-hoc-signed build):
   #   MACOS_CERT_P12 / MACOS_CERT_PASSWORD — base64 "Developer ID Application"
   #     certificate + private key (.p12) and its export password.
-  #   AC_API_KEY_P8 / AC_API_KEY_ID / AC_API_ISSUER_ID — App Store Connect API
-  #     key (raw .p8 contents), for notarytool. All three present → the package
-  #     script notarizes and staples the app + dmg (no Gatekeeper warning).
+  #   APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID — Apple ID, app-specific
+  #     password from account.apple.com, and 10-char team id for notarytool.
+  #     All three present → the package script notarizes and staples the app +
+  #     dmg (no Gatekeeper warning).
   macos:
     runs-on: macos-latest # Apple silicon
     continue-on-error: true
     env:
       MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
       MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-      AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
-      AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-      AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
       - name: rust toolchain (rust-toolchain.toml)
@@ -106,13 +107,12 @@ jobs:
           [ -n "$identity" ] || { echo "p12 contains no Developer ID Application identity"; exit 1; }
           echo "CODESIGN_IDENTITY=$identity" >>"$GITHUB_ENV"
       - name: notary credentials
-        if: env.AC_API_KEY_P8 != ''
+        if: env.APPLE_ID != ''
         run: |
-          printf '%s' "$AC_API_KEY_P8" >"$RUNNER_TEMP/ac_api_key.p8"
           {
-            echo "NOTARY_KEY_PATH=$RUNNER_TEMP/ac_api_key.p8"
-            echo "NOTARY_KEY_ID=$AC_API_KEY_ID"
-            echo "NOTARY_ISSUER_ID=$AC_API_ISSUER_ID"
+            echo "NOTARY_APPLE_ID=$APPLE_ID"
+            echo "NOTARY_PASSWORD=$APPLE_APP_PASSWORD"
+            echo "NOTARY_TEAM_ID=$APPLE_TEAM_ID"
           } >>"$GITHUB_ENV"
       - name: package dmg
         run: scripts/package-macos.sh
