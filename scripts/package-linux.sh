@@ -99,14 +99,16 @@ if has_format deb; then
   cp "$ROOT/crates/ui/assets/fonts/licenses/"* \
     "$DEB_ROOT/usr/share/doc/zeron/licenses/fonts/"
 
+  # dpkg-shlibdeps only runs from a source tree, and only reports what the
+  # binary links against — the two libraries gpui dlopens are appended below.
   mkdir -p "$DEB_ROOT/debian"
   cat >"$DEB_ROOT/debian/control" <<'CONTROL'
 Source: zeron
 Section: devel
 Priority: optional
-Maintainer: package builder <noreply@onkeiki.com>
+Maintainer: Mail-0 <noreply@onkeiki.com>
 Package: zeron
-Architecture: all
+Architecture: any
 Description: Zeron desktop agent client
  Desktop client for controlling Keiki coding agents.
 CONTROL
