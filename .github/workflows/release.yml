@@ -109,10 +109,24 @@ jobs:
       - name: notary credentials
         if: env.APPLE_ID != ''
         run: |
+          # Secrets keep whatever whitespace was pasted into them, and
+          # notarytool answers a trailing newline in the team id with the same
+          # opaque 403 as a genuinely wrong one.
+          apple_id="$(printf '%s' "$APPLE_ID" | tr -d '[:space:]')"
+          password="$(printf '%s' "$APPLE_APP_PASSWORD" | tr -d '[:space:]')"
+          team_id="$(printf '%s' "$APPLE_TEAM_ID" | tr -d '[:space:]')"
+          # The signing certificate's subject ends in "(<team id>)", so a
+          # mismatch is detectable here instead of as a notary rejection.
+          cert_team="$(printf '%s' "$CODESIGN_IDENTITY" \
+            | sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p')"
+          if [ -n "$cert_team" ] && [ "$cert_team" != "$team_id" ]; then
+            echo "APPLE_TEAM_ID does not match the signing certificate's team ($cert_team)"
+            exit 1
+          fi
           {
-            echo "NOTARY_APPLE_ID=$APPLE_ID"
-            echo "NOTARY_PASSWORD=$APPLE_APP_PASSWORD"
-            echo "NOTARY_TEAM_ID=$APPLE_TEAM_ID"
+            echo "NOTARY_APPLE_ID=$apple_id"
+            echo "NOTARY_PASSWORD=$password"
+            echo "NOTARY_TEAM_ID=$team_id"
           } >>"$GITHUB_ENV"
       - name: package dmg
         run: scripts/package-macos.sh
@@ -144,3 +158,10 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+      - name: macOS dmg present
+        run: |
+          # The macOS job is continue-on-error, so a signing or notarization
+          # failure otherwise publishes a Linux-only Release under a green run.
+          # Release first, then fail loudly.
+          ls dist/ | grep -q '\.dmg$' \
+            || { echo "no dmg in the Release — the macOS job failed; see its log"; exit 1; }
