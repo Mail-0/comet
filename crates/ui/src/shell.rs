@@ -167,12 +167,8 @@ fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
     (viewport - sidebar - right).max(0.0)
 }
 
-fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f32 {
-    if is_chat_route && has_selected_chat {
-        1.0
-    } else {
-        0.0
-    }
+fn titlebar_new_session_alpha(is_chat_route: bool) -> f32 {
+    if is_chat_route { 1.0 } else { 0.0 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2562,8 +2558,7 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let can_back = self.nav.can_back();
         let can_forward = self.nav.can_forward();
-        // The titlebar owns Copilot session creation. Hide it when no chat is
-        // selected because the titlebar is unavailable in the empty state.
+        // The titlebar owns Copilot session creation on the chat route.
         let plus_alpha = self.titlebar_plus_alpha(cx);
         let show_plus = plus_alpha > 0.01;
         div()
@@ -2629,12 +2624,9 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The titlebar owns Copilot session creation while a chat is selected.
-    pub(super) fn titlebar_plus_alpha(&self, cx: &App) -> f32 {
-        titlebar_new_session_alpha(
-            matches!(self.route, Route::Chat),
-            self.state.read(cx).selected_chat.is_some(),
-        )
+    /// The titlebar owns Copilot session creation on the chat route.
+    pub(super) fn titlebar_plus_alpha(&self, _cx: &App) -> f32 {
+        titlebar_new_session_alpha(matches!(self.route, Route::Chat))
     }
 
     /// Native Windows caption controls integrated into Zeron's unified
@@ -6566,11 +6558,9 @@ mod tests {
     }
 
     #[test]
-    fn new_session_action_lives_in_the_titlebar_only_when_useful() {
-        assert_eq!(titlebar_new_session_alpha(true, true), 1.0);
-        assert_eq!(titlebar_new_session_alpha(true, false), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, true), 0.0);
-        assert_eq!(titlebar_new_session_alpha(false, false), 0.0);
+    fn new_session_action_lives_in_the_titlebar_on_the_chat_route() {
+        assert_eq!(titlebar_new_session_alpha(true), 1.0);
+        assert_eq!(titlebar_new_session_alpha(false), 0.0);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Session navigation — the horizontal tab strip is gone (wing 2026-08-10):
 //! the activity sidebar IS the session list, and the titlebar names the
 //! selected session (harness brand icon + title). A `+` Copilot-session button
-//! lives in the titlebar's left control cluster while an existing session is
-//! selected. `UiSettings.open_tabs` is legacy — no longer read or written.
+//! lives in the titlebar's left control cluster on the chat route.
+//! `UiSettings.open_tabs` is legacy — no longer read or written.
 
 use super::*;
 
