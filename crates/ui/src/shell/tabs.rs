@@ -270,7 +270,21 @@ impl Shell {
                 } else {
                     "Take over"
                 };
-                let takeover = div()
+                let takeover_text = if takeover_pending {
+                    theme.text_muted
+                } else {
+                    motion::hover_blend("keiki-titlebar-takeover", theme.text_muted, theme.text)
+                };
+                let takeover_background = if takeover_pending {
+                    gpui::transparent_black()
+                } else {
+                    motion::hover_blend(
+                        "keiki-titlebar-takeover",
+                        gpui::transparent_black(),
+                        theme.glass_hover(),
+                    )
+                };
+                let takeover_button = div()
                     .id("keiki-titlebar-takeover")
                     .h(px(28.0))
                     .px(px(8.0))
@@ -280,10 +294,13 @@ impl Shell {
                     .justify_center()
                     .line_height(px(16.0))
                     .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted)
+                    .text_color(takeover_text)
+                    .bg(takeover_background)
+                    .rounded(px(6.0))
                     .when(takeover_pending, |el| el.opacity(0.35))
                     .when(!takeover_pending, |el| {
                         el.cursor_pointer()
+                            .on_hover(motion::hover_listener("keiki-titlebar-takeover"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if this.state.read(cx).selected_chat == selected_chat
                                     && let Some(conversation) =
@@ -299,7 +316,22 @@ impl Shell {
                     })
                     .child(takeover_label);
                 let steer_pending = pending == Some(crate::keiki::KeikiConversationPending::Steer);
-                let steer = div()
+                let steer_disabled = !has_steer_text || steer_pending;
+                let steer_text = if steer_disabled {
+                    theme.text_muted
+                } else {
+                    motion::hover_blend("keiki-titlebar-steer", theme.text_muted, theme.text)
+                };
+                let steer_background = if steer_disabled {
+                    gpui::transparent_black()
+                } else {
+                    motion::hover_blend(
+                        "keiki-titlebar-steer",
+                        gpui::transparent_black(),
+                        theme.glass_hover(),
+                    )
+                };
+                let steer_button = div()
                     .id("keiki-titlebar-steer")
                     .h(px(28.0))
                     .px(px(8.0))
@@ -309,11 +341,15 @@ impl Shell {
                     .justify_center()
                     .line_height(px(16.0))
                     .text_size(crate::typography::ui_rems(12.0))
-                    .text_color(theme.text_muted)
-                    .when(!has_steer_text, |el| el.opacity(0.55))
-                    .when(steer_pending, |el| el.opacity(0.35))
-                    .when(!steer_pending, |el| {
+                    .text_color(steer_text)
+                    .bg(steer_background)
+                    .rounded(px(6.0))
+                    .when(steer_disabled, |el| {
+                        el.opacity(if steer_pending { 0.35 } else { 0.55 })
+                    })
+                    .when(!steer_disabled, |el| {
                         el.cursor_pointer()
+                            .on_hover(motion::hover_listener("keiki-titlebar-steer"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.composer.read(cx).has_steer_text(cx) {
                                     this.composer.update(cx, |composer, cx| {
@@ -326,7 +362,7 @@ impl Shell {
                             }))
                     })
                     .child("Steer");
-                controls = controls.child(takeover).child(steer);
+                controls = controls.child(takeover_button).child(steer_button);
             }
             if right_open {
                 let right_now = self.eval_tween(self.right_tween, self.right_target(cx));

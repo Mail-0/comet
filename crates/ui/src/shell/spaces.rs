@@ -211,8 +211,13 @@ fn is_copilot_chat(chat: &zeron_proto::Chat) -> bool {
             .is_some_and(|config| config.harness == zeron_proto::HarnessId::Copilot)
 }
 
-fn copilot_chats(chats: impl IntoIterator<Item = zeron_proto::Chat>) -> Vec<zeron_proto::Chat> {
-    let mut chats: Vec<_> = chats.into_iter().filter(is_copilot_chat).collect();
+fn copilot_chats<'a>(
+    chats: impl IntoIterator<Item = &'a zeron_proto::Chat>,
+) -> Vec<&'a zeron_proto::Chat> {
+    let mut chats: Vec<_> = chats
+        .into_iter()
+        .filter(|chat| is_copilot_chat(chat))
+        .collect();
     chats.sort_by(|left, right| {
         right
             .last_message_at
@@ -1144,9 +1149,9 @@ impl Shell {
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
         let filter = self.settings.space_filter.clone();
         let state = self.state.read(cx);
-        let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.clone())
+        let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.iter())
             .into_iter()
-            .map(|chat| chat.id)
+            .map(|chat| chat.id.clone())
             .collect();
         let mut chats: Vec<zeron_proto::Chat> = state
             .sidebar_chats(Utc::now(), filter.as_deref())
@@ -1155,9 +1160,9 @@ impl Shell {
             .filter(|chat| !copilot_ids.contains(&chat.id))
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
-        let mut order: Vec<String> = copilot_chats(state.chats.clone())
+        let mut order: Vec<String> = copilot_chats(state.chats.iter())
             .into_iter()
-            .map(|chat| chat.id)
+            .map(|chat| chat.id.clone())
             .collect();
         if !matches!(
             self.settings.sidebar_organization,
@@ -1211,9 +1216,9 @@ impl Shell {
         let filter = self.settings.space_filter.clone();
         let mut rows: Vec<ActiveChatRow> = {
             let state = self.state.read(cx);
-            let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.clone())
+            let copilot_ids: std::collections::HashSet<String> = copilot_chats(state.chats.iter())
                 .into_iter()
-                .map(|chat| chat.id)
+                .map(|chat| chat.id.clone())
                 .collect();
             let mut chats: Vec<_> = state
                 .sidebar_chats(now, filter.as_deref())
@@ -1313,20 +1318,31 @@ impl Shell {
         let mut rendered = Vec::new();
         let copilot_sessions = {
             let state = self.state.read(cx);
-            copilot_chats(state.chats.clone())
+            let sidebar_statuses: std::collections::HashMap<&str, ChatIndicator> = state
+                .sidebar_chats(now, None)
+                .into_iter()
+                .map(|(status, chat)| (chat.id.as_str(), status))
+                .collect();
+            copilot_chats(state.chats.iter())
                 .into_iter()
                 .filter_map(|chat| {
-                    state
-                        .sidebar_chats(now, None)
-                        .into_iter()
-                        .find(|(_, candidate)| candidate.id == chat.id)
-                        .map(|(status, _)| (status, chat))
+                    sidebar_statuses
+                        .get(chat.id.as_str())
+                        .copied()
+                        .map(|status| {
+                            (
+                                status,
+                                chat.id.clone(),
+                                chat.title.clone(),
+                                chat.last_message_at.unwrap_or(chat.created_at),
+                            )
+                        })
                 })
                 .collect::<Vec<_>>()
         };
         let mut copilot_rows = Vec::with_capacity(copilot_sessions.len());
-        for (status, chat) in copilot_sessions {
-            let is_selected = selected.as_deref() == Some(chat.id.as_str());
+        for (status, chat_id, title, last_message_at) in copilot_sessions {
+            let is_selected = selected.as_deref() == Some(chat_id.as_str());
             let jump_label: Option<SharedString> = if jump_hints {
                 let combo = keymap.get(ShortcutId::JumpSession(slot));
                 (slot < JUMP_SLOTS && !combo.is_empty()).then(|| badge_combo(combo).into())
@@ -1335,16 +1351,15 @@ impl Shell {
             };
             slot += 1;
             let element = self.render_chat_row(
-                chat.id.clone(),
-                transcript::single_line(
-                    &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                )
-                .into(),
-                format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into(),
+                chat_id.clone(),
+                transcript::single_line(&title.unwrap_or_else(|| "New session".into())).into(),
+                format_time_ago(last_message_at, now).into(),
                 "~".into(),
                 jump_label,
                 None,
-                Some(zeron_proto::HarnessId::Copilot),
+                self.settings
+                    .sidebar_show_harness
+                    .then_some(zeron_proto::HarnessId::Copilot),
                 status,
                 is_selected,
                 false,
@@ -1353,7 +1368,7 @@ impl Shell {
                 cx,
             );
             copilot_rows.push((
-                format!("c:{}", chat.id),
+                format!("c:{}", chat_id),
                 super::chat_row_height(false, false),
                 element,
             ));
@@ -3383,7 +3398,7 @@ mod tests {
         let newest = copilot_chat("newest", 30, 3);
         let older = copilot_chat("older", 20, 2);
         let ordinary = chat("ordinary");
-        let grouped = copilot_chats([older.clone(), ordinary, newest.clone()]);
+        let grouped = copilot_chats([&older, &ordinary, &newest]);
 
         assert!(is_copilot_chat(&newest));
         assert!(!is_copilot_chat(&chat("ordinary")));
