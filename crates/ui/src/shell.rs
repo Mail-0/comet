@@ -194,10 +194,15 @@ fn empty_state_variant(status: crate::keiki::SessionStatus) -> EmptyStateVariant
 
 fn empty_state_copy(variant: EmptyStateVariant) -> (&'static str, &'static str, &'static str) {
     match variant {
-        EmptyStateVariant::SignIn | EmptyStateVariant::Loading => (
+        EmptyStateVariant::SignIn => (
             "Sign in to Keiki",
             "Your agents and conversations live in your Keiki account.",
             "Sign in to Keiki",
+        ),
+        EmptyStateVariant::Loading => (
+            "Connecting to Keiki",
+            "Restoring your Keiki session…",
+            "Opening Keiki…",
         ),
         EmptyStateVariant::Ready => (
             "Nothing selected",
@@ -2311,9 +2316,10 @@ impl Shell {
         self.open_chat(chat_id, cx);
     }
 
-    /// Whether an overlay that owns the keyboard is up.
-    pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
-        let _ = cx;
+    /// Whether the add-space palette owns the keyboard. GPUI runs a matched
+    /// binding before any `on_key_down`, so session-navigation shortcuts must
+    /// stay quiet underneath it.
+    pub(super) fn overlay_owns_keyboard(&self, _cx: &App) -> bool {
         self.add_space.is_some()
     }
 
@@ -7023,9 +7029,9 @@ mod tests {
         assert_eq!(
             empty_state_copy(EmptyStateVariant::Loading),
             (
-                "Sign in to Keiki",
-                "Your agents and conversations live in your Keiki account.",
-                "Sign in to Keiki"
+                "Connecting to Keiki",
+                "Restoring your Keiki session…",
+                "Opening Keiki…"
             )
         );
         assert_eq!(

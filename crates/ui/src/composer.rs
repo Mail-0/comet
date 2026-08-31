@@ -3518,7 +3518,7 @@ impl Composer {
             ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
         });
         let current_key = state.read(cx).selected_chat.clone().unwrap_or_default();
-        let composer = Self {
+        let mut composer = Self {
             state,
             input,
             pickers,
@@ -3561,6 +3561,40 @@ impl Composer {
             _observe: observe,
             _input_events: input_events,
         };
+        // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
+        // a rig) — `ZERON_ATTACH=/path/a.png[,/path/b.png]`, and
+        // `ZERON_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
+        if let Ok(spec) = std::env::var("ZERON_ATTACH") {
+            let staged: Vec<StagedAttachment> = spec
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .filter_map(|path| {
+                    match attachments::stage_file(std::path::Path::new(path.trim())) {
+                        Ok(att) => Some(att),
+                        Err(err) => {
+                            tracing::warn!(%path, error = %err, "ZERON_ATTACH stage failed");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            if std::env::var("ZERON_ATTACH_PREVIEW").is_ok_and(|v| v == "1")
+                && let Some(first) = staged.first()
+            {
+                composer.preview = Some(attachments::PreviewImage {
+                    name: first.name.clone().into(),
+                    image: first.image.clone(),
+                });
+                composer.preview_focus_pending = true;
+            }
+            if !staged.is_empty() {
+                composer
+                    .attachments
+                    .entry(composer.current_key.clone())
+                    .or_default()
+                    .extend(staged);
+            }
+        }
         composer
     }
 
@@ -4724,14 +4758,16 @@ impl Composer {
         // Fully-resolved model/reasoning/options — concrete values (chat config
         // or defaults), so the engine never has to guess a "default".
         let resolved = self.pickers.read(cx).resolved(cx);
-        let Some(selected_chat) = self.state.read(cx).selected_chat_row().cloned() else {
-            return;
-        };
-        let device_id = selected_chat.device_id.clone();
-        // Uploads/read-backs target the chat's local engine.
-        let host_device_id = Some(device_id.clone());
+        let selected_chat = self.state.read(cx).selected_chat_row().cloned();
         let local_device_id = self.state.read(cx).local_device_id.clone();
-        let existing_cwd = selected_chat.cwd.clone();
+        let device_id = selected_chat
+            .as_ref()
+            .map(|chat| chat.device_id.clone())
+            .or_else(|| local_device_id.clone())
+            .unwrap_or_else(|| "local".to_string());
+        // Uploads/read-backs target the chat's local engine.
+        let host_device_id = selected_chat.as_ref().map(|chat| chat.device_id.clone());
+        let existing_cwd = selected_chat.and_then(|chat| chat.cwd);
         // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
         // strip empties the instant you hit send; a failure hands the files
         // back into the chat's stash.

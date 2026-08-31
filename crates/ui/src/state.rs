@@ -364,8 +364,8 @@ pub struct AppState {
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
-    /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
-    /// bootstrap so child views can persist small preference files.
+    /// Data directory (`ui-settings.json`); set at bootstrap so child views
+    /// can persist small preference files.
     pub data_dir: Option<PathBuf>,
     pub(crate) keiki_client: Option<keiki_api::Client>,
     pub(crate) keiki_token: Option<keiki_api::TokenSet>,
