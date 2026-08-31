@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Render the dmg background from the ascii-hand recipe.
 
-Reuses the exact hand-density maps, glyph ramp, drifting noise field, and
-purple-on-near-black palette — frozen at one instant and composed for the 660x400 pt
-drag-to-Applications window (app icon at x=165, Applications at x=495,
-both at y=195).
+Reuses the exact hand-density maps, glyph ramp and drifting noise field in
+the Keiki palette — accent blue on near-black — frozen at one instant and
+composed for the 660x400 pt drag-to-Applications window (app icon at
+x=165, Applications at x=495, both at y=195).
 
 Outputs dist/macos/dmg-background.png (1x) and dmg-background@2x.png;
 scripts/package-macos.sh pairs them into a hidpi tiff with tiffutil.
@@ -26,8 +26,8 @@ OUT = os.path.join(ROOT, "dist/macos")
 # scripts/package-macos.sh.
 W, H = 660, 400
 
-BG = (6, 4, 10)  # --bg
-PURPLE = (139, 92, 246)  # --purple
+BG = (4, 6, 11)  # near-black, cooled to sit under the accent
+ACCENT = (0, 145, 255)  # AccentColor::Keiki, dark appearance
 RAMP = [" ", " ", " ", ".", ":", ">", "~", "×", "*", "#"]
 
 # Landing cell is 12x14 css px with a 10px font; the dmg window is smaller
@@ -155,7 +155,7 @@ def draw_hand(draw, font, data, ox, px, py, s):
             cx, cy = (px + x * CW + 2 * SCALE) * s, (py + y * CH + 2 * SCALE) * s
             if cx < -CW * s or cy < -CH * s or cx > W * s or cy > H * s:
                 continue
-            draw.text((cx, cy), g, font=font, fill=PURPLE + (round(alpha * 255),))
+            draw.text((cx, cy), g, font=font, fill=ACCENT + (round(alpha * 255),))
 
 
 def render(s, path):
@@ -177,7 +177,7 @@ def render(s, path):
     for i, cx in enumerate(range(285, 386, 25)):
         alpha = 0.28 + i * 0.13
         draw.text(
-            (cx * s, 188 * s), "›", font=chev, fill=PURPLE + (round(alpha * 255),)
+            (cx * s, 188 * s), "›", font=chev, fill=ACCENT + (round(alpha * 255),)
         )
 
     img.paste(layer, (0, 0), layer)
