@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # macOS packaging: build the release binary for the host arch and produce
 #   target/package/zeron-<version>-macos-<arch>.dmg          (user download)
-# containing Zeron.app (unsigned unless CODESIGN_IDENTITY is set).
+# containing Keiki.app (unsigned unless CODESIGN_IDENTITY is set).
 #
 # Usage: scripts/package-macos.sh
 # Env:   CODESIGN_IDENTITY="Developer ID Application: …" to sign the bundle.
@@ -17,7 +17,7 @@ command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')"
 ARCH="$(uname -m)" # arm64 on Apple silicon runners
 OUT_DIR="$ROOT/target/package"
-APP="$OUT_DIR/Zeron.app"
+APP="$OUT_DIR/Keiki.app"
 DMG="$OUT_DIR/zeron-$VERSION-macos-$ARCH.dmg"
 
 cd "$ROOT"
@@ -93,7 +93,7 @@ import dmgbuild
 app = os.environ["APP"]
 dmgbuild.build_dmg(
     filename=os.environ["DMG"],
-    volume_name="Zeron",
+    volume_name="Keiki",
     settings={
         "format": "UDZO",
         "files": [app],
@@ -110,7 +110,7 @@ dmgbuild.build_dmg(
         "window_rect": ((200, 120), (660, 400)),
         "icon_size": 104,
         "text_size": 12,
-        "icon_locations": {"Zeron.app": (165, 195), "Applications": (495, 195)},
+        "icon_locations": {"Keiki.app": (165, 195), "Applications": (495, 195)},
     },
 )
 PY

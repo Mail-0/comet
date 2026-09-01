@@ -1,4 +1,4 @@
-# Zeron
+# Keiki
 
 Control your Keiki coding agents locally, with Copilot available as a built-in local chat.
 

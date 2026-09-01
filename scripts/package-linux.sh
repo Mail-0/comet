@@ -62,7 +62,7 @@ if has_format tarball; then
 
   cat >"$STAGE/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
-# Install Zeron into ~/.local (no root needed).
+# Install Keiki into ~/.local (no root needed).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install -Dm755 "$HERE/zeron" "$HOME/.local/bin/zeron"
@@ -109,7 +109,7 @@ Priority: optional
 Maintainer: Mail-0 <noreply@onkeiki.com>
 Package: zeron
 Architecture: any
-Description: Zeron desktop agent client
+Description: Keiki desktop agent client
  Desktop client for controlling Keiki coding agents.
 CONTROL
   DEPS="$(
@@ -126,7 +126,7 @@ Priority: optional
 Maintainer: ${DEB_MAINTAINER:-Mail-0 <noreply@onkeiki.com>}
 Depends: $DEPS
 Recommends: mesa-vulkan-drivers
-Description: Zeron desktop agent client
+Description: Keiki desktop agent client
  Desktop client for controlling Keiki coding agents.
 CONTROL
   rm -rf "$DEB_ROOT/debian"

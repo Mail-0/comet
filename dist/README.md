@@ -32,7 +32,7 @@ The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 scripts/package-macos.sh    # → target/package/zeron-<version>-macos-<arch>.dmg
 ```
 
-Builds the release binary, assembles `Zeron.app` (Info.plist + icns), ad-hoc
+Builds the release binary, assembles `Keiki.app` (Info.plist + icns), ad-hoc
 signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
  dmg. CI runs this on tags
 (`.github/workflows/release.yml`). The manual steps it automates, for reference
@@ -48,26 +48,26 @@ signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
    ```
 2. Assemble the bundle:
    ```sh
-   mkdir -p Zeron.app/Contents/{MacOS,Resources}
-   cp zeron Zeron.app/Contents/MacOS/zeron
+   mkdir -p Keiki.app/Contents/{MacOS,Resources}
+   cp zeron Keiki.app/Contents/MacOS/zeron
    sed "s/__VERSION__/$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')/" \
-     dist/macos/Info.plist > Zeron.app/Contents/Info.plist
+     dist/macos/Info.plist > Keiki.app/Contents/Info.plist
    ```
 3. Icon: generate `zeron.icns` from `dist/macos/icon-1024.png` (the macOS-shaped
    variant of the artwork — squircle mask, margins, and shadow pre-baked, since
    `sips` can't apply an alpha mask) and place it at
-   `Zeron.app/Contents/Resources/zeron.icns`:
+   `Keiki.app/Contents/Resources/zeron.icns`:
    ```sh
    mkdir zeron.iconset && sips -z 256 256 dist/macos/icon-1024.png --out zeron.iconset/icon_256x256.png
-   iconutil -c icns zeron.iconset -o Zeron.app/Contents/Resources/zeron.icns
+   iconutil -c icns zeron.iconset -o Keiki.app/Contents/Resources/zeron.icns
    ```
 4. Sign + notarize (required for distribution):
    ```sh
-   codesign --deep --force --options runtime --sign "Developer ID Application: …" Zeron.app
-   xcrun notarytool submit Zeron.zip --keychain-profile … --wait
-   xcrun stapler staple Zeron.app
+   codesign --deep --force --options runtime --sign "Developer ID Application: …" Keiki.app
+   xcrun notarytool submit Keiki.zip --keychain-profile … --wait
+   xcrun stapler staple Keiki.app
    ```
-5. Ship as a `.dmg` (`hdiutil create -volname Zeron -srcfolder Zeron.app -ov -format UDZO Zeron.dmg`).
+5. Ship as a `.dmg` (`hdiutil create -volname Keiki -srcfolder Keiki.app -ov -format UDZO zeron.dmg`).
 
 ## Icon artwork
 
