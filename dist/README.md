@@ -12,7 +12,7 @@ Produces three Linux artifacts (narrow with `FORMATS="tarball deb appimage"`):
 - `target/package/zeron-<version>-linux-<arch>.tar.gz`, containing:
   - `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
   - `zeron.desktop` — XDG desktop entry
-  - `zeron.png` — 1024×1024 Zeron app icon
+  - `zeron.png` — 1024×1024 app icon
   - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
 - `target/package/zeron-<version>-linux-<debarch>.deb` — a Debian package
   installing the binary, desktop entry, icon, and font licenses under `/usr`.
@@ -68,3 +68,18 @@ signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
    xcrun stapler staple Zeron.app
    ```
 5. Ship as a `.dmg` (`hdiutil create -volname Zeron -srcfolder Zeron.app -ov -format UDZO Zeron.dmg`).
+
+## Icon artwork
+
+The Keiki rocking-horse mark. `dist/zeron.png` is the 1024 full-bleed export
+(pre-masked squircle, transparent corners) and is what Linux ships.
+`dist/macos/icon-1024.png` is that same export placed on the Big Sur grid —
+scaled to an 824 body, centred on a 1024 canvas, drop shadow baked in:
+
+```sh
+convert dist/zeron.png -resize 824x824 body.png
+convert body.png \( +clone -background black -shadow 45x18+0+14 \) +swap \
+  -background none -layers merge +repage body-shadow.png
+convert -size 1024x1024 xc:none body-shadow.png -gravity center -geometry +0+6 \
+  -composite dist/macos/icon-1024.png
+```
