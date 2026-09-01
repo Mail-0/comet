@@ -1,4 +1,4 @@
-# Zeron
+# Keiki
 
 在本地管理 Keiki 编码 agent，也可以使用内置的 Copilot 本地聊天。
 
