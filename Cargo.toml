@@ -11,6 +11,7 @@ members = [
     "crates/engine",
     "crates/rpc",
     "crates/ui",
+    "crates/updater",
     "crates/syntax",
     "apps/zeron",
 ]
@@ -33,6 +34,7 @@ zeron-rpc = { path = "crates/rpc" }
 zeron-ui = { path = "crates/ui" }
 zeron-syntax = { path = "crates/syntax" }
 zeron-theme = { path = "crates/theme" }
+zeron-updater = { path = "crates/updater" }
 
 # CRDT
 loro = "1.13"

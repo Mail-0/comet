@@ -16,6 +16,7 @@ zeron-harness.workspace = true
 zeron-rpc.workspace = true
 zeron-syntax.workspace = true
 zeron-theme.workspace = true
+zeron-updater.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui_tokio.workspace = true
@@ -36,6 +37,7 @@ anyhow.workspace = true
 tracing.workspace = true
 sha2.workspace = true
 percent-encoding.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
