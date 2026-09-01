@@ -357,6 +357,8 @@ async fn fetch_keiki_session(
                 email: response.user.email,
                 active_org_name,
                 role: response.user.role,
+                active_org_id: response.user.active_org_id.or(response.user.org_id),
+                orgs: response.user.orgs,
             };
             if let Err(error) = entity.update(cx, |state, cx| {
                 if state.keiki_status == SessionStatus::SignedIn {
@@ -1356,6 +1358,111 @@ pub fn begin_sign_in(
         complete_callback(task_state.downgrade(), flow, client, callback, cx).await;
     });
     state.update(cx, |state, _| state.keiki_task = Some(task));
+}
+
+/// Re-point the signed-in token at `org_id` and reload everything Keiki
+/// showed for the old org. Rows are dropped up front so a slow reload never
+/// leaves the previous org's agents beside the new org's name.
+pub fn switch_org(
+    state: Entity<AppState>,
+    org_id: String,
+    cx: &mut Context<crate::shell::Shell>,
+) -> Task<()> {
+    let already = state.update(cx, |state, cx| {
+        let active = state
+            .keiki_session
+            .as_ref()
+            .and_then(|session| session.active_org_id.as_deref());
+        if state.keiki_org_switch.is_some() || active == Some(org_id.as_str()) {
+            return true;
+        }
+        state.keiki_org_switch = Some(org_id.clone());
+        state.keiki_error = None;
+        cx.notify();
+        false
+    });
+    if already {
+        return Task::ready(());
+    }
+    cx.spawn(async move |this, cx| {
+        let entity = state.downgrade();
+        let result = switch_org_request(&entity, org_id.clone(), cx).await;
+        match result {
+            Ok(()) => {
+                let context = state.update(cx, |state, cx| {
+                    crate::avatars::clear();
+                    state.clear_keiki_rows();
+                    state.keiki_org_switch = None;
+                    if let Some(session) = state.keiki_session.as_mut() {
+                        session.active_org_id = Some(org_id.clone());
+                        session.active_org_name = session
+                            .orgs
+                            .iter()
+                            .find(|org| org.id == org_id)
+                            .and_then(|org| org.name.clone());
+                    }
+                    cx.notify();
+                    Some((state.keiki_client.clone()?, state.keiki_token.clone()?))
+                });
+                if let Some((client, token)) = context {
+                    fetch_keiki_session(&entity, client, token, cx).await;
+                }
+                if let Err(error) = refresh_keiki_snapshot(entity, cx).await {
+                    tracing::warn!(%error, "Keiki reload after org switch failed");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Keiki org switch failed");
+                state.update(cx, |state, cx| {
+                    state.keiki_org_switch = None;
+                    cx.notify();
+                });
+                this.update(cx, |shell, cx| {
+                    shell.set_sidebar_notice(format!("Could not switch organization: {error}"));
+                    cx.notify();
+                })
+                .ok();
+            }
+        }
+    })
+}
+
+async fn switch_org_request(
+    entity: &WeakEntity<AppState>,
+    org_id: String,
+    cx: &mut AsyncApp,
+) -> Result<(), keiki_api::Error> {
+    let context = entity
+        .update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        })
+        .map_err(|error| request_task_error("Keiki org switch state read", error))?
+        .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
+    let (client, token, credentials) = context;
+    let response = authorized(
+        entity,
+        client,
+        token,
+        credentials,
+        "Keiki org switch",
+        move |client, access_token| {
+            let org_id = org_id.clone();
+            async move { client.switch_org(&access_token, &org_id).await }
+        },
+        cx,
+    )
+    .await?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(keiki_api::Error::Local(
+            "Keiki did not confirm the organization switch".into(),
+        ))
+    }
 }
 
 pub fn sign_out(state: Entity<AppState>, cx: &mut Context<crate::shell::Shell>) -> Task<()> {

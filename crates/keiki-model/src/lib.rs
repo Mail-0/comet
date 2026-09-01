@@ -116,6 +116,19 @@ pub struct SessionResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SwitchOrgRequest {
+    pub org_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchOrgResponse {
+    pub ok: bool,
+    pub active_org_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTemplateSecret {
     pub name: String,
     pub required: bool,
@@ -518,6 +531,21 @@ mod tests {
             response.user.orgs[0].name.as_deref(),
             Some("Analytical Engines")
         );
+    }
+
+    #[test]
+    fn switch_org_matches_webapp_shape() {
+        let request = serde_json::to_value(SwitchOrgRequest {
+            org_id: "org-2".into(),
+        })
+        .unwrap();
+        assert_eq!(request, serde_json::json!({ "orgId": "org-2" }));
+
+        let response: SwitchOrgResponse =
+            serde_json::from_value(serde_json::json!({ "ok": true, "activeOrgId": "org-2" }))
+                .unwrap();
+        assert!(response.ok);
+        assert_eq!(response.active_org_id, "org-2");
     }
 
     fn agent(

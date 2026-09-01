@@ -5,11 +5,12 @@ pub use keiki_model::{
     AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
     BlockConversationResponse, ClearConversationResponse, ConversationDetail, ConversationLocator,
     ConversationSearchHit, ConversationSummary, ConversationTakeover, CreateAgentFromTemplate,
-    CreateAgentResponse, SendConversationMessageResponse, SessionResponse, SessionUser,
-    SteerConversationResponse, TakeoverResponse,
+    CreateAgentResponse, OrganizationSummary, SendConversationMessageResponse, SessionResponse,
+    SessionUser, SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
 };
 use keiki_model::{
     AgentTemplatesResponse, AgentsResponse, ConversationTextInput, ConversationsResponse,
+    SwitchOrgRequest,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::Rng as _;
@@ -472,6 +473,26 @@ impl Client {
 
     pub async fn session(&self, access_token: &str) -> Result<SessionResponse, Error> {
         self.send_json(self.session_authenticated_request(access_token))
+            .await
+    }
+
+    pub fn switch_org_request(&self, access_token: &str, org_id: &str) -> reqwest::RequestBuilder {
+        self.http
+            .post(self.endpoint("/api/webapp/orgs/switch"))
+            .bearer_auth(access_token)
+            .json(&SwitchOrgRequest {
+                org_id: org_id.to_string(),
+            })
+    }
+
+    /// Re-point this token at another of the account's orgs. Every later
+    /// request on the same token is scoped to the new org.
+    pub async fn switch_org(
+        &self,
+        access_token: &str,
+        org_id: &str,
+    ) -> Result<SwitchOrgResponse, Error> {
+        self.send_json(self.switch_org_request(access_token, org_id))
             .await
     }
 

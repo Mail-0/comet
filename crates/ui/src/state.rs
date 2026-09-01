@@ -43,12 +43,21 @@ use crate::keiki::{
     KeikiConversation, KeikiConversationPending, SessionStatus as KeikiSessionStatus,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct KeikiSessionInfo {
     pub display_name: Option<String>,
     pub email: Option<String>,
     pub active_org_name: Option<String>,
     pub role: Option<String>,
+    pub active_org_id: Option<String>,
+    pub orgs: Vec<keiki_api::OrganizationSummary>,
+}
+
+impl KeikiSessionInfo {
+    /// Orgs the account can switch to, in the order the platform listed them.
+    pub fn switchable_orgs(&self) -> &[keiki_api::OrganizationSummary] {
+        if self.orgs.len() > 1 { &self.orgs } else { &[] }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +382,8 @@ pub struct AppState {
     pub(crate) keiki_flow: Option<keiki_api::AuthorizationFlow>,
     pub(crate) keiki_status: KeikiSessionStatus,
     pub(crate) keiki_session: Option<KeikiSessionInfo>,
+    /// Org id of an in-flight org switch; the picker disables while set.
+    pub(crate) keiki_org_switch: Option<String>,
     pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
     pub(crate) keiki_conversation: Option<KeikiConversation>,
@@ -425,6 +436,7 @@ impl AppState {
             keiki_flow: None,
             keiki_status: KeikiSessionStatus::SignedOut,
             keiki_session: None,
+            keiki_org_switch: None,
             keiki_error: None,
             keiki_task: None,
             keiki_conversation: None,
@@ -689,6 +701,7 @@ impl AppState {
         self.keiki_credentials = None;
         self.keiki_flow = None;
         self.keiki_session = None;
+        self.keiki_org_switch = None;
         self.keiki_status = KeikiSessionStatus::SignedOut;
         self.keiki_error = error;
     }
