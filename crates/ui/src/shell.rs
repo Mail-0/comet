@@ -4552,7 +4552,7 @@ impl Shell {
             } else {
                 content = content.child(
                     icon(icons::ZERON_LOGO)
-                        .w(px(41.9))
+                        .w(px(52.9))
                         .h(px(48.0))
                         .text_color(theme.text.opacity(0.09)),
                 );
@@ -5598,7 +5598,7 @@ impl Shell {
                 .text_center()
                 .child(
                     icon(icons::ZERON_LOGO)
-                        .w(px(31.4))
+                        .w(px(39.7))
                         .h(px(36.0))
                         .text_color(theme.text),
                 )

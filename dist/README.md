@@ -12,7 +12,7 @@ Produces three Linux artifacts (narrow with `FORMATS="tarball deb appimage"`):
 - `target/package/zeron-<version>-linux-<arch>.tar.gz`, containing:
   - `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
   - `zeron.desktop` — XDG desktop entry
-  - `zeron.png` — 1024×1024 Zeron app icon
+  - `zeron.png` — 1024×1024 app icon (rendered from `dist/zeron.svg`)
   - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
 - `target/package/zeron-<version>-linux-<debarch>.deb` — a Debian package
   installing the binary, desktop entry, icon, and font licenses under `/usr`.
@@ -68,3 +68,25 @@ signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
    xcrun stapler staple Zeron.app
    ```
 5. Ship as a `.dmg` (`hdiutil create -volname Zeron -srcfolder Zeron.app -ov -format UDZO Zeron.dmg`).
+
+## Icon artwork
+
+`dist/zeron.svg` is the master: the Keiki rocking-horse mark in white on the
+near-black `#04060B` tile with a thin `#0091FF` rim. Both PNGs are rendered
+from it and committed, so packaging needs no SVG toolchain:
+
+```sh
+# Linux — full-bleed 1024 tile, corners already transparent in the SVG
+python3 -c "import cairosvg; cairosvg.svg2png(url='dist/zeron.svg', write_to='dist/zeron.png', output_width=1024, output_height=1024)"
+
+# macOS — Big Sur grid: 824 body (corner radius widened to Apple's ratio),
+# centred on a 1024 canvas with the drop shadow baked in
+python3 -c "import cairosvg,pathlib; s=pathlib.Path('dist/zeron.svg').read_text().replace('rx=\"180\"','rx=\"230\"').replace('rx=\"176\"','rx=\"226\"'); cairosvg.svg2png(bytestring=s.encode(), write_to='body.png', output_width=824, output_height=824)"
+convert body.png \( +clone -background black -shadow 45x18+0+14 \) +swap \
+  -background none -layers merge +repage body-shadow.png
+convert -size 1024x1024 xc:none body-shadow.png -gravity center -geometry +0+6 \
+  -composite dist/macos/icon-1024.png
+```
+
+`crates/ui/assets/icons/zeron-logo.svg` is the same mark as a bare
+`currentColor` silhouette, used for the in-app watermark.
