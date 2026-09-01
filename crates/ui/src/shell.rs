@@ -3761,6 +3761,88 @@ impl Shell {
         cx.notify();
     }
 
+    /// One row per Keiki org the account belongs to (hidden with a single
+    /// membership); the active one is marked, the rest re-point the session.
+    fn render_org_picker(
+        &mut self,
+        mut menu: gpui::Div,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let (orgs, active_org_id, switching) = {
+            let state = self.state.read(cx);
+            let Some(session) = state.keiki_session.as_ref() else {
+                return menu;
+            };
+            (
+                session.switchable_orgs().to_vec(),
+                session.active_org_id.clone(),
+                state.keiki_org_switch.clone(),
+            )
+        };
+        if orgs.is_empty() {
+            return menu;
+        }
+        menu = menu.child(
+            div()
+                .px(px(8.0))
+                .pt(px(6.0))
+                .pb(px(2.0))
+                .text_size(crate::typography::ui_rems(11.0))
+                .text_color(theme.text_muted.opacity(0.7))
+                .child(SharedString::from("Organization")),
+        );
+        for org in orgs {
+            let active = active_org_id.as_deref() == Some(org.id.as_str());
+            let pending = switching.as_deref() == Some(org.id.as_str());
+            let busy = switching.is_some();
+            let key = SharedString::from(format!("user-menu-org-{}", org.id));
+            let label: SharedString = org.name.clone().unwrap_or_else(|| org.id.clone()).into();
+            let org_id = org.id.clone();
+            let row = popover::menu_row(theme, active, key.clone())
+                .id(key)
+                .when(!active && !busy, |row| {
+                    row.on_click(cx.listener(move |this, _, _, cx| {
+                        crate::keiki::switch_org(this.state.clone(), org_id.clone(), cx).detach();
+                        cx.notify();
+                    }))
+                })
+                .when(busy && !pending, |row| row.opacity(0.6))
+                .child(
+                    div()
+                        .size(px(16.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(active, |slot| {
+                            slot.child(
+                                icon(icons::CHECK)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                        }),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .when(pending, |row| {
+                    row.child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from("Switching…")),
+                    )
+                });
+            menu = menu.child(row);
+        }
+        menu.child(
+            div()
+                .mx(px(6.0))
+                .my(px(4.0))
+                .h(px(1.0))
+                .bg(theme.text_muted.opacity(0.15)),
+        )
+    }
+
     /// Scope-aware sidebar identity and account menu. Local runtimes advertise
     /// their storage boundary and offer sync; synced runtimes offer sign-out.
     fn render_user_menu(
@@ -3871,6 +3953,7 @@ impl Shell {
                         .child(menu_identity),
                 );
             if keiki_status == crate::keiki::SessionStatus::SignedIn {
+                menu = self.render_org_picker(menu, theme, cx);
                 menu = menu.child(
                     popover::menu_row(theme, false, "user-menu-keiki-signout")
                         .id("user-menu-keiki-signout")
@@ -6409,6 +6492,7 @@ mod tests {
             email: Some("ada@example.com".into()),
             active_org_name: Some("Analytical Engines".into()),
             role: Some("owner".into()),
+            ..KeikiSessionInfo::default()
         };
         assert_eq!(
             account_identity(crate::keiki::SessionStatus::SignedIn, Some(&session)),
@@ -6427,6 +6511,7 @@ mod tests {
             email: Some("ada@example.com".into()),
             active_org_name: None,
             role: None,
+            ..KeikiSessionInfo::default()
         };
         assert_eq!(
             account_identity(crate::keiki::SessionStatus::SignedIn, Some(&session)),
@@ -6445,6 +6530,7 @@ mod tests {
             email: Some("ada@example.com".into()),
             active_org_name: None,
             role: Some("owner".into()),
+            ..KeikiSessionInfo::default()
         };
         assert_eq!(
             account_identity(crate::keiki::SessionStatus::SignedIn, Some(&session)),
