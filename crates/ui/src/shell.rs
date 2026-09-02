@@ -949,6 +949,12 @@ pub struct Shell {
     motion_active: std::cell::Cell<bool>,
     splash: SplashPhase,
     splash_task: Option<Task<()>>,
+    /// The self-update modal, `Some` from the moment a newer build starts
+    /// downloading until the app quits to restart into it.
+    update_flow: Option<crate::updater::UpdateFlow>,
+    /// Boot update check + install. Held here so closing the window cancels a
+    /// download rather than swapping a build out from under a dead window.
+    _update_task: Task<()>,
     /// Focus fallback (registered on first paint — [`Shell::new`] has no
     /// window): keyboard shortcuts dispatch through the window focus chain, so
     /// with nothing focused they go dead. Initial focus lands on the composer
@@ -968,6 +974,29 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// Enter (or leave) the update modal.
+    pub(crate) fn set_update_flow(
+        &mut self,
+        flow: Option<crate::updater::UpdateFlow>,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_flow = flow;
+        cx.notify();
+    }
+
+    /// Advance the modal already on screen; a flow cleared by a failure stays
+    /// cleared.
+    pub(crate) fn set_update_phase(
+        &mut self,
+        phase: crate::updater::Phase,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(flow) = &mut self.update_flow {
+            flow.phase = phase;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn set_sidebar_notice(&mut self, notice: impl Into<SharedString>) {
         self.sidebar_notice = Some(notice.into());
     }
@@ -1073,6 +1102,7 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
         });
+        let update_task = crate::updater::start(cx);
         Self {
             state,
             transcript,
@@ -1154,6 +1184,8 @@ impl Shell {
             motion_active: std::cell::Cell::new(false),
             splash: SplashPhase::Visible,
             splash_task: None,
+            update_flow: None,
+            _update_task: update_task,
             focus_sub: None,
             activation_sub: None,
             avatar_loads: std::collections::HashMap::new(),
@@ -4456,6 +4488,11 @@ impl Shell {
                 )
                 .into_any_element();
             overlays.push(popover::modal("rename-chat-dialog", viewport, card));
+        }
+
+        if let Some(flow) = self.update_flow.clone() {
+            let view = cx.entity_id();
+            overlays.push(crate::updater::render_modal(&flow, viewport, view, cx));
         }
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
