@@ -176,14 +176,11 @@ impl Shell {
                         .and_then(|id| state.space_row(id))
                         .map(|s| s.display_name().to_string())
                         .unwrap_or_else(|| "~".to_string());
-                    let device = state
-                        .device_name(&chat.device_id)
-                        .unwrap_or("Unknown device");
                     (
                         SharedString::from(transcript::single_line(
                             &chat.title.clone().unwrap_or_else(|| "New session".into()),
                         )),
-                        Some(SharedString::from(format!("{folder} @ {device}"))),
+                        Some(SharedString::from(folder)),
                         chat.config.as_ref().map(|c| c.harness),
                         false,
                     )
