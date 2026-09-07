@@ -100,39 +100,19 @@ impl Render for SidebarViewOptionsTooltip {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidebarViewRow {
-    ByDevice,
     ByAgent,
     InOneList,
     LastUpdated,
     Created,
-    ShowBranch,
-    ShowPullRequest,
-    ShowHarness,
 }
 
-impl SidebarViewRow {
-    /// Radio-style presentation choices behave like the project selector and
-    /// dismiss after selection. Show toggles stay open for batch changes.
-    fn closes_menu(self) -> bool {
-        matches!(
-            self,
-            Self::ByDevice | Self::ByAgent | Self::InOneList | Self::LastUpdated | Self::Created
-        )
-    }
-}
-
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 8] = [
-    SidebarViewRow::ByDevice,
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 4] = [
     SidebarViewRow::ByAgent,
     SidebarViewRow::InOneList,
     SidebarViewRow::LastUpdated,
     SidebarViewRow::Created,
-    SidebarViewRow::ShowBranch,
-    SidebarViewRow::ShowPullRequest,
-    SidebarViewRow::ShowHarness,
 ];
-const SIDEBAR_ORGANIZATION_ROWS: usize = 3;
-const SIDEBAR_SORT_ROWS: usize = 2;
+const SIDEBAR_ORGANIZATION_ROWS: usize = 2;
 
 // With the search field and card insets, this lets the project picker grow to
 // roughly the same maximum footprint as the sidebar view-options menu while
@@ -614,9 +594,6 @@ impl Shell {
 
     fn activate_sidebar_view_row(&mut self, row: SidebarViewRow, cx: &mut Context<Self>) {
         match row {
-            SidebarViewRow::ByDevice => {
-                self.settings.sidebar_organization = SidebarOrganization::ByDevice
-            }
             SidebarViewRow::ByAgent => {
                 self.settings.sidebar_organization = SidebarOrganization::ByAgent
             }
@@ -625,24 +602,11 @@ impl Shell {
             }
             SidebarViewRow::LastUpdated => self.settings.sidebar_sort = SidebarSort::LastUpdated,
             SidebarViewRow::Created => self.settings.sidebar_sort = SidebarSort::Created,
-            SidebarViewRow::ShowBranch => {
-                self.settings.sidebar_show_branch = !self.settings.sidebar_show_branch
-            }
-            SidebarViewRow::ShowPullRequest => {
-                self.settings.sidebar_show_pull_request = !self.settings.sidebar_show_pull_request;
-                let visible = self.settings.sidebar_show_pull_request;
-                self.state.update(cx, |state, cx| {
-                    state.set_change_requests_visible(visible, cx)
-                });
-            }
-            SidebarViewRow::ShowHarness => {
-                self.settings.sidebar_show_harness = !self.settings.sidebar_show_harness
-            }
         }
         self.schedule_save(cx);
-        if row.closes_menu() {
-            self.close_sidebar_view_menu(cx);
-        }
+        // Every row is a radio choice: like the project selector, the menu
+        // dismisses after selection.
+        self.close_sidebar_view_menu(cx);
         cx.notify();
     }
 
@@ -685,39 +649,19 @@ impl Shell {
         let focus = menu_state.focus.clone();
         let organization = self.settings.sidebar_organization;
         let sort = self.settings.sidebar_sort;
-        let show_harness = self.settings.sidebar_show_harness;
-        let show_branch = self.settings.sidebar_show_branch;
-        let show_pr = self.settings.sidebar_show_pull_request;
 
-        let labels = [
-            "By device",
-            "By agent",
-            "In one list",
-            "Last updated",
-            "Created",
-            "Branch",
-            "Conversation",
-            "Harness",
-        ];
+        let labels = ["By agent", "In one list", "Last updated", "Created"];
         let icons = [
-            icons::LAPTOP,
             icons::BOT,
             icons::LIST,
             icons::CLOCK_CIRCLE,
             icons::CALENDAR,
-            icons::GIT_BRANCH,
-            icons::PULL_REQUEST,
-            icons::BOT,
         ];
         let selected = [
-            organization == SidebarOrganization::ByDevice,
             organization == SidebarOrganization::ByAgent,
             organization == SidebarOrganization::InOneList,
             sort == SidebarSort::LastUpdated,
             sort == SidebarSort::Created,
-            show_branch,
-            show_pr,
-            show_harness,
         ];
         let mut rows: Vec<AnyElement> = SIDEBAR_VIEW_ROWS
             .iter()
@@ -754,7 +698,6 @@ impl Shell {
                 .into_any_element()
             })
             .collect();
-        let show_rows = rows.split_off(SIDEBAR_ORGANIZATION_ROWS + SIDEBAR_SORT_ROWS);
         let sort_rows = rows.split_off(SIDEBAR_ORGANIZATION_ROWS);
         let organization_rows = rows;
 
@@ -778,9 +721,6 @@ impl Shell {
             .child(popover::menu_separator())
             .child(popover::menu_heading(theme, "Sort"))
             .child(div().flex().flex_col().gap(px(2.0)).children(sort_rows))
-            .child(popover::menu_separator())
-            .child(popover::menu_heading(theme, "Show"))
-            .child(div().flex().flex_col().gap(px(2.0)).children(show_rows))
             .into_any_element()
     }
 
@@ -793,19 +733,16 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let filter = self.settings.space_filter.clone();
-        // Name + the dropdown rows' "@ device" tag on the trigger itself, so
-        // the filtered space's host reads without opening the picker.
-        let (label, device_tag): (SharedString, Option<(SharedString, bool)>) = {
+        // Name + the dropdown rows' offline glyph on the trigger itself, so
+        // the filtered space's reachability reads without opening the picker.
+        let (label, offline): (SharedString, bool) = {
             let state = self.state.read(cx);
             match filter.as_deref().and_then(|id| state.space_row(id)) {
-                Some(space) => {
-                    let (tag, offline) = state.space_device_tag(space, Utc::now());
-                    (
-                        space.display_name().to_string().into(),
-                        Some((tag.into(), offline)),
-                    )
-                }
-                None => (SharedString::from("All agents"), None),
+                Some(space) => (
+                    space.display_name().to_string().into(),
+                    state.space_device_offline(space, Utc::now()),
+                ),
+                None => (SharedString::from("All agents"), false),
             }
         };
         let open = self.spaces_menu.is_open();
@@ -859,8 +796,8 @@ impl Shell {
                     .text_color(theme.text_muted),
             )
             // flex_1 pushes the caret to the trigger's right edge and gives
-            // long space names a bound to truncate against; the "@ device"
-            // tag hugs the name inside it rather than sitting by the caret.
+            // long space names a bound to truncate against; the offline glyph
+            // hugs the name inside it rather than sitting by the caret.
             .child(
                 div()
                     .flex_1()
@@ -870,24 +807,14 @@ impl Shell {
                     .items_center()
                     .gap(px(6.0))
                     .child(div().min_w_0().truncate().child(label))
-                    .when_some(device_tag, |el, (tag, offline)| {
+                    // Disconnected glyph, not the word (user request).
+                    .when(offline, |el| {
                         el.child(
-                            div()
+                            icon(icons::WIFI_OFF)
+                                .size(px(12.0))
                                 .flex_none()
-                                .text_size(crate::typography::ui_rems(10.0))
-                                .font_weight(gpui::FontWeight::NORMAL)
-                                .text_color(theme.text_muted.opacity(0.45))
-                                .child(tag),
+                                .text_color(theme.warning.opacity(0.8)),
                         )
-                        // Disconnected glyph, not the word (user request).
-                        .when(offline, |el| {
-                            el.child(
-                                icon(icons::WIFI_OFF)
-                                    .size(px(12.0))
-                                    .flex_none()
-                                    .text_color(theme.warning.opacity(0.8)),
-                            )
-                        })
                     }),
             )
             .child(
@@ -1011,51 +938,44 @@ impl Shell {
         let rows = self.spaces_menu_rows(cx);
         let filter = self.settings.space_filter.clone();
         let now = Utc::now();
-        // (name, device tag) per space row — presence reuses the session
-        // rows' heartbeat signal.
-        let details: Vec<(SpacesMenuRow, SharedString, Option<SharedString>, bool)> = {
+        // (name, offline) per space row — presence reuses the session rows'
+        // heartbeat signal.
+        let details: Vec<(SpacesMenuRow, SharedString, bool)> = {
             let state = self.state.read(cx);
             rows.iter()
                 .map(|row| match row {
-                    SpacesMenuRow::All => {
-                        (row.clone(), SharedString::from("All agents"), None, false)
-                    }
+                    SpacesMenuRow::All => (row.clone(), SharedString::from("All agents"), false),
                     SpacesMenuRow::Space(id) => match state.space_row(id) {
-                        Some(space) => {
-                            let (tag, offline) = state.space_device_tag(space, now);
-                            (
-                                row.clone(),
-                                space.display_name().to_string().into(),
-                                Some(tag.into()),
-                                offline,
-                            )
-                        }
-                        None => (row.clone(), SharedString::from("?"), None, false),
+                        Some(space) => (
+                            row.clone(),
+                            space.display_name().to_string().into(),
+                            state.space_device_offline(space, now),
+                        ),
+                        None => (row.clone(), SharedString::from("?"), false),
                     },
                     SpacesMenuRow::AddSpace => {
-                        (row.clone(), SharedString::from("New agent…"), None, false)
+                        (row.clone(), SharedString::from("New agent…"), false)
                     }
-                    SpacesMenuRow::NewKeikiAgent => (
-                        row.clone(),
-                        SharedString::from("New Keiki agent…"),
-                        None,
-                        false,
-                    ),
+                    SpacesMenuRow::NewKeikiAgent => {
+                        (row.clone(), SharedString::from("New Keiki agent…"), false)
+                    }
                 })
                 .collect()
         };
 
-        let list =
-            div()
-                .id("spaces-menu-list")
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .max_h(px(SPACES_MENU_LIST_MAX_HEIGHT))
-                .overflow_y_scroll()
-                .track_scroll(&list_scroll)
-                .children(details.into_iter().enumerate().map(
-                    |(ix, (row, label, tag, offline))| {
+        let list = div()
+            .id("spaces-menu-list")
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .max_h(px(SPACES_MENU_LIST_MAX_HEIGHT))
+            .overflow_y_scroll()
+            .track_scroll(&list_scroll)
+            .children(
+                details
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (row, label, offline))| {
                         let is_selected = match &row {
                             SpacesMenuRow::All => filter.is_none(),
                             SpacesMenuRow::Space(id) => filter.as_deref() == Some(id.as_str()),
@@ -1096,28 +1016,19 @@ impl Shell {
                                 .text_color(theme.text_muted.opacity(0.8)),
                         )
                         .child(div().flex_1().min_w_0().truncate().child(label))
-                        .when_some(tag, |el, tag| {
+                        // Disconnected glyph, not the word (user request).
+                        .when(offline, |el| {
                             el.child(
-                                div()
+                                icon(icons::WIFI_OFF)
+                                    .size(px(12.0))
                                     .flex_none()
-                                    .text_size(crate::typography::ui_rems(10.0))
-                                    .text_color(theme.text_muted.opacity(0.45))
-                                    .child(tag),
+                                    .text_color(theme.warning.opacity(0.8)),
                             )
-                            // Disconnected glyph, not the word (user request).
-                            .when(offline, |el| {
-                                el.child(
-                                    icon(icons::WIFI_OFF)
-                                        .size(px(12.0))
-                                        .flex_none()
-                                        .text_color(theme.warning.opacity(0.8)),
-                                )
-                            })
                         })
                         // No check glyph — the selected row's wash (menu_row's
                         // active styling) is the selection signal.
-                    },
-                ));
+                    }),
+            );
 
         popover::popover_card(theme)
             // Match the trigger row as the sidebar is resized. Both live
@@ -3469,30 +3380,20 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_view_sections_keep_organization_sort_and_show_rows_separate() {
+    fn sidebar_view_sections_keep_organization_and_sort_rows_separate() {
         let organization_end = super::SIDEBAR_ORGANIZATION_ROWS;
-        let sort_end = organization_end + super::SIDEBAR_SORT_ROWS;
         assert_eq!(
             &super::SIDEBAR_VIEW_ROWS[..organization_end],
             &[
-                super::SidebarViewRow::ByDevice,
                 super::SidebarViewRow::ByAgent,
                 super::SidebarViewRow::InOneList,
             ]
         );
         assert_eq!(
-            &super::SIDEBAR_VIEW_ROWS[organization_end..sort_end],
+            &super::SIDEBAR_VIEW_ROWS[organization_end..],
             &[
                 super::SidebarViewRow::LastUpdated,
                 super::SidebarViewRow::Created,
-            ]
-        );
-        assert_eq!(
-            &super::SIDEBAR_VIEW_ROWS[sort_end..],
-            &[
-                super::SidebarViewRow::ShowBranch,
-                super::SidebarViewRow::ShowPullRequest,
-                super::SidebarViewRow::ShowHarness,
             ]
         );
     }

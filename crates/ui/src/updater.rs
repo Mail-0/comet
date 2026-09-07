@@ -98,7 +98,42 @@ pub fn start(cx: &mut Context<Shell>) -> Task<()> {
     })
 }
 
-async fn update(shell: &WeakEntity<Shell>, cx: &mut AsyncApp) -> anyhow::Result<()> {
+/// The "Check for Updates…" menu verb: the boot check without its delay, and
+/// with the quiet outcomes (already current, feed unreachable, unmanaged
+/// install) surfaced as a sidebar notice instead of a log line.
+pub fn check_now(cx: &mut Context<Shell>) -> Task<()> {
+    cx.spawn(async move |shell, cx| {
+        let result = update(&shell, cx).await;
+        shell
+            .update(cx, |shell, cx| {
+                match result {
+                    Ok(Outcome::Updating) => return,
+                    Ok(Outcome::UpToDate) => shell.set_sidebar_notice(format!(
+                        "Keiki {} is up to date",
+                        zeron_updater::running_version()
+                    )),
+                    Err(error) => {
+                        tracing::info!(%error, "manual update check failed");
+                        shell.set_update_flow(None, cx);
+                        shell.set_sidebar_notice(format!("Couldn't check for updates: {error}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+    })
+}
+
+/// What a completed check found.
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    /// No newer release; nothing changed on screen.
+    UpToDate,
+    /// A newer build was installed and the app is quitting to relaunch.
+    Updating,
+}
+
+async fn update(shell: &WeakEntity<Shell>, cx: &mut AsyncApp) -> anyhow::Result<Outcome> {
     let updater = zeron_updater::Updater::from_env()?;
     let current = zeron_updater::running_version().to_string();
     let available = cx
@@ -112,7 +147,7 @@ async fn update(shell: &WeakEntity<Shell>, cx: &mut AsyncApp) -> anyhow::Result<
             version = zeron_updater::running_version(),
             "already current"
         );
-        return Ok(());
+        return Ok(Outcome::UpToDate);
     };
     tracing::info!(
         from = zeron_updater::running_version(),
@@ -178,7 +213,7 @@ async fn update(shell: &WeakEntity<Shell>, cx: &mut AsyncApp) -> anyhow::Result<
     // before the new build takes them.
     zeron_updater::queue_relaunch(available.target);
     cx.update(|cx| cx.quit());
-    Ok(())
+    Ok(Outcome::Updating)
 }
 
 /// The blocking update modal: spinner, version line, and a progress bar. No

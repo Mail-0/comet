@@ -169,6 +169,8 @@ pub enum SidebarOrganization {
     /// Legacy persisted value. Project scope now belongs exclusively to the
     /// project selector and is normalized to [`Self::InOneList`] on load.
     ByProject,
+    /// Legacy persisted value. Device grouping is no longer offered in the
+    /// sidebar menu and is normalized to [`Self::InOneList`] on load.
     ByDevice,
     ByAgent,
     #[default]
@@ -679,7 +681,10 @@ pub fn badge_combo_on(mac: bool, combo: &str) -> String {
 impl UiSettings {
     /// Clamp widths into their legal ranges (also heals NaN to defaults).
     pub fn clamped(mut self) -> Self {
-        if self.sidebar_organization == SidebarOrganization::ByProject {
+        if matches!(
+            self.sidebar_organization,
+            SidebarOrganization::ByProject | SidebarOrganization::ByDevice
+        ) {
             self.sidebar_organization = SidebarOrganization::InOneList;
         }
         self.sidebar_width = clamp_or(
@@ -769,7 +774,7 @@ mod tests {
             sidebar_width: 300.0,
             sidebar_collapsed: true,
             sidebar_grouped: true,
-            sidebar_organization: SidebarOrganization::ByDevice,
+            sidebar_organization: SidebarOrganization::ByAgent,
             sidebar_sort: SidebarSort::Created,
             pinned_keiki_conversations: vec![],
             sidebar_show_harness: false,

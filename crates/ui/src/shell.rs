@@ -952,9 +952,10 @@ pub struct Shell {
     /// The self-update modal, `Some` from the moment a newer build starts
     /// downloading until the app quits to restart into it.
     update_flow: Option<crate::updater::UpdateFlow>,
-    /// Boot update check + install. Held here so closing the window cancels a
-    /// download rather than swapping a build out from under a dead window.
-    _update_task: Task<()>,
+    /// Update check + install (boot, or the "Check for Updates…" menu verb).
+    /// Held here so closing the window cancels a download rather than
+    /// swapping a build out from under a dead window.
+    update_task: Task<()>,
     /// Focus fallback (registered on first paint — [`Shell::new`] has no
     /// window): keyboard shortcuts dispatch through the window focus chain, so
     /// with nothing focused they go dead. Initial focus lands on the composer
@@ -999,6 +1000,15 @@ impl Shell {
 
     pub(crate) fn set_sidebar_notice(&mut self, notice: impl Into<SharedString>) {
         self.sidebar_notice = Some(notice.into());
+    }
+
+    /// "Check for Updates…": ignored while a download or install is already on
+    /// screen — replacing the task would cancel it mid-swap.
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if self.update_flow.is_some() {
+            return;
+        }
+        self.update_task = crate::updater::check_now(cx);
     }
 
     fn pinned_keiki_conversation_ids(&self) -> std::collections::HashSet<&str> {
@@ -1185,7 +1195,7 @@ impl Shell {
             splash: SplashPhase::Visible,
             splash_task: None,
             update_flow: None,
-            _update_task: update_task,
+            update_task,
             focus_sub: None,
             activation_sub: None,
             avatar_loads: std::collections::HashMap::new(),
@@ -6227,6 +6237,11 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
                 this.open_settings(SettingsSection::Appearance, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::app_menus::CheckForUpdates, _, cx| {
+                    this.check_for_updates(cx)
+                }),
+            )
             // Chat-scoped; `cycle_session` holds the guard
             // and says why.
             .on_action(cx.listener(|this, _: &NextSession, _, cx| this.cycle_session(true, cx)))

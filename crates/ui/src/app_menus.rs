@@ -22,6 +22,7 @@ actions!(
     zeron,
     [
         About,
+        CheckForUpdates,
         Quit,
         Hide,
         HideOthers,
@@ -112,6 +113,9 @@ pub fn app_menus() -> Vec<Menu> {
     let mut app_items = vec![
         // Placeholder until a real about dialog exists (explicitly disabled).
         MenuItem::action("About Keiki", About).disabled(true),
+        // Handled by the shell (`Shell::check_for_updates`), which owns the
+        // update task and modal.
+        MenuItem::action("Check for Updates…", CheckForUpdates),
         MenuItem::separator(),
         MenuItem::action("Settings", shell::OpenSettings),
         MenuItem::separator(),
@@ -203,6 +207,20 @@ mod tests {
                     if name.as_ref() == "Settings" && action.name() == shell::OpenSettings.name()
             )),
             "the application menu should expose Settings"
+        );
+    }
+
+    #[test]
+    fn app_menu_offers_check_for_updates() {
+        let menus = app_menus();
+        assert!(
+            menus[0].items.iter().any(|item| matches!(
+                item,
+                MenuItem::Action { name, action, .. }
+                    if name.as_ref() == "Check for Updates…"
+                        && action.name() == CheckForUpdates.name()
+            )),
+            "the application menu should expose Check for Updates"
         );
     }
 
