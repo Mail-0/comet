@@ -1,0 +1,44 @@
+name: tag-release
+
+# Bumping `[workspace.package] version` in Cargo.toml on main is the release.
+# When the bump lands, tag `v<version>` (if it doesn't exist yet) and kick the
+# release workflow on that tag. The dispatch is explicit because a tag pushed
+# with GITHUB_TOKEN doesn't fire `on: push: tags` by itself.
+
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.toml"]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: workspace version
+        id: version
+        run: |
+          ver="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "zeron") | .version')"
+          [ -n "$ver" ] || { echo "could not read the workspace version"; exit 1; }
+          echo "version=$ver" >>"$GITHUB_OUTPUT"
+      - name: tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ steps.version.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists — nothing to release"
+            exit 0
+          fi
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+          gh workflow run release.yml --ref "$TAG"
