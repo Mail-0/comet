@@ -1030,14 +1030,10 @@ impl AppState {
         true
     }
 
-    /// The "@ device" tag for a space — shared by the space pickers' rows,
-    /// the sidebar filter trigger, and the composer's space chip.
-    pub fn space_device_tag(&self, space: &Space, now: DateTime<Utc>) -> (String, bool) {
-        let offline = !self.device_online(&space.device_id, now);
-        let device = self
-            .device_name(&space.device_id)
-            .unwrap_or("Unknown device");
-        (format!("@ {device}"), offline)
+    /// Whether a space's host device is unreachable — shared by the space
+    /// pickers' rows and the sidebar filter trigger.
+    pub fn space_device_offline(&self, space: &Space, now: DateTime<Utc>) -> bool {
+        !self.device_online(&space.device_id, now)
     }
 
     /// Does the selected space's folder have git? Drives the branch picker and
