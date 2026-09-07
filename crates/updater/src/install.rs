@@ -66,9 +66,9 @@ impl InstallTarget {
     /// `<version>`/`<arch>` pair).
     pub fn asset_name(&self, version: &str) -> String {
         match self {
-            Self::AppImage { .. } => format!("zeron-{version}-linux-{}.AppImage", asset_arch()),
-            Self::LinuxBinary { .. } => format!("zeron-{version}-linux-{}.tar.gz", asset_arch()),
-            Self::MacBundle { .. } => format!("zeron-{version}-macos-{}.dmg", asset_arch()),
+            Self::AppImage { .. } => format!("keiki-{version}-linux-{}.AppImage", asset_arch()),
+            Self::LinuxBinary { .. } => format!("keiki-{version}-linux-{}.tar.gz", asset_arch()),
+            Self::MacBundle { .. } => format!("keiki-{version}-macos-{}.dmg", asset_arch()),
         }
     }
 
@@ -379,7 +379,7 @@ mod tests {
         );
         assert_eq!(
             target.asset_name("0.4.0"),
-            format!("zeron-0.4.0-linux-{}.AppImage", asset_arch())
+            format!("keiki-0.4.0-linux-{}.AppImage", asset_arch())
         );
     }
 
@@ -395,7 +395,7 @@ mod tests {
         );
         assert_eq!(
             target.asset_name("0.4.0"),
-            format!("zeron-0.4.0-linux-{}.tar.gz", asset_arch())
+            format!("keiki-0.4.0-linux-{}.tar.gz", asset_arch())
         );
     }
 
@@ -415,7 +415,7 @@ mod tests {
         );
         assert_eq!(
             target.asset_name("0.4.0"),
-            format!("zeron-0.4.0-macos-{}.dmg", asset_arch())
+            format!("keiki-0.4.0-macos-{}.dmg", asset_arch())
         );
     }
 
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn tarball_binary_is_found_one_directory_deep() {
         let dir = tempfile::tempdir().expect("dir");
-        let nested = dir.path().join("zeron-0.4.0-linux-x86_64");
+        let nested = dir.path().join("keiki-0.4.0-linux-x86_64");
         std::fs::create_dir(&nested).expect("nested");
         std::fs::write(nested.join("zeron.desktop"), b"").expect("desktop");
         std::fs::write(nested.join("zeron"), b"").expect("binary");

@@ -9,12 +9,12 @@ Every device runs a small engine that stores sessions on that device. A new inst
 ## Install and run locally (Linux)
 
 Linux releases are available as tarballs, `.deb` packages, and AppImages.
-Download the `zeron-<version>-linux-<arch>.tar.gz` asset from the GitHub
+Download the `keiki-<version>-linux-<arch>.tar.gz` asset from the GitHub
 Release to use the bundled installer:
 
 ```bash
-tar -xzf zeron-<version>-linux-<arch>.tar.gz
-cd zeron-<version>-linux-<arch>
+tar -xzf keiki-<version>-linux-<arch>.tar.gz
+cd keiki-<version>-linux-<arch>
 ./install.sh
 zeron status
 ```
@@ -24,8 +24,8 @@ directly (using `--appimage-extract-and-run` is only needed on systems without
 FUSE support):
 
 ```bash
-sudo apt install ./zeron-<version>-linux-<debarch>.deb
-./zeron-<version>-linux-<arch>.AppImage
+sudo apt install ./keiki-<version>-linux-<debarch>.deb
+./keiki-<version>-linux-<arch>.AppImage
 ```
 
 The installer starts the daemon immediately and keeps it running across reboots. No sign-in or sync configuration is required.

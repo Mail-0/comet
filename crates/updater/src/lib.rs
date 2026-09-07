@@ -271,7 +271,7 @@ mod tests {
                 "tag_name": "v0.4.0",
                 "name": "0.4.0",
                 "assets": [{
-                    "name": "zeron-0.4.0-linux-x86_64.tar.gz",
+                    "name": "keiki-0.4.0-linux-x86_64.tar.gz",
                     "url": "https://api.github.com/repos/Mail-0/comet/releases/assets/1",
                     "browser_download_url": "https://example.invalid/dl",
                     "size": 42

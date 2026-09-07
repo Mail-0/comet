@@ -17,7 +17,7 @@ FORMATS="${FORMATS:-tarball deb appimage}"
 ARCH="$(uname -m)"
 VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')"
 OUT_DIR="$ROOT/target/package"
-STAGE="$OUT_DIR/zeron-$VERSION-linux-$ARCH"
+STAGE="$OUT_DIR/keiki-$VERSION-linux-$ARCH"
 TARBALL="$STAGE.tar.gz"
 case "$ARCH" in
   x86_64) DEB_ARCH="amd64" ;;
@@ -47,8 +47,8 @@ else
   BIN="$ROOT/target/debug/zeron"
 fi
 
-rm -rf "$STAGE" "$TARBALL" "$OUT_DIR/zeron-$VERSION-linux-$DEB_ARCH.deb" \
-  "$OUT_DIR/zeron-$VERSION-linux-$ARCH.AppImage" "$OUT_DIR/.staging"
+rm -rf "$STAGE" "$TARBALL" "$OUT_DIR/keiki-$VERSION-linux-$DEB_ARCH.deb" \
+  "$OUT_DIR/keiki-$VERSION-linux-$ARCH.AppImage" "$OUT_DIR/.staging"
 mkdir -p "$OUT_DIR/.staging"
 trap 'rm -rf "$STAGE" "$OUT_DIR/.staging"' EXIT
 
@@ -131,8 +131,8 @@ Description: Keiki desktop agent client
 CONTROL
   rm -rf "$DEB_ROOT/debian"
   dpkg-deb --root-owner-group --build "$DEB_ROOT" \
-    "$OUT_DIR/zeron-$VERSION-linux-$DEB_ARCH.deb" >/dev/null
-  echo "packaged: $OUT_DIR/zeron-$VERSION-linux-$DEB_ARCH.deb"
+    "$OUT_DIR/keiki-$VERSION-linux-$DEB_ARCH.deb" >/dev/null
+  echo "packaged: $OUT_DIR/keiki-$VERSION-linux-$DEB_ARCH.deb"
 fi
 
 if has_format appimage; then
@@ -164,7 +164,7 @@ APPRUN
       -o "$TOOL"
     chmod 755 "$TOOL"
   fi
-  APPIMAGE="$OUT_DIR/zeron-$VERSION-linux-$ARCH.AppImage"
+  APPIMAGE="$OUT_DIR/keiki-$VERSION-linux-$ARCH.AppImage"
   APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" "$TOOL" "$APPDIR" "$APPIMAGE"
   echo "packaged: $APPIMAGE"
 fi
