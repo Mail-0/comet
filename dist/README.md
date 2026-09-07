@@ -9,16 +9,16 @@ PROFILE=debug scripts/package-linux.sh   # fast smoke package
 
 Produces three Linux artifacts (narrow with `FORMATS="tarball deb appimage"`):
 
-- `target/package/zeron-<version>-linux-<arch>.tar.gz`, containing:
+- `target/package/keiki-<version>-linux-<arch>.tar.gz`, containing:
   - `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
   - `zeron.desktop` — XDG desktop entry
   - `zeron.png` — 1024×1024 app icon
   - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
-- `target/package/zeron-<version>-linux-<debarch>.deb` — a Debian package
+- `target/package/keiki-<version>-linux-<debarch>.deb` — a Debian package
   installing the binary, desktop entry, icon, and font licenses under `/usr`.
   Its `Depends` come from `dpkg-shlibdeps` plus the two libraries gpui
   `dlopen`s (`libvulkan1`, `libwayland-client0`), which shlibdeps cannot see.
-- `target/package/zeron-<version>-linux-<arch>.AppImage` — a self-contained
+- `target/package/keiki-<version>-linux-<arch>.AppImage` — a self-contained
   AppImage for systems without a package manager.
 
 The `.deb` and AppImage payloads are stripped; the tarball's is not.
@@ -29,7 +29,7 @@ The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 ## macOS
 
 ```sh
-scripts/package-macos.sh    # → target/package/zeron-<version>-macos-<arch>.dmg
+scripts/package-macos.sh    # → target/package/keiki-<version>-macos-<arch>.dmg
 ```
 
 Builds the release binary, assembles `Keiki.app` (Info.plist + icns), ad-hoc

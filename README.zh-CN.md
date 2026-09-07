@@ -9,11 +9,11 @@
 ## 在本地安装运行（Linux）
 
 Linux 发行版提供 tarball、`.deb` 软件包和 AppImage。你可以从 GitHub
-Release 下载 `zeron-<version>-linux-<arch>.tar.gz`，解压后运行其中的安装脚本：
+Release 下载 `keiki-<version>-linux-<arch>.tar.gz`，解压后运行其中的安装脚本：
 
 ```bash
-tar -xzf zeron-<version>-linux-<arch>.tar.gz
-cd zeron-<version>-linux-<arch>
+tar -xzf keiki-<version>-linux-<arch>.tar.gz
+cd keiki-<version>-linux-<arch>
 ./install.sh
 zeron status
 ```
@@ -21,8 +21,8 @@ zeron status
 也可以使用 `apt` 安装对应的 `.deb`，或直接运行 AppImage：
 
 ```bash
-sudo apt install ./zeron-<version>-linux-<debarch>.deb
-./zeron-<version>-linux-<arch>.AppImage
+sudo apt install ./keiki-<version>-linux-<debarch>.deb
+./keiki-<version>-linux-<arch>.AppImage
 ```
 
 安装脚本会马上把守护进程拉起来，重启之后也会自己回来。不需要登录，也不需要配置同步。

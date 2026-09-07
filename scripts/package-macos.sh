@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # macOS packaging: build the release binary for the host arch and produce
-#   target/package/zeron-<version>-macos-<arch>.dmg          (user download)
+#   target/package/keiki-<version>-macos-<arch>.dmg          (user download)
 # containing Keiki.app (unsigned unless CODESIGN_IDENTITY is set).
 #
 # Usage: scripts/package-macos.sh
@@ -18,7 +18,7 @@ VERSION="$(grep -m1 '^version' "$ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')"
 ARCH="$(uname -m)" # arm64 on Apple silicon runners
 OUT_DIR="$ROOT/target/package"
 APP="$OUT_DIR/Keiki.app"
-DMG="$OUT_DIR/zeron-$VERSION-macos-$ARCH.dmg"
+DMG="$OUT_DIR/keiki-$VERSION-macos-$ARCH.dmg"
 
 cd "$ROOT"
 cargo build --release -p zeron
