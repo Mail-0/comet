@@ -27,6 +27,9 @@ pub const OAUTH_REDIRECT_URI: &str = "keiki://oauth/callback";
 const LOOPBACK_CALLBACK_PATH: &str = "/oauth/callback";
 const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CONVERSATION_MESSAGE_PAGE_LIMIT: u32 = 500;
+/// Server-side cap on `/agents/:id/conversations`; fetching everything for one
+/// agent walks `offset` in steps of this size until a short page comes back.
+const AGENT_CONVERSATION_PAGE_LIMIT: u32 = 200;
 const AVATAR_SIZE_BUCKETS: [u32; 9] = [16, 24, 32, 48, 64, 96, 128, 192, 256];
 
 pub fn avatar_size_bucket(requested: u32) -> u32 {
@@ -607,20 +610,70 @@ impl Client {
     pub fn list_conversations_authenticated_request(
         &self,
         access_token: &str,
-    ) -> reqwest::RequestBuilder {
-        self.http
-            .get(self.endpoint("/api/webapp/conversations"))
-            .bearer_auth(access_token)
+        limit: u32,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let mut endpoint = Url::parse(&self.endpoint("/api/webapp/conversations"))?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
+        Ok(self.http.get(endpoint).bearer_auth(access_token))
     }
 
+    /// The org's `limit` most recently active conversations across all agents.
     pub async fn list_conversations(
         &self,
         access_token: &str,
+        limit: u32,
     ) -> Result<Vec<ConversationSummary>, Error> {
         let response: ConversationsResponse = self
-            .send_json(self.list_conversations_authenticated_request(access_token))
+            .send_json(self.list_conversations_authenticated_request(access_token, limit)?)
             .await?;
         Ok(response.conversations)
+    }
+
+    pub fn list_agent_conversations_authenticated_request(
+        &self,
+        access_token: &str,
+        agent_id: &str,
+        limit: u32,
+        offset: u32,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let mut endpoint = Url::parse(&self.endpoint(&format!(
+            "/api/webapp/agents/{}/conversations",
+            utf8_percent_encode(agent_id, NON_ALPHANUMERIC)
+        )))?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("limit", &limit.to_string())
+            .append_pair("offset", &offset.to_string());
+        Ok(self.http.get(endpoint).bearer_auth(access_token))
+    }
+
+    /// Every conversation one agent has, newest first, paged through the
+    /// server's per-request cap.
+    pub async fn list_all_agent_conversations(
+        &self,
+        access_token: &str,
+        agent_id: &str,
+    ) -> Result<Vec<ConversationSummary>, Error> {
+        let mut conversations = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page: ConversationsResponse = self
+                .send_json(self.list_agent_conversations_authenticated_request(
+                    access_token,
+                    agent_id,
+                    AGENT_CONVERSATION_PAGE_LIMIT,
+                    offset,
+                )?)
+                .await?;
+            let page_len = page.conversations.len();
+            conversations.extend(page.conversations);
+            if page_len < AGENT_CONVERSATION_PAGE_LIMIT as usize {
+                return Ok(conversations);
+            }
+            offset += AGENT_CONVERSATION_PAGE_LIMIT;
+        }
     }
 
     pub fn search_conversations_authenticated_request(
@@ -1720,6 +1773,26 @@ mod tests {
         assert_eq!(
             search.url().as_str(),
             "https://keiki.example/api/webapp/conversations?q=refund+%2F+duplicate"
+        );
+
+        let recent = client
+            .list_conversations_authenticated_request("access-token", 20)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            recent.url().as_str(),
+            "https://keiki.example/api/webapp/conversations?limit=20"
+        );
+
+        let agent_page = client
+            .list_agent_conversations_authenticated_request("access-token", "agent/id", 200, 400)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            agent_page.url().as_str(),
+            "https://keiki.example/api/webapp/agents/agent%2Fid/conversations?limit=200&offset=400"
         );
 
         let message = client

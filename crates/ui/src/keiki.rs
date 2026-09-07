@@ -1,6 +1,6 @@
 //! Keiki cloud integration layered onto the existing Zeron state and views.
 
-use std::{future::Future, time::Duration};
+use std::{collections::HashSet, future::Future, time::Duration};
 
 use chrono::{DateTime, Utc};
 use gpui::{App, AsyncApp, Context, Entity, Task, TaskExt, WeakEntity};
@@ -23,6 +23,9 @@ pub const AGENT_PREFIX: &str = "keiki-agent:";
 pub const CHAT_PREFIX: &str = "keiki-conv:";
 pub const CREDENTIAL_KEY: &str = "keiki://oauth";
 pub const DEFAULT_API_URL: &str = "https://onkeiki.com";
+/// How many org-wide conversations each poll pulls for the sidebar; an
+/// agent's full history only loads once its group is expanded.
+pub const SIDEBAR_RECENT_CONVERSATIONS: u32 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
@@ -979,26 +982,61 @@ pub(crate) async fn refresh_keiki_snapshot(
                 state.keiki_client.clone()?,
                 state.keiki_token.clone()?,
                 state.keiki_credentials.clone()?,
+                state
+                    .keiki_expanded_agents
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
             ))
         })
         .map_err(|error| request_task_error("Keiki state read", error))?
         .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
-    let (client, token, credentials) = context;
-    let conversations = authorized(
+    let (client, token, credentials, expanded_agents) = context;
+    let mut conversations = authorized(
         &entity,
-        client,
-        token,
-        credentials,
+        client.clone(),
+        token.clone(),
+        credentials.clone(),
         "Keiki conversation list",
-        |client, access_token| async move { client.list_conversations(&access_token).await },
+        |client, access_token| async move {
+            client
+                .list_conversations(&access_token, SIDEBAR_RECENT_CONVERSATIONS)
+                .await
+        },
         cx,
     )
     .await?;
+    for agent_id in expanded_agents {
+        let agent_conversations = authorized(
+            &entity,
+            client.clone(),
+            token.clone(),
+            credentials.clone(),
+            "Keiki agent conversation list",
+            move |client, access_token| {
+                let agent_id = agent_id.clone();
+                async move {
+                    client
+                        .list_all_agent_conversations(&access_token, &agent_id)
+                        .await
+                }
+            },
+            cx,
+        )
+        .await?;
+        conversations.extend(agent_conversations);
+    }
     let spaces = agents.iter().map(map_agent).collect();
-    let chats = conversations.iter().filter_map(map_conversation).collect();
+    let mut seen = HashSet::new();
+    let chats = conversations
+        .iter()
+        .filter_map(map_conversation)
+        .filter(|chat| seen.insert(chat.id.clone()))
+        .collect();
     entity
         .update(cx, |state, cx| {
             state.apply_keiki_snapshot(spaces, chats);
+            state.keiki_expanding_agents.clear();
             cx.notify();
         })
         .map_err(|error| request_task_error("Keiki snapshot apply", error))

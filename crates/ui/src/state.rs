@@ -387,6 +387,11 @@ pub struct AppState {
     pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
     pub(crate) keiki_conversation: Option<KeikiConversation>,
+    /// Keiki agent ids whose sidebar group shows every conversation, not just
+    /// the ones inside the org-wide recent window. Session-only.
+    pub(crate) keiki_expanded_agents: HashSet<String>,
+    /// Agents whose first full-history fetch is still in flight.
+    pub(crate) keiki_expanding_agents: HashSet<String>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -440,6 +445,8 @@ impl AppState {
             keiki_error: None,
             keiki_task: None,
             keiki_conversation: None,
+            keiki_expanded_agents: HashSet::new(),
+            keiki_expanding_agents: HashSet::new(),
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
