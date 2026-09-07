@@ -7,6 +7,7 @@
 //! defaults, and loaded values are clamped so a hand-edited file can't wedge the
 //! layout.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -201,6 +202,10 @@ pub struct UiSettings {
     /// group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_keiki_conversations: Vec<String>,
+    /// Sidebar group keys (`group:<space>`, `copilot:all`) the user folded;
+    /// restored on boot so the sidebar reopens the way it was left.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub sidebar_collapsed_groups: BTreeSet<String>,
     /// Optional harness branding and repository metadata shown below each
     /// session title.
     pub sidebar_show_harness: bool,
@@ -277,6 +282,7 @@ impl Default for UiSettings {
             sidebar_organization: SidebarOrganization::InOneList,
             sidebar_sort: SidebarSort::LastUpdated,
             pinned_keiki_conversations: Vec::new(),
+            sidebar_collapsed_groups: BTreeSet::new(),
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
@@ -777,6 +783,7 @@ mod tests {
             sidebar_organization: SidebarOrganization::ByAgent,
             sidebar_sort: SidebarSort::Created,
             pinned_keiki_conversations: vec![],
+            sidebar_collapsed_groups: BTreeSet::from(["copilot:all".to_string()]),
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,

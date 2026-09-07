@@ -195,10 +195,6 @@ pub fn run_app(config: UiConfig) {
         cx.set_menus(app_menus::app_menus());
         cx.activate(true);
     });
-    // The window loop has exited: an update that queued a restart starts the
-    // freshly installed build now, once the engine's stores and its
-    // single-instance lock are released.
-    zeron_updater::run_pending_relaunch();
 }
 
 /// Open the 1320×880 main window (min 900×600) with [`shell::Shell`] as the

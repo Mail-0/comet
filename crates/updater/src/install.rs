@@ -16,7 +16,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 
 use crate::Error;
 
@@ -154,15 +153,12 @@ impl InstallTarget {
         }
     }
 
-    /// Command that starts the freshly installed build.
-    fn relaunch(&self) -> Command {
+    /// What to hand `gpui::App::restart` once the swap is done: the executable
+    /// on Linux, the `.app` bundle on macOS (gpui `open`s it).
+    pub fn launch_path(&self) -> &Path {
         match self {
-            Self::AppImage { path } | Self::LinuxBinary { path } => Command::new(path),
-            Self::MacBundle { bundle, .. } => {
-                let mut command = Command::new("open");
-                command.arg("-n").arg(bundle);
-                command
-            }
+            Self::AppImage { path } | Self::LinuxBinary { path } => path,
+            Self::MacBundle { bundle, .. } => bundle,
         }
     }
 }
@@ -331,30 +327,6 @@ fn asset_arch() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "arm64",
         (_, arch) => arch,
-    }
-}
-
-/// Restart queued by the UI. The window loop must exit first: the engine
-/// flushes its stores and releases the single-instance lock on quit, and the
-/// new process takes both.
-static PENDING_RELAUNCH: Mutex<Option<InstallTarget>> = Mutex::new(None);
-
-pub fn queue_relaunch(target: InstallTarget) {
-    if let Ok(mut pending) = PENDING_RELAUNCH.lock() {
-        *pending = Some(target);
-    }
-}
-
-/// Start the installed build, if an update queued a restart. Called by the
-/// binary right after the gpui application loop returns — the old process then
-/// exits normally, dropping its locks.
-pub fn run_pending_relaunch() {
-    let Some(target) = PENDING_RELAUNCH.lock().ok().and_then(|mut p| p.take()) else {
-        return;
-    };
-    match target.relaunch().spawn() {
-        Ok(child) => tracing::info!(pid = child.id(), "relaunched after update"),
-        Err(error) => tracing::error!(%error, "relaunch after update failed"),
     }
 }
 
