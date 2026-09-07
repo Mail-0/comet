@@ -793,8 +793,9 @@ pub struct Shell {
     /// Unarchive affordance and restores the dimmed harness mark (t3code's
     /// settled-row hover).
     pub(super) archived_hover: Option<String>,
-    /// Ephemeral collapsed project/device sections, keyed by organization + id.
-    pub(super) sidebar_collapsed_groups: std::collections::HashSet<String>,
+    /// Collapse keys of the sidebar groups drawn last frame — what the
+    /// Collapse-all toggle folds and what decides whether it reads as pressed.
+    pub(super) sidebar_group_keys: Vec<String>,
     /// In-flight disclosure tweens, shared by device groups and Archived.
     pub(super) sidebar_disclosure_motion:
         std::collections::HashMap<String, SidebarDisclosureMotion>,
@@ -1123,7 +1124,7 @@ impl Shell {
             archived_open: true,
             archived_shown: 0,
             archived_hover: None,
-            sidebar_collapsed_groups: std::collections::HashSet::new(),
+            sidebar_group_keys: Vec::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
             jump_hints: false,
             terminal: None,
@@ -3115,6 +3116,10 @@ impl Shell {
         status: zeron_proto::ChatIndicator,
         selected: bool,
         archived: bool,
+        // The row sits under an agent group header that already carries the
+        // agent's avatar, so the row skips its own and gives the title the
+        // full width.
+        grouped: bool,
         // This row's jump combo while the hint overlay is up. It takes the
         // corner outright — above hover and above the status word — so all
         // nine chips appear together instead of leaving a hole on whichever
@@ -3132,16 +3137,19 @@ impl Shell {
         let corner_hovered = self.chat_status_hover.as_deref() == Some(id.as_str());
         let keiki_agent_id =
             crate::keiki::conversation_locator(&id).and_then(|locator| locator.agent_id);
-        let keiki_avatar = keiki_agent_id.as_deref().map(|agent_id| {
-            self.avatar_element(
-                agent_id,
-                format!("keiki-avatar-{id}").into(),
-                crate::avatars::avatar_state(status),
-                SIDEBAR_KEIKI_AVATAR_SIZE,
-                theme,
-                cx,
-            )
-        });
+        let keiki_avatar = keiki_agent_id
+            .as_deref()
+            .filter(|_| !grouped)
+            .map(|agent_id| {
+                self.avatar_element(
+                    agent_id,
+                    format!("keiki-avatar-{id}").into(),
+                    crate::avatars::avatar_state(status),
+                    SIDEBAR_KEIKI_AVATAR_SIZE,
+                    theme,
+                    cx,
+                )
+            });
         // Send-truth overrides: a send unadopted past the grace window is
         // FAILED (explicit, with the transcript's retry affordance); a send
         // whose delivery path is degraded is QUEUED, not Working — the

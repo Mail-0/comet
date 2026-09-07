@@ -16,10 +16,28 @@ use zeron_proto::{ChatIndicator, Device, DriveEntry, DriveListing, FolderListing
 struct ActiveChatRow {
     status: ChatIndicator,
     chat: zeron_proto::Chat,
+    title: String,
     folder: String,
+    /// Line 1 carries a channel label (`API`) rather than a project name, and
+    /// gets the conversation's time-ago appended.
+    channel: bool,
     branch: Option<String>,
     change_request: Option<zeron_proto::ChangeRequestSummary>,
     group: Option<(String, String)>,
+}
+
+/// Split a Keiki conversation identity of the form `<channel>:<id>` (e.g.
+/// `api:715f16ca-…`) into an upper-cased channel label and the bare id. Names
+/// that aren't channel-qualified (a contact name, a phone number) pass through
+/// as `None`.
+fn split_channel_identity(title: &str) -> Option<(String, String)> {
+    let (channel, id) = title.split_once(':')?;
+    let is_channel = !channel.is_empty()
+        && channel
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    let is_id = !id.is_empty() && !id.chars().any(char::is_whitespace);
+    (is_channel && is_id).then(|| (channel.to_ascii_uppercase(), id.to_string()))
 }
 
 fn compare_sidebar_chats(
@@ -98,6 +116,31 @@ impl Render for SidebarViewOptionsTooltip {
     }
 }
 
+struct SidebarCollapseAllTooltip {
+    all_collapsed: bool,
+}
+
+impl Render for SidebarCollapseAllTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_raised)
+            .shadow_md()
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text)
+            .child(if self.all_collapsed {
+                "Expand all groups"
+            } else {
+                "Collapse all groups"
+            })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidebarViewRow {
     ByAgent,
@@ -113,6 +156,9 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 4] = [
     SidebarViewRow::Created,
 ];
 const SIDEBAR_ORGANIZATION_ROWS: usize = 2;
+/// How long after its last message a conversation keeps its agent group's
+/// avatar animating.
+const GROUP_RECENT_ACTIVITY: chrono::Duration = chrono::Duration::minutes(5);
 
 // With the search field and card insets, this lets the project picker grow to
 // roughly the same maximum footprint as the sidebar view-options menu while
@@ -586,6 +632,32 @@ impl Shell {
         cx.notify();
     }
 
+    /// Whether every group drawn last frame is folded — the Collapse-all
+    /// toggle's pressed state.
+    fn sidebar_all_collapsed(&self) -> bool {
+        !self.sidebar_group_keys.is_empty()
+            && self
+                .sidebar_group_keys
+                .iter()
+                .all(|key| self.settings.sidebar_collapsed_groups.contains(key))
+    }
+
+    /// Fold every visible group, or unfold them all when already folded. Runs
+    /// no disclosure tween: a whole-list snap reads cleaner than a dozen
+    /// staggered accordions.
+    fn toggle_sidebar_collapse_all(&mut self, cx: &mut Context<Self>) {
+        let expand = self.sidebar_all_collapsed();
+        for key in &self.sidebar_group_keys {
+            if expand {
+                self.settings.sidebar_collapsed_groups.remove(key);
+            } else {
+                self.settings.sidebar_collapsed_groups.insert(key.clone());
+            }
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
     fn activate_sidebar_view_row(&mut self, row: SidebarViewRow, cx: &mut Context<Self>) {
         match row {
             SidebarViewRow::ByAgent => {
@@ -887,6 +959,44 @@ impl Shell {
                     .size(px(16.0))
                     .text_color(theme.text_muted),
             );
+        let all_collapsed = self.sidebar_all_collapsed();
+        let collapse_trigger = div()
+            .id("sidebar-collapse-all")
+            .role(gpui::Role::Button)
+            .aria_label(if all_collapsed {
+                "Expand all groups"
+            } else {
+                "Collapse all groups"
+            })
+            .size(px(29.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .text_color(theme.text_muted)
+            .bg(if all_collapsed {
+                theme.glass_hover()
+            } else {
+                theme.glass_hover().opacity(0.0)
+            })
+            .hover(|el| el.bg(theme.glass_hover()))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar_collapse_all(cx)))
+            .tooltip(move |_, cx| {
+                cx.new(|_| SidebarCollapseAllTooltip { all_collapsed })
+                    .into()
+            })
+            .tooltip_show_delay(std::time::Duration::from_millis(350))
+            .child(
+                icon(if all_collapsed {
+                    icons::EXPAND_ARROWS
+                } else {
+                    icons::COLLAPSE_ARROWS
+                })
+                .size(px(16.0))
+                .text_color(theme.text_muted),
+            );
         let view_trigger = if self.sidebar_view_menu.get().is_some() {
             let closing = self.sidebar_view_menu.closing_since();
             let menu = self.render_sidebar_view_menu(theme, cx);
@@ -912,6 +1022,7 @@ impl Shell {
             .pb(px(4.0))
             .child(trigger)
             .child(view_trigger)
+            .child(collapse_trigger)
             .into_any_element()
     }
 
@@ -1163,17 +1274,24 @@ impl Shell {
                         }
                         SidebarOrganization::ByProject | SidebarOrganization::InOneList => None,
                     };
-                    // Under a group header the agent name is already the
-                    // title, so the row doesn't repeat it.
-                    let folder = if group.is_some() {
-                        String::new()
-                    } else {
-                        project
+                    let raw_title = chat.title.clone().unwrap_or_else(|| "New session".into());
+                    // `api:<id>` identities read as the channel label on line 1
+                    // and the bare id as the title. Under a group header the
+                    // agent name is already the title, so the row doesn't
+                    // repeat it.
+                    let channel = split_channel_identity(&raw_title);
+                    let (title, folder) = match &channel {
+                        Some((channel, id)) if group.is_some() => (id.clone(), channel.clone()),
+                        Some((channel, id)) => (id.clone(), format!("{channel} · {project}")),
+                        None if group.is_some() => (raw_title, String::new()),
+                        None => (raw_title, project),
                     };
                     ActiveChatRow {
                         status,
                         chat: chat.clone(),
+                        title,
                         folder,
+                        channel: channel.is_some(),
                         branch,
                         change_request,
                         group,
@@ -1219,6 +1337,7 @@ impl Shell {
         // chip always names the key that opens its row.
         let mut slot = 0usize;
         let mut rendered = Vec::new();
+        self.sidebar_group_keys = vec!["copilot:all".to_string()];
         let copilot_sessions = {
             let state = self.state.read(cx);
             let sidebar_statuses: std::collections::HashMap<&str, ChatIndicator> = state
@@ -1266,6 +1385,7 @@ impl Shell {
                 status,
                 is_selected,
                 false,
+                false,
                 jump_label,
                 theme,
                 cx,
@@ -1276,7 +1396,10 @@ impl Shell {
                 element,
             ));
         }
-        let copilot_open = !self.sidebar_collapsed_groups.contains("copilot:all");
+        let copilot_open = !self
+            .settings
+            .sidebar_collapsed_groups
+            .contains("copilot:all");
         let copilot_body_height = SIDEBAR_DISCLOSURE_BODY_INSET
             + copilot_rows
                 .iter()
@@ -1320,17 +1443,23 @@ impl Shell {
         )
         .id("sidebar-group-copilot")
         .on_click(cx.listener(move |this, _, _, cx| {
-            let was_open = !this.sidebar_collapsed_groups.contains("copilot:all");
+            let was_open = !this
+                .settings
+                .sidebar_collapsed_groups
+                .contains("copilot:all");
             this.begin_sidebar_disclosure_motion(
                 "group:copilot:all",
                 if was_open { copilot_body_height } else { 0.0 },
                 if was_open { 0.0 } else { copilot_body_height },
             );
             if was_open {
-                this.sidebar_collapsed_groups.insert("copilot:all".into());
+                this.settings
+                    .sidebar_collapsed_groups
+                    .insert("copilot:all".into());
             } else {
-                this.sidebar_collapsed_groups.remove("copilot:all");
+                this.settings.sidebar_collapsed_groups.remove("copilot:all");
             }
+            this.schedule_save(cx);
             cx.notify();
         }));
         let copilot_body = div()
@@ -1365,10 +1494,16 @@ impl Shell {
         for (group, rows) in groups {
             let group_state = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
             {
-                crate::avatars::group_avatar_state(
-                    rows.iter()
-                        .map(|row| crate::avatars::avatar_state(row.status)),
-                )
+                // A conversation that just moved counts as live for the
+                // group even though Keiki reports its status as Completed.
+                crate::avatars::group_avatar_state(rows.iter().map(|row| {
+                    let updated_at = row.chat.last_message_at.unwrap_or(row.chat.created_at);
+                    if now.signed_duration_since(updated_at) < GROUP_RECENT_ACTIVITY {
+                        keiki_model::AvatarState::Running
+                    } else {
+                        crate::avatars::avatar_state(row.status)
+                    }
+                }))
             } else {
                 keiki_model::AvatarState::Idle
             };
@@ -1377,13 +1512,22 @@ impl Shell {
                 let ActiveChatRow {
                     status,
                     chat,
+                    title,
                     folder,
+                    channel,
                     branch,
                     change_request,
-                    group: _,
+                    group,
                 } = row;
                 let time_ago: SharedString =
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
+                let folder: SharedString = if channel && time_ago.as_ref() == "now" {
+                    format!("{folder} · just now").into()
+                } else if channel {
+                    format!("{folder} · {time_ago} ago").into()
+                } else {
+                    folder.into()
+                };
                 let is_selected = selected.as_deref() == Some(chat.id.as_str());
                 let harness = self
                     .settings
@@ -1402,18 +1546,16 @@ impl Shell {
                 slot += 1;
                 let element = self.render_chat_row(
                     chat.id.clone(),
-                    transcript::single_line(
-                        &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                    )
-                    .into(),
+                    transcript::single_line(&title).into(),
                     time_ago,
-                    folder.into(),
+                    folder,
                     branch.map(SharedString::from),
                     change_request,
                     harness,
                     status,
                     is_selected,
                     false,
+                    group.is_some(),
                     jump_label,
                     theme,
                     cx,
@@ -1432,7 +1574,11 @@ impl Shell {
             };
             let collapse_key = format!("{organization}:{key}");
             let motion_key = format!("group:{collapse_key}");
-            let collapsed = self.sidebar_collapsed_groups.contains(&collapse_key);
+            self.sidebar_group_keys.push(collapse_key.clone());
+            let collapsed = self
+                .settings
+                .sidebar_collapsed_groups
+                .contains(&collapse_key);
             let row_count = rendered_rows.len();
             let body_height = SIDEBAR_DISCLOSURE_BODY_INSET
                 + rendered_rows
@@ -1475,17 +1621,21 @@ impl Shell {
                 sidebar_disclosure_header(theme, visible_label, chevron, group_avatar, None)
                     .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        let was_open = !this.sidebar_collapsed_groups.contains(&toggle_key);
+                        let was_open =
+                            !this.settings.sidebar_collapsed_groups.contains(&toggle_key);
                         this.begin_sidebar_disclosure_motion(
                             &toggle_motion_key,
                             if was_open { body_height } else { 0.0 },
                             if was_open { 0.0 } else { body_height },
                         );
                         if was_open {
-                            this.sidebar_collapsed_groups.insert(toggle_key.clone());
+                            this.settings
+                                .sidebar_collapsed_groups
+                                .insert(toggle_key.clone());
                         } else {
-                            this.sidebar_collapsed_groups.remove(&toggle_key);
+                            this.settings.sidebar_collapsed_groups.remove(&toggle_key);
                         }
+                        this.schedule_save(cx);
                         cx.notify();
                     }));
             let body = self.render_sidebar_disclosure_body(
@@ -3254,8 +3404,25 @@ mod tests {
 
     use super::{
         compare_sidebar_chats, copilot_chats, is_copilot_chat, promote_local_device_group,
-        promote_pinned_groups,
+        promote_pinned_groups, split_channel_identity,
     };
+
+    #[test]
+    fn channel_identities_split_into_label_and_id() {
+        assert_eq!(
+            split_channel_identity("api:715f16ca-811c-44b1"),
+            Some(("API".into(), "715f16ca-811c-44b1".into()))
+        );
+        assert_eq!(
+            split_channel_identity("web-chat:abc"),
+            Some(("WEB-CHAT".into(), "abc".into()))
+        );
+        assert_eq!(split_channel_identity("+1 415 555 0100"), None);
+        assert_eq!(split_channel_identity("Jane Doe"), None);
+        assert_eq!(split_channel_identity("Re: hello"), None);
+        assert_eq!(split_channel_identity("api:"), None);
+    }
+
     use crate::settings::SidebarSort;
 
     fn group(device: &str, value: u8) -> (Option<(String, String)>, Vec<u8>) {

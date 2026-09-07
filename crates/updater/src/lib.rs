@@ -8,9 +8,9 @@
 //!    file swap, or a macOS bundle replacement from the dmg;
 //! 2. [`Updater::download`] streams that asset to a temp file, reporting bytes
 //!    for the update modal's progress;
-//! 3. [`InstallTarget::install`] swaps the new build in place, and
-//!    [`queue_relaunch`] + [`run_pending_relaunch`] restart the app once the
-//!    window loop has exited.
+//! 3. [`InstallTarget::install`] swaps the new build in place, and the UI
+//!    hands [`InstallTarget::launch_path`] to `gpui::App::restart`, which
+//!    starts it once this process has exited.
 //!
 //! Nothing here is macOS/Linux-specific at the API level: an installation the
 //! updater cannot replace (a `.deb` under `/usr/bin`, a `cargo run` build)
@@ -19,7 +19,7 @@
 
 mod install;
 
-pub use install::{InstallTarget, queue_relaunch, run_pending_relaunch};
+pub use install::InstallTarget;
 
 use std::path::{Path, PathBuf};
 

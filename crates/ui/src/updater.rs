@@ -2,8 +2,8 @@
 //! build than [`zeron_updater::running_version`] is published; if one is (and
 //! this installation is one the updater can replace — see
 //! [`zeron_updater::InstallTarget`]), the shell blocks the window with a
-//! progress modal, downloads and installs the build, then quits so
-//! [`zeron_updater::run_pending_relaunch`] can start the new one.
+//! progress modal, downloads and installs the build, then restarts into it
+//! (`gpui::App::restart`).
 //!
 //! Everything that can fail here is non-fatal: a missing feed, a private
 //! release, or a package-managed install just leaves the app running the
@@ -208,11 +208,15 @@ async fn update(shell: &WeakEntity<Shell>, cx: &mut AsyncApp) -> anyhow::Result<
         shell.set_update_phase(Phase::Restarting, cx);
     })?;
     cx.background_executor().timer(RESTART_HOLD).await;
-    // The relaunch itself happens after the window loop exits (`run_app`), so
-    // the engine has flushed its stores and dropped the single-instance lock
-    // before the new build takes them.
-    zeron_updater::queue_relaunch(available.target);
-    cx.update(|cx| cx.quit());
+    // gpui's restart spawns a detached waiter that launches the path only
+    // after this process is gone, so the engine has flushed its stores and
+    // dropped the single-instance lock first. (`quit` alone never returns
+    // from the run loop on macOS — `NSApp terminate:` exits the process.)
+    let launch_path = available.target.launch_path().to_path_buf();
+    cx.update(|cx| {
+        cx.set_restart_path(launch_path);
+        cx.restart();
+    });
     Ok(Outcome::Updating)
 }
 
