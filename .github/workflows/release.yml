@@ -7,9 +7,10 @@ name: release
 # The Release is the only distribution channel — Linux builds are available as
 # tarballs, Debian packages, and AppImages.
 #
-# Trigger: push a tag `v<version>` matching the workspace version in
-# Cargo.toml (bump it in the same commit), or run manually via
-# workflow_dispatch (builds + uploads artifacts, no Release published).
+# Trigger: tag-release.yml tags `v<version>` when a Cargo.toml version bump
+# lands on main and dispatches this workflow on that tag. Pushing such a tag
+# by hand works too. A workflow_dispatch on a branch ref only builds and
+# uploads artifacts (no Release published).
 
 on:
   push:
