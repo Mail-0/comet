@@ -2313,7 +2313,7 @@ impl Render for AppearancePage {
                                 section.child(
                                     widgets::error_strip(
                                         &theme,
-                                        "This font could not be loaded. Comet is using Geist.",
+                                        "This font could not be loaded. Keiki is using Geist.",
                                     )
                                     .font_family(fixed.clone()),
                                 )

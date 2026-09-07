@@ -57,7 +57,7 @@ impl UpdateFlow {
                 None => format!("Downloading… {}", megabytes(*received)),
             },
             Phase::Installing => "Installing…".to_string(),
-            Phase::Restarting => "Restarting Comet…".to_string(),
+            Phase::Restarting => "Restarting Keiki…".to_string(),
         }
     }
 
@@ -266,7 +266,7 @@ pub fn render_modal(
         )
         .child(popover::dialog_body(
             &theme,
-            SharedString::from("Comet will restart when the update is ready."),
+            SharedString::from("Keiki will restart when the update is ready."),
         ))
         .into_any_element();
     popover::modal("update-modal", viewport, card)

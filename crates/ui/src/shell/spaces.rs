@@ -1133,8 +1133,8 @@ impl Shell {
             chats
                 .into_iter()
                 .map(|(status, chat)| {
-                    // Line 1 is "project @ device" (t3code's project row);
-                    // project-less sessions read as their home-dir cwd `~`.
+                    // Line 1 names the agent; project-less sessions read as
+                    // their home-dir cwd `~`.
                     let space = state.space_for_chat(&chat);
                     let project = match (space, chat.space_id.as_deref()) {
                         (Some(space), _) => space.display_name().to_string(),
@@ -1145,11 +1145,6 @@ impl Shell {
                         .device_name(&chat.device_id)
                         .unwrap_or("Unknown device")
                         .to_string();
-                    let mut folder = project.clone();
-                    // Unknown device → no fragment, same as the archived list.
-                    if state.device_name(&chat.device_id).is_some() {
-                        folder = format!("{folder} @ {device}");
-                    }
                     // The branch shows whenever the engine has stamped one —
                     // main-checkout sessions included, not just worktrees.
                     let branch = crate::change_requests::conversation_branch(&chat, &state.spaces)
@@ -1167,6 +1162,13 @@ impl Shell {
                             })
                         }
                         SidebarOrganization::ByProject | SidebarOrganization::InOneList => None,
+                    };
+                    // Under a group header the agent name is already the
+                    // title, so the row doesn't repeat it.
+                    let folder = if group.is_some() {
+                        String::new()
+                    } else {
+                        project
                     };
                     ActiveChatRow {
                         status,
