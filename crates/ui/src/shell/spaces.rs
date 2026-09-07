@@ -214,7 +214,6 @@ fn copilot_chats<'a>(
 pub(super) enum SpacesMenuRow {
     All,
     Space(String),
-    AddSpace,
     NewKeikiAgent,
 }
 
@@ -440,7 +439,7 @@ impl Shell {
     // ---- sidebar sections ----
 
     /// The filter's display rows: "All projects", then spaces matching the
-    /// search (ranked — `popover::filter_indices`), then "New project…".
+    /// search (ranked — `popover::filter_indices`), then "New agent…".
     /// "All" only shows on an empty query (searching means hunting a space).
     fn spaces_menu_rows(&self, cx: &App) -> Vec<SpacesMenuRow> {
         let query = self
@@ -463,7 +462,6 @@ impl Shell {
                 .into_iter()
                 .map(|ix| SpacesMenuRow::Space(spaces[ix].id.clone())),
         );
-        rows.push(SpacesMenuRow::AddSpace);
         if state.keiki_status == crate::keiki::SessionStatus::SignedIn {
             rows.push(SpacesMenuRow::NewKeikiAgent);
         }
@@ -519,10 +517,6 @@ impl Shell {
         match row {
             SpacesMenuRow::All => self.set_space_filter(None, cx),
             SpacesMenuRow::Space(id) => self.set_space_filter(Some(id), cx),
-            SpacesMenuRow::AddSpace => {
-                self.close_spaces_menu(cx);
-                self.open_add_space(cx);
-            }
             SpacesMenuRow::NewKeikiAgent => {
                 self.close_spaces_menu(cx);
                 window.dispatch_action(Box::new(crate::shell::NewKeikiAgent), cx);
@@ -922,7 +916,7 @@ impl Shell {
     }
 
     /// The dropdown card: search on top, "All projects" + space rows (check on
-    /// the active filter; right-click for rename/remove) + "New project…".
+    /// the active filter; right-click for rename/remove) + "New agent…".
     fn render_spaces_menu(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let (search, active, focus, list_scroll) = {
             let Some(menu) = self.spaces_menu.get() else {
@@ -953,11 +947,8 @@ impl Shell {
                         ),
                         None => (row.clone(), SharedString::from("?"), false),
                     },
-                    SpacesMenuRow::AddSpace => {
-                        (row.clone(), SharedString::from("New agent…"), false)
-                    }
                     SpacesMenuRow::NewKeikiAgent => {
-                        (row.clone(), SharedString::from("New Keiki agent…"), false)
+                        (row.clone(), SharedString::from("New agent…"), false)
                     }
                 })
                 .collect()
@@ -979,10 +970,10 @@ impl Shell {
                         let is_selected = match &row {
                             SpacesMenuRow::All => filter.is_none(),
                             SpacesMenuRow::Space(id) => filter.as_deref() == Some(id.as_str()),
-                            SpacesMenuRow::AddSpace | SpacesMenuRow::NewKeikiAgent => false,
+                            SpacesMenuRow::NewKeikiAgent => false,
                         };
                         let leading = match &row {
-                            SpacesMenuRow::AddSpace | SpacesMenuRow::NewKeikiAgent => icons::PLUS,
+                            SpacesMenuRow::NewKeikiAgent => icons::PLUS,
                             _ => icons::FOLDER,
                         };
                         let menu_space = match &row {

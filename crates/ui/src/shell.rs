@@ -4147,7 +4147,7 @@ impl Shell {
                     cx.notify();
                 }
             }))
-            .child(popover::dialog_title(&theme, "New Keiki agent"))
+            .child(popover::dialog_title(&theme, "New agent"))
             .child(div().mt(px(6.0)).child(popover::dialog_body(
                 &theme,
                 "Choose a template, then customize the agent name and line.",
@@ -6271,11 +6271,11 @@ impl Render for Shell {
                 cx.listener(|this, event, _, cx| this.on_modifiers_changed(event, cx)),
             )
             .on_action(cx.listener(|this, _: &AddSpacePalette, _, cx| {
-                if this.add_space.is_some() {
-                    this.add_space = None;
+                if this.keiki_agent_dialog.is_some() {
+                    this.keiki_agent_dialog = None;
                     cx.notify();
                 } else {
-                    this.open_add_space(cx);
+                    this.open_keiki_agent_dialog(cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NewKeikiAgent, _, cx| {
