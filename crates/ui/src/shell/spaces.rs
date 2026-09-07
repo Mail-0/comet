@@ -125,6 +125,7 @@ const SPACES_MENU_LIST_MAX_HEIGHT: f32 = 336.0;
 const SIDEBAR_SECTION_GAP: f32 = 12.0;
 const SIDEBAR_DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
 const SIDEBAR_DISCLOSURE_BODY_INSET: f32 = 4.0;
+const SIDEBAR_HISTORY_TOGGLE_HEIGHT: f32 = 32.0;
 const SIDEBAR_DISCLOSURE_SECTION_HEIGHT: f32 =
     SIDEBAR_SECTION_GAP + SIDEBAR_DISCLOSURE_HEADER_HEIGHT;
 pub(super) const SIDEBAR_DISCLOSURE_TWEEN_GRACE: std::time::Duration =
@@ -1434,19 +1435,30 @@ impl Shell {
             let motion_key = format!("group:{collapse_key}");
             let collapsed = self.sidebar_collapsed_groups.contains(&collapse_key);
             let row_count = rendered_rows.len();
+            let history_toggle = (self.settings.sidebar_organization
+                == SidebarOrganization::ByAgent)
+                .then(|| key.strip_prefix(crate::keiki::AGENT_PREFIX))
+                .flatten()
+                .map(|agent_id| self.render_agent_history_toggle(agent_id, theme, cx));
             let body_height = SIDEBAR_DISCLOSURE_BODY_INSET
                 + rendered_rows
                     .iter()
                     .map(|(_, height, _)| *height)
                     .sum::<f32>()
-                + SIDEBAR_LIST_GAP * row_count.saturating_sub(1) as f32;
+                + SIDEBAR_LIST_GAP * row_count.saturating_sub(1) as f32
+                + if history_toggle.is_some() {
+                    SIDEBAR_HISTORY_TOGGLE_HEIGHT + SIDEBAR_LIST_GAP
+                } else {
+                    0.0
+                };
             let body = div()
                 .w_full()
                 .flex()
                 .flex_col()
                 .pt(px(SIDEBAR_DISCLOSURE_BODY_INSET))
                 .gap(px(SIDEBAR_LIST_GAP))
-                .children(rendered_rows.into_iter().map(|(_, _, row)| row));
+                .children(rendered_rows.into_iter().map(|(_, _, row)| row))
+                .children(history_toggle);
             let visible_label: SharedString = if collapsed {
                 format!("{label} ({row_count})").into()
             } else {
@@ -1507,6 +1519,85 @@ impl Shell {
             rendered.push((format!("g:{collapse_key}"), height, element));
         }
         rendered
+    }
+
+    /// Footer under a Keiki agent group: the poll only carries the org's
+    /// recent conversations, so this swaps the group between that window and
+    /// the agent's full history.
+    fn render_agent_history_toggle(
+        &self,
+        agent_id: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (expanded, loading) = {
+            let state = self.state.read(cx);
+            (
+                state.keiki_expanded_agents.contains(agent_id),
+                state.keiki_expanding_agents.contains(agent_id),
+            )
+        };
+        let (label, glyph): (SharedString, &str) = if loading {
+            ("Loading…".into(), crate::icons::REFRESH)
+        } else if expanded {
+            ("Show recent only".into(), crate::icons::WINDOW_MINIMIZE)
+        } else {
+            ("Load all conversations".into(), crate::icons::PLUS)
+        };
+        let agent_id = agent_id.to_string();
+        div()
+            .id(SharedString::from(format!("agent-history-{agent_id}")))
+            .h(px(SIDEBAR_HISTORY_TOGGLE_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .px(px(Theme::SPACE_SM))
+            .rounded(px(6.0))
+            .text_size(crate::typography::ui_rems(13.0))
+            .text_color(theme.text_muted.opacity(0.55))
+            .when(!loading, |el| {
+                el.cursor_pointer()
+                    .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_agent_history(agent_id.clone(), cx)
+                    }))
+            })
+            .child(crate::icons::icon(glyph).size(px(14.0)).flex_none())
+            .child(label)
+            .into_any_element()
+    }
+
+    fn toggle_agent_history(&mut self, agent_id: String, cx: &mut Context<Self>) {
+        let expanding = self.state.update(cx, |state, cx| {
+            let expanding = state.keiki_expanded_agents.insert(agent_id.clone());
+            if expanding {
+                state.keiki_expanding_agents.insert(agent_id.clone());
+            } else {
+                state.keiki_expanded_agents.remove(&agent_id);
+            }
+            cx.notify();
+            expanding
+        });
+        let state = self.state.downgrade();
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = crate::keiki::refresh_keiki_snapshot(state.clone(), cx).await {
+                tracing::warn!(%error, %agent_id, "Keiki agent history refresh failed");
+                if expanding
+                    && let Err(error) = state.update(cx, |state, cx| {
+                        state.keiki_expanded_agents.remove(&agent_id);
+                        state.keiki_expanding_agents.remove(&agent_id);
+                        cx.notify();
+                    })
+                {
+                    tracing::warn!(%error, "Keiki state update failed");
+                }
+            }
+            if let Err(error) = this.update(cx, |_, cx| cx.notify()) {
+                tracing::debug!(%error, "shell dropped before agent history refresh finished");
+            }
+        })
+        .detach();
     }
 
     /// The sidebar's archived shelf — a direct port of t3code's settled
