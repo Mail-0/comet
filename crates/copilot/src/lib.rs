@@ -359,6 +359,10 @@ pub struct Interrupt {
     pub reason: String,
     #[serde(default)]
     pub message: Option<String>,
+    /// TanStack's `{ kind, toolName, input }` — the tool call behind the
+    /// interrupt, which is what the user actually needs to see.
+    #[serde(default)]
+    pub metadata: Option<Value>,
 }
 
 impl AgUiEvent {

@@ -392,6 +392,10 @@ pub struct AppState {
     pub(crate) keiki_expanded_agents: HashSet<String>,
     /// Agents whose first full-history fetch is still in flight.
     pub(crate) keiki_expanding_agents: HashSet<String>,
+    /// Conversations opened from the sidebar's `+` that Keiki has not seen
+    /// yet: they exist only here until the first turn runs, so a snapshot
+    /// must not drop them.
+    pub(crate) keiki_draft_chats: HashSet<String>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -447,6 +451,7 @@ impl AppState {
             keiki_conversation: None,
             keiki_expanded_agents: HashSet::new(),
             keiki_expanding_agents: HashSet::new(),
+            keiki_draft_chats: HashSet::new(),
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -618,8 +623,15 @@ impl AppState {
             self.selected_space = self.first_space_on_picked_device();
         }
 
-        self.chats
-            .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        let incoming_ids = chats
+            .iter()
+            .map(|chat| chat.id.clone())
+            .collect::<HashSet<_>>();
+        self.keiki_draft_chats
+            .retain(|chat_id| !incoming_ids.contains(chat_id));
+        self.chats.retain(|chat| {
+            !crate::keiki::is_keiki_chat(&chat.id) || self.keiki_draft_chats.contains(&chat.id)
+        });
         self.chats.extend(chats);
         sort_chats(&mut self.chats);
         if let Some(selected) = &self.selected_chat
@@ -631,6 +643,24 @@ impl AppState {
             self.transcript_replayed = false;
             self.transcript_task = None;
         }
+    }
+
+    /// Open a fresh conversation with a Keiki agent under an
+    /// `api:{agent_id}:{uuid}` identity. The row is local until the first
+    /// turn runs and the next snapshot reports it.
+    pub fn create_keiki_draft_chat(&mut self, agent_id: &str) -> Option<String> {
+        let space_id = crate::keiki::agent_id(agent_id);
+        let space = self.spaces.iter().find(|space| space.id == space_id)?;
+        let chat = crate::keiki::draft_conversation(agent_id, space.display_name());
+        let chat_id = chat.id.clone();
+        self.keiki_draft_chats.insert(chat_id.clone());
+        self.chats.push(chat);
+        sort_chats(&mut self.chats);
+        Some(chat_id)
+    }
+
+    pub fn is_keiki_draft_chat(&self, chat_id: &str) -> bool {
+        self.keiki_draft_chats.contains(chat_id)
     }
 
     /// Remove all rows owned by Keiki without changing the engine snapshot
@@ -657,6 +687,7 @@ impl AppState {
 
         self.chats
             .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
+        self.keiki_draft_chats.clear();
         self.keiki_conversation = None;
         if selected_keiki_chat {
             self.selected_chat = None;
@@ -677,6 +708,9 @@ impl AppState {
         });
 
         self.spaces.retain(|space| space.id != space_id);
+        let draft_prefix = crate::keiki::chat_id(agent_id, "");
+        self.keiki_draft_chats
+            .retain(|chat_id| !chat_id.starts_with(&draft_prefix));
         self.chats
             .retain(|chat| chat.space_id.as_deref() != Some(space_id.as_str()));
         if self.selected_space.as_deref() == Some(space_id.as_str()) {
@@ -2464,6 +2498,44 @@ mod tests {
                 .iter()
                 .any(|chat| chat.id == "keiki-conv:old:+1555")
         );
+    }
+
+    #[test]
+    fn draft_keiki_chat_uses_api_identity_and_survives_snapshots() {
+        let mut state = AppState::new();
+        let mut agent = space("keiki-agent:agent-1", crate::keiki::DEVICE_ID, "Agent", 1);
+        agent.name = Some("Agent".into());
+        state.apply_keiki_snapshot(vec![agent.clone()], vec![]);
+
+        assert_eq!(state.create_keiki_draft_chat("missing"), None);
+        let chat_id = state.create_keiki_draft_chat("agent-1").expect("draft");
+        let locator = crate::keiki::conversation_locator(&chat_id).expect("locator");
+        assert_eq!(locator.agent_id.as_deref(), Some("agent-1"));
+        assert!(locator.identity.starts_with("api:agent-1:"));
+        assert!(crate::keiki::is_desktop_conversation(&chat_id));
+        assert!(state.is_keiki_draft_chat(&chat_id));
+        let row = state
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .expect("row");
+        assert_eq!(row.space_id.as_deref(), Some("keiki-agent:agent-1"));
+
+        // Keiki doesn't know about it yet: the poll must not drop it.
+        state.apply_keiki_snapshot(vec![agent.clone()], vec![]);
+        assert!(state.chats.iter().any(|chat| chat.id == chat_id));
+
+        // Once the platform reports it, the poll owns the row.
+        let mut stored = chat(&chat_id, 5, None);
+        stored.device_id = crate::keiki::DEVICE_ID.into();
+        state.apply_keiki_snapshot(vec![agent], vec![stored]);
+        assert!(!state.is_keiki_draft_chat(&chat_id));
+        assert_eq!(
+            state.chats.iter().filter(|chat| chat.id == chat_id).count(),
+            1
+        );
+        state.apply_keiki_snapshot(vec![], vec![]);
+        assert!(!state.chats.iter().any(|chat| chat.id == chat_id));
     }
 
     #[test]

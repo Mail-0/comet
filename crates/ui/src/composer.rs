@@ -4664,6 +4664,11 @@ impl Composer {
     fn send_blocked(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         if let Some(selected_chat) = state.selected_chat.as_deref() {
+            if crate::keiki::is_desktop_conversation(selected_chat) {
+                // No contact on the other end: the operator's words go
+                // straight to the agent as a steered turn.
+                return state.keiki_conversation().is_none();
+            }
             if crate::keiki::is_keiki_chat(selected_chat) {
                 return state
                     .keiki_conversation()
@@ -4696,14 +4701,17 @@ impl Composer {
         let text = self.input.read(cx).text().trim().to_string();
         let no_content =
             !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
-        if self
-            .state
-            .read(cx)
-            .selected_chat
-            .as_deref()
-            .is_some_and(crate::keiki::is_keiki_chat)
+        let selected_chat = self.state.read(cx).selected_chat.clone();
+        if let Some(selected_chat) = selected_chat.as_deref()
+            && crate::keiki::is_keiki_chat(selected_chat)
         {
-            if !no_content && !self.send_blocked(cx) {
+            if no_content || self.send_blocked(cx) {
+                return;
+            }
+            if crate::keiki::is_desktop_conversation(selected_chat) {
+                self.clear_after_keiki_send(cx);
+                crate::keiki::steer(self.state.clone(), text, cx);
+            } else {
                 crate::keiki::send(self.state.clone(), text, cx.entity(), cx);
             }
             return;

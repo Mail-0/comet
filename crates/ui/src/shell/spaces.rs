@@ -1280,7 +1280,19 @@ impl Shell {
                     // and the bare id as the title. Under a group header the
                     // agent name is already the title, so the row doesn't
                     // repeat it.
-                    let channel = split_channel_identity(&raw_title);
+                    let channel = split_channel_identity(&raw_title).map(|(channel, id)| {
+                        // A desktop-minted `api:{agent}:{id}` already sits
+                        // under its agent; the row keeps only the id.
+                        let agent = group
+                            .as_ref()
+                            .and_then(|(key, _)| key.strip_prefix(crate::keiki::AGENT_PREFIX));
+                        let id = agent
+                            .and_then(|agent| id.strip_prefix(agent))
+                            .and_then(|rest| rest.strip_prefix(':'))
+                            .map(str::to_string)
+                            .unwrap_or(id);
+                        (channel, id)
+                    });
                     let (title, folder) = match &channel {
                         Some((channel, id)) if group.is_some() => (id.clone(), channel.clone()),
                         Some((channel, id)) => (id.clone(), format!("{channel} · {project}")),
@@ -1320,6 +1332,18 @@ impl Shell {
             }
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            // Every Keiki agent gets a group, conversations or not, so a
+            // fresh agent is reachable from the sidebar.
+            let state = self.state.read(cx);
+            for space in state.spaces.iter().filter(|space| {
+                crate::keiki::is_keiki_space(&space.id)
+                    && filter.as_deref().is_none_or(|filter| filter == space.id)
+            }) {
+                let key = Some((space.id.clone(), space.display_name().to_string()));
+                if !groups.iter().any(|(group, _)| group == &key) {
+                    groups.push((key, Vec::new()));
+                }
+            }
             let pinned = self.pinned_keiki_conversation_ids();
             promote_pinned_groups(&mut groups, |row| pinned.contains(row.chat.id.as_str()));
         }
@@ -1629,27 +1653,36 @@ impl Shell {
             } else {
                 None
             };
-            let header =
-                sidebar_disclosure_header(theme, visible_label, chevron, group_avatar, None)
-                    .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let was_open =
-                            !this.settings.sidebar_collapsed_groups.contains(&toggle_key);
-                        this.begin_sidebar_disclosure_motion(
-                            &toggle_motion_key,
-                            if was_open { body_height } else { 0.0 },
-                            if was_open { 0.0 } else { body_height },
-                        );
-                        if was_open {
-                            this.settings
-                                .sidebar_collapsed_groups
-                                .insert(toggle_key.clone());
-                        } else {
-                            this.settings.sidebar_collapsed_groups.remove(&toggle_key);
-                        }
-                        this.schedule_save(cx);
-                        cx.notify();
-                    }));
+            let new_conversation = (self.settings.sidebar_organization
+                == SidebarOrganization::ByAgent)
+                .then(|| key.strip_prefix(crate::keiki::AGENT_PREFIX))
+                .flatten()
+                .map(|agent_id| self.render_new_conversation_button(agent_id, theme, cx));
+            let header = sidebar_disclosure_header(
+                theme,
+                visible_label,
+                chevron,
+                group_avatar,
+                new_conversation,
+            )
+            .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let was_open = !this.settings.sidebar_collapsed_groups.contains(&toggle_key);
+                this.begin_sidebar_disclosure_motion(
+                    &toggle_motion_key,
+                    if was_open { body_height } else { 0.0 },
+                    if was_open { 0.0 } else { body_height },
+                );
+                if was_open {
+                    this.settings
+                        .sidebar_collapsed_groups
+                        .insert(toggle_key.clone());
+                } else {
+                    this.settings.sidebar_collapsed_groups.remove(&toggle_key);
+                }
+                this.schedule_save(cx);
+                cx.notify();
+            }));
             let body = self.render_sidebar_disclosure_body(
                 &motion_key,
                 !collapsed,
@@ -1669,6 +1702,39 @@ impl Shell {
             rendered.push((format!("g:{collapse_key}"), height, element));
         }
         rendered
+    }
+
+    /// `+` on a Keiki agent group: opens a conversation with that agent under
+    /// a fresh `api:{agent_id}:{uuid}` identity and selects it.
+    fn render_new_conversation_button(
+        &self,
+        agent_id: &str,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let agent_id = agent_id.to_string();
+        div()
+            .id(SharedString::from(format!(
+                "keiki-new-conversation-{agent_id}"
+            )))
+            .size(px(20.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(5.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.element_hover))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.new_keiki_conversation(&agent_id, cx);
+            }))
+            .child(
+                icon(icons::PLUS)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted),
+            )
+            .into_any_element()
     }
 
     /// Footer under a Keiki agent group: the poll only carries the org's

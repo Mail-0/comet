@@ -108,6 +108,49 @@ pub fn conversation_locator(id: &str) -> Option<ConversationLocator> {
     })
 }
 
+/// Identity prefix of conversations the desktop opens itself. The platform
+/// only accepts `api:{agent_id}:{conversation_id}` for a non-channel
+/// identity, and it has no line to deliver to, so the operator talks to the
+/// agent by steering rather than by takeover.
+pub const DESKTOP_IDENTITY_PREFIX: &str = "api:";
+
+pub fn desktop_identity(agent_id: &str) -> String {
+    format!(
+        "{DESKTOP_IDENTITY_PREFIX}{agent_id}:{}",
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// A chat whose identity was minted by the desktop (see [`desktop_identity`]).
+pub fn is_desktop_conversation(chat_id: &str) -> bool {
+    conversation_locator(chat_id)
+        .is_some_and(|locator| locator.identity.starts_with(DESKTOP_IDENTITY_PREFIX))
+}
+
+/// A sidebar row for a conversation Keiki has not stored yet.
+pub fn draft_conversation(agent_id: &str, agent_name: &str) -> Chat {
+    let identity = desktop_identity(agent_id);
+    let now = Utc::now();
+    Chat {
+        id: chat_id(agent_id, &identity),
+        device_id: DEVICE_ID.to_string(),
+        title: Some(identity),
+        archived: false,
+        cwd: None,
+        branch: None,
+        checkout_id: None,
+        source_context: None,
+        config: None,
+        last_message_preview: Some(format!("New conversation with {agent_name}")),
+        last_message_at: Some(now),
+        created_at: now,
+        harness_session_id: None,
+        harness_session_cwd: None,
+        space_id: Some(self::agent_id(agent_id)),
+        last_seen_at: None,
+    }
+}
+
 pub fn conversation_dashboard_url(base_url: &str, locator: &ConversationLocator) -> Option<String> {
     let encoded_phone = percent_encode_component(&locator.identity);
     let mut url = format!(
@@ -671,6 +714,9 @@ fn spawn_conversation_action<R: 'static>(
             }
         };
         task_state.update(cx, |state, cx| {
+            if matches!(result, Ok(ActionResult::Steered { .. })) {
+                state.keiki_draft_chats.remove(&chat_id);
+            }
             let Some(conversation) = state.keiki_conversation.as_mut() else {
                 return;
             };
@@ -698,7 +744,11 @@ fn spawn_conversation_action<R: 'static>(
                     }
                 }
                 Ok(ActionResult::Steered { reply, detail }) => {
-                    conversation.steer_reply = Some(reply);
+                    // A desktop conversation has no recipient to forward the
+                    // reply to; it lands in the transcript instead.
+                    if !is_desktop_conversation(&chat_id) {
+                        conversation.steer_reply = Some(reply);
+                    }
                     if let Some(detail) = detail {
                         state.apply_transcript(map_transcript(&detail));
                     }
@@ -1164,6 +1214,10 @@ pub fn spawn_transcript_watch(cx: &mut Context<AppState>, chat_id: String) -> Ta
         };
         let context = this
             .update(cx, |state, _| {
+                // Nothing to fetch until the first turn has run.
+                if state.is_keiki_draft_chat(&chat_id) {
+                    return None;
+                }
                 Some((
                     state.keiki_client.clone()?,
                     state.keiki_token.clone()?,
