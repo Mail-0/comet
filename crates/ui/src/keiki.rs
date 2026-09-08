@@ -134,7 +134,7 @@ pub fn draft_conversation(agent_id: &str, agent_name: &str) -> Chat {
     Chat {
         id: chat_id(agent_id, &identity),
         device_id: DEVICE_ID.to_string(),
-        title: Some(identity),
+        title: Some("New conversation".to_string()),
         archived: false,
         cwd: None,
         branch: None,
