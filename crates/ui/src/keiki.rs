@@ -3,16 +3,18 @@
 use std::{collections::HashSet, future::Future, time::Duration};
 
 use chrono::{DateTime, Utc};
+use futures::StreamExt as _;
 use gpui::{App, AsyncApp, Context, Entity, Task, TaskExt, WeakEntity};
 use keiki_api::{AuthorizationFlow, Client, StoredCredentials, TokenSet};
 use keiki_model::{
     AgentTemplateSummary, ConversationDetail, ConversationLocator, ConversationMessage,
     ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse, MessageDirection,
+    SteerConversationResponse,
 };
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
-use zeron_doc::parts::MessagePart;
+use zeron_doc::parts::{MessagePart, MessageStatus};
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
-use zeron_proto::{Chat, Device, Space};
+use zeron_proto::{AgentEvent, Chat, Device, DoneStatus, Space};
 use zeron_rpc::methods;
 
 use crate::state::AppState;
@@ -50,6 +52,9 @@ pub struct KeikiConversation {
     pub blocked: bool,
     pub takeover: Option<ConversationTakeover>,
     pub pending: Option<KeikiConversationPending>,
+    /// When the in-flight action began — the working trailer's timer has no
+    /// session row to read for a keiki turn.
+    pub pending_started: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub steer_reply: Option<String>,
 }
@@ -61,6 +66,7 @@ impl KeikiConversation {
             blocked: false,
             takeover: None,
             pending: None,
+            pending_started: None,
             error: None,
             steer_reply: None,
         }
@@ -525,7 +531,7 @@ fn spawn_conversation_action<R: 'static>(
         return;
     }
     let task_state = state.clone();
-    cx.spawn(async move |_, cx| {
+    let task = cx.spawn(async move |_, cx| {
         let context = task_state.update(cx, |state, _| {
             Some((
                 state.keiki_client.clone()?,
@@ -655,6 +661,19 @@ fn spawn_conversation_action<R: 'static>(
                     Err(error) => Err(error),
                 }
             }
+            ConversationAction::Steer if is_desktop_conversation(&chat_id) => {
+                // A desktop conversation has no contact on the other end: the
+                // turn streams its answer live, the way a copilot chat does.
+                steer_desktop(
+                    &task_state.downgrade(),
+                    &chat_id,
+                    locator,
+                    (client, token, credentials),
+                    request_text,
+                    cx,
+                )
+                .await
+            }
             ConversationAction::Steer => {
                 let refresh_client = client.clone();
                 let refresh_token = token.clone();
@@ -680,30 +699,16 @@ fn spawn_conversation_action<R: 'static>(
                 match steered {
                     Ok(response) => {
                         let fetch_locator = locator.clone();
-                        let detail = match authorized(
+                        let detail = refresh_keiki_transcript(
                             &task_state.downgrade(),
+                            &fetch_locator,
                             refresh_client,
                             refresh_token,
                             refresh_credentials,
-                            "Keiki transcript refresh",
-                            move |client, access_token| {
-                                let locator = fetch_locator.clone();
-                                async move { client.conversation(&access_token, &locator).await }
-                            },
+                            &chat_id,
                             cx,
                         )
-                        .await
-                        {
-                            Ok(detail) => Some(detail),
-                            Err(error) => {
-                                tracing::warn!(
-                                    %error,
-                                    %chat_id,
-                                    "Keiki transcript refresh after steer failed"
-                                );
-                                None
-                            }
-                        };
+                        .await;
                         Ok(ActionResult::Steered {
                             reply: response.reply,
                             detail,
@@ -726,6 +731,10 @@ fn spawn_conversation_action<R: 'static>(
                 return;
             }
             conversation.pending = None;
+            conversation.pending_started = None;
+            if matches!(action, ConversationAction::Steer) {
+                state.keiki_steer_task = None;
+            }
             match result {
                 Ok(ActionResult::Takeover(takeover)) => conversation.takeover = Some(takeover),
                 Ok(ActionResult::HandBack) => conversation.takeover = None,
@@ -766,8 +775,16 @@ fn spawn_conversation_action<R: 'static>(
             }
             cx.notify();
         });
-    })
-    .detach();
+    });
+    if matches!(action, ConversationAction::Steer) {
+        // Held on the state so a Stop can drop it: dropping the task drops
+        // the response stream, which the platform reads as a turn abort.
+        state.update(cx, |state, _| {
+            state.keiki_steer_task = Some(task);
+        });
+    } else {
+        task.detach();
+    }
 }
 
 enum ActionResult {
@@ -782,6 +799,441 @@ enum ActionResult {
         reply: String,
         detail: Option<ConversationDetail>,
     },
+}
+
+/// The transcript refresh a finished action triggers: a whole snapshot, the
+/// same shape the select path fetches.
+async fn refresh_keiki_transcript(
+    state: &WeakEntity<AppState>,
+    locator: &ConversationLocator,
+    client: Client,
+    token: TokenSet,
+    credentials: StoredCredentials,
+    chat_id: &str,
+    cx: &mut AsyncApp,
+) -> Option<ConversationDetail> {
+    let request_locator = locator.clone();
+    let chat = chat_id.to_string();
+    match authorized(
+        state,
+        client,
+        token,
+        credentials,
+        "Keiki transcript refresh",
+        move |client, access_token| {
+            let locator = request_locator.clone();
+            async move { client.conversation(&access_token, &locator).await }
+        },
+        cx,
+    )
+    .await
+    {
+        Ok(detail) => Some(detail),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                chat_id = %chat,
+                "Keiki transcript refresh failed"
+            );
+            None
+        }
+    }
+}
+
+/// A streamed steered turn, folded live into a `keiki-stream:` entry on the
+/// chat's echo list (echoes render after the transcript — where a reply
+/// lands). Fed by the copilot harness's own decode path: [`SseDecoder`] →
+/// `AgUiEvent` → [`TurnMapper`] → `AgentEvent`.
+struct SteerTurnFold {
+    /// The live entry's id, minted per turn; the post-turn refetch replaces
+    /// it with the stored rows.
+    entry_id: String,
+    created_at: i64,
+    /// A text part the current completion is still writing.
+    open_text: bool,
+    /// A reasoning part still open.
+    open_reasoning: bool,
+    /// Part id per tool call id so a result can resolve its call.
+    tool_parts: std::collections::HashMap<String, String>,
+    /// The run reported its end.
+    done: bool,
+}
+
+impl SteerTurnFold {
+    fn new() -> Self {
+        Self {
+            entry_id: format!("keiki-stream:{}", uuid::Uuid::new_v4()),
+            created_at: Utc::now().timestamp_millis(),
+            open_text: false,
+            open_reasoning: false,
+            tool_parts: std::collections::HashMap::new(),
+            done: false,
+        }
+    }
+
+    /// One mapped event on the live entry. Callers notify after each event.
+    fn apply(&mut self, state: &mut AppState, chat_id: &str, event: &AgentEvent) {
+        match event {
+            AgentEvent::SessionStarted { .. } => {
+                state.keiki_stream_entry(chat_id, &self.entry_id, self.created_at);
+            }
+            AgentEvent::TextDelta { text } => {
+                if !self.open_text {
+                    self.parts_open(
+                        state,
+                        chat_id,
+                        MessagePart::Text {
+                            id: self.part_id("text"),
+                            text: String::new(),
+                        },
+                    );
+                    self.open_text = true;
+                    self.open_reasoning = false;
+                }
+                let entry = state.keiki_stream_entry(chat_id, &self.entry_id, self.created_at);
+                if let Some(MessagePart::Text { text: part, .. }) = entry.parts.last_mut() {
+                    part.push_str(text);
+                }
+            }
+            AgentEvent::ReasoningDelta { text } => {
+                if !self.open_reasoning {
+                    self.parts_open(
+                        state,
+                        chat_id,
+                        MessagePart::Reasoning {
+                            id: self.part_id("reasoning"),
+                            text: String::new(),
+                        },
+                    );
+                    self.open_reasoning = true;
+                    self.open_text = false;
+                }
+                let entry = state.keiki_stream_entry(chat_id, &self.entry_id, self.created_at);
+                if let Some(MessagePart::Reasoning { text: part, .. }) = entry.parts.last_mut() {
+                    part.push_str(text);
+                }
+            }
+            AgentEvent::AssistantMessageCompleted { .. } => {
+                self.open_text = false;
+                self.open_reasoning = false;
+            }
+            AgentEvent::ToolCall { id, call } => {
+                let part_id = self.part_id(&format!("tool:{id}"));
+                self.tool_parts.insert(id.clone(), part_id.clone());
+                self.parts_open(
+                    state,
+                    chat_id,
+                    MessagePart::Tool {
+                        id: part_id,
+                        call: call.clone(),
+                        is_error: false,
+                        resolved: false,
+                        output: None,
+                        diff: None,
+                        output_ref: None,
+                        output_bytes: None,
+                        diff_ref: None,
+                        diff_stats: None,
+                        subagent_ref: None,
+                        subagent_status: None,
+                        subagent_tail: None,
+                    },
+                );
+                self.open_text = false;
+                self.open_reasoning = false;
+            }
+            AgentEvent::ToolResult {
+                id,
+                is_error,
+                output,
+                ..
+            } => {
+                let Some(part_id) = self.tool_parts.get(id) else {
+                    return;
+                };
+                let part_id = part_id.clone();
+                let entry = state.keiki_stream_entry(chat_id, &self.entry_id, self.created_at);
+                let Some(part) = entry.parts.iter_mut().find(|part| part.id() == part_id) else {
+                    return;
+                };
+                if let MessagePart::Tool {
+                    resolved,
+                    is_error: part_error,
+                    output: part_output,
+                    ..
+                } = part
+                {
+                    *resolved = true;
+                    *part_error = *is_error;
+                    *part_output = output.clone();
+                }
+            }
+            AgentEvent::Done { status, error, .. } => {
+                self.done = true;
+                let settled = match status {
+                    DoneStatus::Completed => Some(MessageStatus::Complete),
+                    DoneStatus::Interrupted | DoneStatus::Errored => Some(MessageStatus::Aborted),
+                };
+                state.settle_keiki_stream(chat_id, settled);
+                if let Some(message) = error
+                    && let Some(conversation) = state.keiki_conversation.as_mut()
+                    && conversation.chat_id == chat_id
+                {
+                    conversation.error = Some(message.clone());
+                }
+            }
+            AgentEvent::Error { message } => {
+                if let Some(conversation) = state.keiki_conversation.as_mut()
+                    && conversation.chat_id == chat_id
+                {
+                    conversation.error = Some(message.clone());
+                }
+            }
+            // Interrupts, usage, subagent traffic, steers mid-run — none of
+            // it comes through this endpoint.
+            _ => {}
+        }
+    }
+
+    /// The discarded-completion marker: the platform's steer frames reuse
+    /// the AG-UI envelope but a rejected completion's text must leave the
+    /// transcript — it was never the turn's answer.
+    fn discard_open_text(&mut self, state: &mut AppState, chat_id: &str) {
+        if !self.open_text {
+            return;
+        }
+        self.open_text = false;
+        let entry = state.keiki_stream_entry(chat_id, &self.entry_id, self.created_at);
+        if matches!(entry.parts.last(), Some(MessagePart::Text { .. })) {
+            entry.parts.pop();
+        }
+    }
+
+    /// The stream produced something the decoder rejected — what streamed so
+    /// far can no longer be trusted as the turn's answer.
+    fn fail(&mut self, state: &mut AppState, chat_id: &str, message: String) {
+        self.done = true;
+        state.settle_keiki_stream(chat_id, Some(MessageStatus::Aborted));
+        if let Some(conversation) = state.keiki_conversation.as_mut()
+            && conversation.chat_id == chat_id
+        {
+            conversation.error = Some(message);
+        }
+    }
+
+    /// The stream closed: a turn that never reported Done (a dropped
+    /// connection) is not in flight anymore.
+    fn finish(&mut self, state: &mut AppState, chat_id: &str) {
+        if !self.done {
+            self.done = true;
+            state.settle_keiki_stream(chat_id, Some(MessageStatus::Aborted));
+        }
+    }
+
+    fn part_id(&self, kind: &str) -> String {
+        format!("{}:{}:{}", self.entry_id, kind, uuid::Uuid::new_v4())
+    }
+
+    fn parts_open(&mut self, state: &mut AppState, chat_id: &str, part: MessagePart) {
+        state
+            .keiki_stream_entry(chat_id, &self.entry_id, self.created_at)
+            .parts
+            .push(part);
+    }
+}
+
+/// Decode the steered turn's response body with the copilot harness's own
+/// SSE decoder and forward each event for the UI-side fold. Runs on a
+/// background executor: the stream stays open for the whole turn.
+async fn decode_steer_stream(
+    response: reqwest::Response,
+    events: futures::channel::mpsc::UnboundedSender<Result<zeron_copilot::AgUiEvent, String>>,
+) {
+    let mut decoder = zeron_copilot::SseDecoder::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let broken = match chunk {
+            Ok(bytes) => match decoder.push(&bytes) {
+                Ok(frames) => {
+                    let mut broken = false;
+                    for frame in frames {
+                        if frame.data.is_empty() {
+                            continue;
+                        }
+                        match frame.ag_ui_event() {
+                            Ok(event) => {
+                                if events.unbounded_send(Ok(event)).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                let _ = events.unbounded_send(Err(error.to_string()));
+                                broken = true;
+                                break;
+                            }
+                        }
+                    }
+                    broken
+                }
+                Err(error) => {
+                    let _ = events.unbounded_send(Err(error.to_string()));
+                    true
+                }
+            },
+            Err(error) => {
+                let _ = events.unbounded_send(Err(error.to_string()));
+                true
+            }
+        };
+        if broken {
+            return;
+        }
+    }
+    match decoder.finish() {
+        Ok(Some(frame)) => {
+            if frame.data.is_empty() {
+                return;
+            }
+            match frame.ag_ui_event() {
+                Ok(event) => {
+                    let _ = events.unbounded_send(Ok(event));
+                }
+                Err(error) => {
+                    let _ = events.unbounded_send(Err(error.to_string()));
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let _ = events.unbounded_send(Err(error.to_string()));
+        }
+    }
+}
+
+/// Steer a desktop (`api:`) conversation: the turn's events stream as the
+/// same AG-UI frames the copilot chat decodes, folded live into the
+/// transcript until the run reports its end. A platform that predates the
+/// streamed steer still answers with the held JSON reply — handled the old
+/// way.
+async fn steer_desktop(
+    state: &WeakEntity<AppState>,
+    chat_id: &str,
+    locator: ConversationLocator,
+    auth: (Client, TokenSet, StoredCredentials),
+    text: String,
+    cx: &mut AsyncApp,
+) -> Result<ActionResult, keiki_api::Error> {
+    let (client, token, credentials) = auth;
+    let request_locator = locator.clone();
+    let request_text = text.clone();
+    let response = authorized(
+        state,
+        client.clone(),
+        token.clone(),
+        credentials.clone(),
+        "Keiki steer",
+        move |client, access_token| {
+            let locator = request_locator.clone();
+            let text = request_text.clone();
+            async move {
+                client
+                    .steer_conversation_stream(&access_token, &locator, text)
+                    .await
+            }
+        },
+        cx,
+    )
+    .await?;
+
+    let streamed = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"));
+    if !streamed {
+        let reply = response
+            .json::<SteerConversationResponse>()
+            .await
+            .map_err(keiki_api::Error::Request)?
+            .reply;
+        let detail =
+            refresh_keiki_transcript(state, &locator, client, token, credentials, chat_id, cx)
+                .await;
+        return Ok(ActionResult::Steered { reply, detail });
+    }
+
+    let (events_tx, mut events_rx) =
+        futures::channel::mpsc::unbounded::<Result<zeron_copilot::AgUiEvent, String>>();
+    let consume =
+        cx.update(|cx| gpui_tokio::Tokio::spawn(cx, decode_steer_stream(response, events_tx)));
+    let mut mapper = zeron_copilot::TurnMapper::new();
+    let mut fold = SteerTurnFold::new();
+    while let Some(item) = events_rx.next().await {
+        let applied = state.update(cx, |state, cx| {
+            match item {
+                Ok(zeron_copilot::AgUiEvent::TextMessageDiscarded { .. }) => {
+                    // The mapper drops it — there is no AgentEvent shape for
+                    // a discarded completion — so the fold takes it directly.
+                    fold.discard_open_text(state, chat_id);
+                }
+                Ok(event) => {
+                    for agent_event in mapper.handle(event) {
+                        fold.apply(state, chat_id, &agent_event);
+                    }
+                }
+                Err(message) => fold.fail(state, chat_id, message),
+            }
+            cx.notify();
+        });
+        if applied.is_err() {
+            break;
+        }
+    }
+    let _ = consume.await;
+    let detail =
+        refresh_keiki_transcript(state, &locator, client, token, credentials, chat_id, cx).await;
+    let _ = state.update(cx, |state, cx| {
+        fold.finish(state, chat_id);
+        cx.notify();
+    });
+    // The reply text is already in the transcript — the stored rows that the
+    // refetch swapped in — so the value the result handler carries stays
+    // empty (only the non-desktop steer_reply path reads it, and a desktop
+    // conversation does not take it).
+    Ok(ActionResult::Steered {
+        reply: String::new(),
+        detail,
+    })
+}
+
+/// Stop a steered turn in flight: drop the task holding the request — the
+/// platform reads the dropped connection as a turn abort — settle the live
+/// entry, then refetch so the stored rows say what actually landed.
+pub fn interrupt_steer<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    let cancelled = state.update(cx, |state, cx| {
+        let Some(conversation) = state.keiki_conversation.as_mut() else {
+            return false;
+        };
+        if conversation.chat_id != chat_id
+            || !matches!(conversation.pending, Some(KeikiConversationPending::Steer))
+        {
+            return false;
+        }
+        conversation.pending = None;
+        conversation.pending_started = None;
+        state.keiki_steer_task = None;
+        state.settle_keiki_stream(&chat_id, Some(MessageStatus::Aborted));
+        cx.notify();
+        true
+    });
+    if cancelled {
+        state.update(cx, |_, cx| {
+            spawn_transcript_watch(cx, chat_id).detach();
+        });
+    }
 }
 
 pub fn take_over<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
@@ -835,6 +1287,27 @@ pub fn steer<R: 'static>(state: Entity<AppState>, text: String, cx: &mut Context
     let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
         return;
     };
+    if is_desktop_conversation(&chat_id) {
+        // The user's turn lands now: echo it before the request so the chat
+        // reads like any other while the turn runs — the refetch afterwards
+        // swaps the echoes for the stored rows.
+        let echo = SessionMessageEntry {
+            id: format!("keiki-echo:{}", uuid::Uuid::new_v4()),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text {
+                id: "text".to_string(),
+                text: text.clone(),
+            }],
+            created_at: Utc::now().timestamp_millis(),
+            device_id: DEVICE_ID.to_string(),
+            status: None,
+            continuation_of: None,
+        };
+        state.update(cx, |state, cx| {
+            state.push_echo(&chat_id, echo);
+            cx.notify();
+        });
+    }
     spawn_conversation_action(
         state,
         chat_id,
@@ -846,6 +1319,13 @@ pub fn steer<R: 'static>(state: Entity<AppState>, text: String, cx: &mut Context
 }
 
 pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry> {
+    map_message_labelled(message, true)
+}
+
+fn map_message_labelled(
+    message: &ConversationMessage,
+    label_internal: bool,
+) -> Option<SessionMessageEntry> {
     let created_at = timestamp_or_now(&message.created_at, "createdAt", "message");
     Some(SessionMessageEntry {
         id: message.id.clone(),
@@ -855,7 +1335,7 @@ pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry>
         },
         parts: vec![MessagePart::Text {
             id: format!("{}:text", message.id),
-            text: transcript_message_text(message),
+            text: transcript_message_text(message, label_internal),
         }],
         created_at: created_at.timestamp_millis(),
         device_id: DEVICE_ID.to_string(),
@@ -864,8 +1344,8 @@ pub fn map_message(message: &ConversationMessage) -> Option<SessionMessageEntry>
     })
 }
 
-fn transcript_message_text(message: &ConversationMessage) -> String {
-    if !message.internal {
+fn transcript_message_text(message: &ConversationMessage, label_internal: bool) -> String {
+    if !message.internal || !label_internal {
         return message.content.clone();
     }
     let label = message
@@ -880,7 +1360,16 @@ fn transcript_message_text(message: &ConversationMessage) -> String {
 }
 
 pub fn map_transcript(detail: &ConversationDetail) -> Vec<SessionMessageEntry> {
-    detail.messages.iter().filter_map(map_message).collect()
+    // `api:` conversations are the operator's own chats with the agent —
+    // rows a steered turn stored internal there predate that identity, and
+    // there is no contact-facing thread to distinguish them from. Every
+    // other conversation keeps the label so a staff steer stays marked.
+    let label_internal = !detail.phone.starts_with(DESKTOP_IDENTITY_PREFIX);
+    detail
+        .messages
+        .iter()
+        .filter_map(|message| map_message_labelled(message, label_internal))
+        .collect()
 }
 
 pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
@@ -1730,6 +2219,55 @@ mod tests {
             vec![MessagePart::Text {
                 id: "m:text".into(),
                 text: "Internal turn — Devin\n\nI can help with that.".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn internal_rows_in_a_desktop_conversation_have_no_label() {
+        // A desktop `api:` conversation IS the operator's chat — turns steered
+        // there before the platform learned the identity were stored
+        // internal, and there is no contact thread to label them against.
+        let message = ConversationMessage {
+            id: "m".into(),
+            direction: MessageDirection::Inbound,
+            content: "I can help with that.".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            trace_id: None,
+            trace_duration_ms: None,
+            trace_status: None,
+            trace_model: None,
+            trace_tokens_in: None,
+            trace_tokens_out: None,
+            trace_total_steps: None,
+            trace_error: None,
+            internal: true,
+            staff_name: Some("Devin".into()),
+        };
+        let detail = ConversationDetail {
+            phone: format!("{DESKTOP_IDENTITY_PREFIX}agent-1:conv-1"),
+            meta: keiki_model::ConversationMeta {
+                contact_name: None,
+                contact_email: None,
+                agent_name: "Support".into(),
+                agent_id: Some("agent-1".into()),
+                message_count: 1,
+                first_seen: None,
+                last_seen: None,
+            },
+            messages: vec![message],
+            agent: None,
+            blocked: false,
+            takeover: None,
+        };
+
+        let transcript = map_transcript(&detail);
+
+        assert_eq!(
+            transcript[0].parts,
+            vec![MessagePart::Text {
+                id: "m:text".into(),
+                text: "I can help with that.".into(),
             }]
         );
     }

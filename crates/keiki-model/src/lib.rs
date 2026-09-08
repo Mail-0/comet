@@ -417,6 +417,14 @@ pub struct ConversationTextInput {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationSteerInput {
+    pub text: String,
+    /// Ask for the turn live: `text/event-stream` AG-UI events instead of a
+    /// JSON reply once the turn ends.
+    pub stream: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BlockConversationResponse {
     pub blocked: bool,

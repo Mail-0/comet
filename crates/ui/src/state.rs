@@ -387,6 +387,10 @@ pub struct AppState {
     pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
     pub(crate) keiki_conversation: Option<KeikiConversation>,
+    /// The in-flight steered turn's task on a keiki conversation. Held so a
+    /// Stop can cancel it: dropping the task drops the response stream, which
+    /// is the signal the platform reads as "stop this turn". Session-only.
+    pub(crate) keiki_steer_task: Option<Task<()>>,
     /// Keiki agent ids whose sidebar group shows every conversation, not just
     /// the ones inside the org-wide recent window. Session-only.
     pub(crate) keiki_expanded_agents: HashSet<String>,
@@ -449,6 +453,7 @@ impl AppState {
             keiki_error: None,
             keiki_task: None,
             keiki_conversation: None,
+            keiki_steer_task: None,
             keiki_expanded_agents: HashSet::new(),
             keiki_expanding_agents: HashSet::new(),
             keiki_draft_chats: HashSet::new(),
@@ -775,11 +780,19 @@ impl AppState {
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
-        // Doc frames supersede optimistic echoes carrying the same id.
         if let Some(chat_id) = self.selected_chat.as_deref()
             && let Some(echoes) = self.echoes.get_mut(chat_id)
         {
-            echoes.retain(|echo| !entries.iter().any(|e| e.id == echo.id));
+            if crate::keiki::is_keiki_chat(chat_id) {
+                // A keiki transcript is a whole snapshot whose rows carry
+                // server ids a client-minted echo can never match — anything
+                // still echoed was either written or lost, and the snapshot
+                // says which.
+                echoes.clear();
+            } else {
+                // Doc frames supersede optimistic echoes carrying the same id.
+                echoes.retain(|echo| !entries.iter().any(|e| e.id == echo.id));
+            }
         }
         self.transcript = entries;
         self.transcript_replayed = true;
@@ -1138,6 +1151,23 @@ impl AppState {
         if self.send_pending(chat_id, now) {
             return Indicator::Working;
         }
+        // A steered keiki turn IS the chat's run: there is no engine session
+        // row or pending send to read, so the conversation's pending flag is
+        // the Working signal.
+        if crate::keiki::is_keiki_chat(chat_id)
+            && self
+                .keiki_conversation
+                .as_ref()
+                .is_some_and(|conversation| {
+                    conversation.chat_id == chat_id
+                        && matches!(
+                            conversation.pending,
+                            Some(crate::keiki::KeikiConversationPending::Steer)
+                        )
+                })
+        {
+            return Indicator::Working;
+        }
         effective_indicator(self.session_for(chat_id), now)
     }
 
@@ -1169,6 +1199,7 @@ impl AppState {
         conversation.blocked = detail.blocked;
         conversation.takeover = detail.takeover.clone();
         conversation.pending = None;
+        conversation.pending_started = None;
         conversation.error = None;
     }
 
@@ -1190,8 +1221,63 @@ impl AppState {
             return false;
         }
         conversation.pending = Some(pending);
+        conversation.pending_started = Some(Utc::now());
         conversation.error = None;
         true
+    }
+
+    /// When the keiki conversation's in-flight action began — a steered turn
+    /// is the chat's run and has no session row to carry a `started_at`.
+    pub(crate) fn keiki_pending_started(&self, chat_id: &str) -> Option<DateTime<Utc>> {
+        self.keiki_conversation
+            .as_ref()
+            .filter(|conversation| conversation.chat_id == chat_id)
+            .and_then(|conversation| conversation.pending_started)
+    }
+
+    /// The live entry a streamed steered turn folds into. It rides the
+    /// echoes — those render after the transcript, which is where an
+    /// in-flight reply belongs — until the post-turn refetch replaces it
+    /// with the stored rows.
+    pub(crate) fn keiki_stream_entry(
+        &mut self,
+        chat_id: &str,
+        entry_id: &str,
+        created_at: i64,
+    ) -> &mut SessionMessageEntry {
+        let echoes = self.echoes.entry(chat_id.to_string()).or_default();
+        let index = match echoes.iter().position(|entry| entry.id == entry_id) {
+            Some(index) => index,
+            None => {
+                echoes.push(SessionMessageEntry {
+                    id: entry_id.to_string(),
+                    role: zeron_doc::MessageRole::Assistant,
+                    parts: Vec::new(),
+                    created_at,
+                    device_id: crate::keiki::DEVICE_ID.to_string(),
+                    status: Some(zeron_doc::MessageStatus::Streaming),
+                    continuation_of: None,
+                });
+                echoes.len() - 1
+            }
+        };
+        &mut echoes[index]
+    }
+
+    /// Settle the streamed steered-turn entry: a turn that ended (or was
+    /// stopped) must not keep reading as in-flight.
+    pub(crate) fn settle_keiki_stream(
+        &mut self,
+        chat_id: &str,
+        status: Option<zeron_doc::MessageStatus>,
+    ) {
+        if let Some(echoes) = self.echoes.get_mut(chat_id) {
+            for entry in echoes.iter_mut() {
+                if entry.status == Some(zeron_doc::MessageStatus::Streaming) {
+                    entry.status = status;
+                }
+            }
+        }
     }
 
     /// The chat the Archive session shortcut acts on: the selected one, unless

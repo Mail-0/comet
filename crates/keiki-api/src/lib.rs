@@ -9,8 +9,8 @@ pub use keiki_model::{
     SessionUser, SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
 };
 use keiki_model::{
-    AgentTemplatesResponse, AgentsResponse, ConversationTextInput, ConversationsResponse,
-    SwitchOrgRequest,
+    AgentTemplatesResponse, AgentsResponse, ConversationSteerInput, ConversationTextInput,
+    ConversationsResponse, SwitchOrgRequest,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::Rng as _;
@@ -905,6 +905,34 @@ impl Client {
                 ConversationAction::Steer,
             )?
             .json(&ConversationTextInput { text }))
+    }
+
+    /// The same steer, but the turn's answer is a `text/event-stream` of
+    /// AG-UI events — the frames a copilot chat emits — rather than the held
+    /// JSON reply. A server that does not stream answers with the usual JSON
+    /// body; the caller decides from the response's content type.
+    pub async fn steer_conversation_stream(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        text: String,
+    ) -> Result<reqwest::Response, Error> {
+        let response = self
+            .conversation_action_authenticated_request(
+                reqwest::Method::POST,
+                access_token,
+                locator,
+                ConversationAction::Steer,
+            )?
+            .json(&ConversationSteerInput { text, stream: true })
+            .send()
+            .await
+            .map_err(Error::Request)?;
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            Err(response_error(response).await)
+        }
     }
 
     fn conversation_endpoint(
