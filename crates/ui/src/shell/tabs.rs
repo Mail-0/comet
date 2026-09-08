@@ -145,6 +145,27 @@ impl Shell {
         }));
     }
 
+    /// `+` on a Keiki agent group: a local draft row with a fresh
+    /// `api:{agent_id}:{uuid}` identity, opened right away. Keiki learns
+    /// about it on the first steered turn.
+    pub(super) fn new_keiki_conversation(&mut self, agent_id: &str, cx: &mut Context<Self>) {
+        if self.state.read(cx).keiki_token.is_none() {
+            self.set_sidebar_notice("Sign in to Keiki to talk to an agent");
+            cx.notify();
+            return;
+        }
+        let chat_id = self
+            .state
+            .update(cx, |state, _| state.create_keiki_draft_chat(agent_id));
+        match chat_id {
+            Some(chat_id) => self.open_chat(chat_id, cx),
+            None => {
+                self.set_sidebar_notice("That agent is no longer available");
+                cx.notify();
+            }
+        }
+    }
+
     /// `+` in the titlebar and Ctrl+N create a fresh Copilot session.
     pub(super) fn open_new_session(&mut self, cx: &mut Context<Self>) {
         self.new_copilot_chat(cx);

@@ -471,40 +471,55 @@ async fn await_interrupts(
     interrupts: Vec<Interrupt>,
     cancellation: &CancellationToken,
 ) -> Option<ResumePayload> {
-    let questions = interrupts
+    let prompts = interrupts.iter().map(interrupt_prompt).collect::<Vec<_>>();
+    let questions = prompts
         .iter()
-        .map(|interrupt| UserInputQuestion {
-            id: interrupt.id.clone(),
-            header: if interrupt.reason.is_empty() {
-                "Copilot approval".into()
-            } else {
-                interrupt.reason.clone()
-            },
-            question: interrupt
-                .message
-                .clone()
-                .unwrap_or_else(|| interrupt.reason.clone()),
-            options: vec!["Approve".into(), "Decline".into()],
-            multi_select: false,
-        })
+        .map(|prompt| prompt.question.clone())
         .collect::<Vec<_>>();
     let receiver = request_input(questions);
     let answers = tokio::select! {
         _ = cancellation.cancelled() => return None,
         answers = receiver => answers.unwrap_or_default(),
     };
-    let resume = interrupts
+    let resume = prompts
         .into_iter()
-        .map(|interrupt| {
+        .map(|prompt| {
             let answer = answers
                 .iter()
-                .find(|answer| answer.question_id == interrupt.id)
+                .find(|answer| answer.question_id == prompt.question.id)
                 .and_then(|answer| answer.labels.first());
-            let (status, payload) = match answer.map(|label| label.to_ascii_lowercase()) {
+            let (status, payload) = match prompt.answer.resume(answer) {
+                Some(payload) => (ResumeStatus::Resolved, Some(payload)),
+                None => (ResumeStatus::Cancelled, None),
+            };
+            ResumeEntry {
+                interrupt_id: prompt.question.id,
+                status,
+                payload,
+            }
+        })
+        .collect();
+    Some(ResumePayload { resume })
+}
+
+/// How an interrupt's answer becomes its TanStack resume payload.
+#[derive(Debug, Clone, PartialEq)]
+enum InterruptAnswer {
+    /// `needsApproval` tool: `{ approved: bool }`.
+    Approval,
+    /// The copilot's `ask_choice` client tool: its output `{ chosen }` is the
+    /// picked option's id (label → id), or the typed text verbatim.
+    Choice { ids_by_label: Vec<(String, String)> },
+}
+
+impl InterruptAnswer {
+    fn resume(&self, label: Option<&String>) -> Option<Value> {
+        match self {
+            Self::Approval => match label.map(|label| label.to_ascii_lowercase()) {
                 Some(label)
                     if matches!(label.as_str(), "approve" | "approved" | "yes" | "allow") =>
                 {
-                    (ResumeStatus::Resolved, Some(json!({ "approved": true })))
+                    Some(json!({ "approved": true }))
                 }
                 Some(label)
                     if matches!(
@@ -512,18 +527,159 @@ async fn await_interrupts(
                         "decline" | "declined" | "reject" | "rejected" | "no"
                     ) =>
                 {
-                    (ResumeStatus::Resolved, Some(json!({ "approved": false })))
+                    Some(json!({ "approved": false }))
                 }
-                _ => (ResumeStatus::Cancelled, None),
-            };
-            ResumeEntry {
-                interrupt_id: interrupt.id,
-                status,
-                payload,
+                _ => None,
+            },
+            Self::Choice { ids_by_label } => {
+                let label = label.filter(|label| !label.trim().is_empty())?;
+                let chosen = ids_by_label
+                    .iter()
+                    .find(|(candidate, _)| candidate == label)
+                    .map(|(_, id)| id.clone())
+                    .unwrap_or_else(|| label.clone());
+                Some(json!({ "chosen": chosen }))
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct InterruptPrompt {
+    question: UserInputQuestion,
+    answer: InterruptAnswer,
+}
+
+/// Longest tool input shown in an approval card before it is cut.
+const MAX_APPROVAL_INPUT_CHARS: usize = 4_000;
+
+/// The question the user sees for an interrupt. TanStack's `message` is a
+/// display hint ("Client tool ask_choice is ready to run"); the tool call in
+/// `metadata` carries what the user is actually being asked.
+fn interrupt_prompt(interrupt: &Interrupt) -> InterruptPrompt {
+    let metadata = interrupt.metadata.as_ref().and_then(Value::as_object);
+    let kind = metadata
+        .and_then(|m| m.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let tool_name = metadata
+        .and_then(|m| m.get("toolName"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let input = metadata.and_then(|m| m.get("input"));
+    let message = interrupt
+        .message
+        .clone()
+        .unwrap_or_else(|| interrupt.reason.clone());
+
+    if kind == "client_tool"
+        && let Some(prompt) = choice_prompt(interrupt, input)
+    {
+        return prompt;
+    }
+
+    let (header, question) = if kind == "approval" && !tool_name.is_empty() {
+        let body = input
+            .and_then(approval_input_text)
+            .unwrap_or_else(|| message.clone());
+        (format!("Approve {tool_name}"), body)
+    } else if interrupt.reason.is_empty() {
+        ("Copilot approval".to_owned(), message)
+    } else {
+        (interrupt.reason.clone(), message)
+    };
+    InterruptPrompt {
+        question: UserInputQuestion {
+            id: interrupt.id.clone(),
+            header,
+            question,
+            options: vec!["Approve".into(), "Decline".into()],
+            multi_select: false,
+        },
+        answer: InterruptAnswer::Approval,
+    }
+}
+
+/// `ask_choice` input: `{ question, options: [{ id, label, detail? }] }`.
+fn choice_prompt(interrupt: &Interrupt, input: Option<&Value>) -> Option<InterruptPrompt> {
+    let input = input?.as_object()?;
+    let question = input.get("question")?.as_str()?.trim();
+    if question.is_empty() {
+        return None;
+    }
+    let ids_by_label = input
+        .get("options")?
+        .as_array()?
+        .iter()
+        .map(|option| {
+            let option = option.as_object()?;
+            let label = option.get("label")?.as_str()?.trim();
+            if label.is_empty() {
+                return None;
+            }
+            let id = option
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .unwrap_or(label);
+            let detail = option
+                .get("detail")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|detail| !detail.is_empty());
+            let shown = match detail {
+                Some(detail) => format!("{label} — {detail}"),
+                None => label.to_owned(),
+            };
+            Some((shown, id.to_owned()))
         })
-        .collect();
-    Some(ResumePayload { resume })
+        .collect::<Option<Vec<_>>>()?;
+    if ids_by_label.is_empty() {
+        return None;
+    }
+    Some(InterruptPrompt {
+        question: UserInputQuestion {
+            id: interrupt.id.clone(),
+            header: "Question".into(),
+            question: question.to_owned(),
+            options: ids_by_label
+                .iter()
+                .map(|(label, _)| label.clone())
+                .collect(),
+            multi_select: false,
+        },
+        answer: InterruptAnswer::Choice { ids_by_label },
+    })
+}
+
+/// The reviewable text of an approval-gated call: a single string argument
+/// (e.g. `execute_typescript_with_approval`'s program) verbatim, anything
+/// else as pretty JSON.
+fn approval_input_text(input: &Value) -> Option<String> {
+    let text = match input {
+        Value::String(text) => text.clone(),
+        Value::Object(fields) => {
+            let mut strings = fields.values().filter_map(Value::as_str);
+            match (strings.next(), strings.next(), fields.len()) {
+                (Some(only), None, 1) => only.to_owned(),
+                _ => serde_json::to_string_pretty(input).ok()?,
+            }
+        }
+        Value::Null => return None,
+        other => serde_json::to_string_pretty(other).ok()?,
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut cut = text
+        .chars()
+        .take(MAX_APPROVAL_INPUT_CHARS)
+        .collect::<String>();
+    if cut.len() < text.len() {
+        cut.push('…');
+    }
+    Some(cut)
 }
 
 async fn send_done_error(event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>, message: &str) {
@@ -546,4 +702,113 @@ async fn send_done_interrupted(event_tx: &mpsc::Sender<Result<AgentEvent, Harnes
             session_id: None,
         }))
         .await;
+}
+
+#[cfg(test)]
+mod interrupt_prompt_tests {
+    use super::*;
+
+    fn interrupt(reason: &str, message: &str, metadata: Value) -> Interrupt {
+        Interrupt {
+            id: "i1".into(),
+            reason: reason.into(),
+            message: Some(message.into()),
+            metadata: Some(metadata),
+        }
+    }
+
+    #[test]
+    fn ask_choice_shows_the_question_and_resumes_with_the_option_id() {
+        let prompt = interrupt_prompt(&interrupt(
+            "tanstack:client_tool_execution",
+            "Client tool ask_choice is ready to run",
+            json!({
+                "kind": "client_tool",
+                "toolName": "ask_choice",
+                "input": {
+                    "question": "Which agent should get the new line?",
+                    "options": [
+                        {"id": "support", "label": "Support agent", "detail": "Routes to the support inbox"},
+                        {"id": "sales", "label": "Sales agent"}
+                    ]
+                }
+            }),
+        ));
+        assert_eq!(prompt.question.header, "Question");
+        assert_eq!(
+            prompt.question.question,
+            "Which agent should get the new line?"
+        );
+        assert_eq!(
+            prompt.question.options,
+            vec!["Support agent — Routes to the support inbox", "Sales agent"]
+        );
+        assert_eq!(
+            prompt.answer.resume(Some(&"Sales agent".to_owned())),
+            Some(json!({ "chosen": "sales" }))
+        );
+        assert_eq!(
+            prompt
+                .answer
+                .resume(Some(&"neither, use the default".to_owned())),
+            Some(json!({ "chosen": "neither, use the default" }))
+        );
+        assert_eq!(prompt.answer.resume(None), None);
+    }
+
+    #[test]
+    fn approval_shows_the_program_under_the_tool_name() {
+        let prompt = interrupt_prompt(&interrupt(
+            "tool_call",
+            "Approval required to run execute_typescript_with_approval",
+            json!({
+                "kind": "approval",
+                "toolName": "execute_typescript_with_approval",
+                "input": {"typescriptCode": "await deleteAgent('a1')"}
+            }),
+        ));
+        assert_eq!(
+            prompt.question.header,
+            "Approve execute_typescript_with_approval"
+        );
+        assert_eq!(prompt.question.question, "await deleteAgent('a1')");
+        assert_eq!(prompt.question.options, vec!["Approve", "Decline"]);
+        assert_eq!(
+            prompt.answer.resume(Some(&"Approve".to_owned())),
+            Some(json!({ "approved": true }))
+        );
+        assert_eq!(
+            prompt.answer.resume(Some(&"Decline".to_owned())),
+            Some(json!({ "approved": false }))
+        );
+    }
+
+    #[test]
+    fn multi_field_approval_input_is_pretty_json() {
+        let prompt = interrupt_prompt(&interrupt(
+            "tool_call",
+            "Approval required to run publish_tool",
+            json!({
+                "kind": "approval",
+                "toolName": "publish_tool",
+                "input": {"name": "lookup", "version": 2}
+            }),
+        ));
+        assert_eq!(prompt.question.header, "Approve publish_tool");
+        assert!(prompt.question.question.contains("\"name\": \"lookup\""));
+        assert!(prompt.question.question.contains("\"version\": 2"));
+    }
+
+    #[test]
+    fn interrupts_without_metadata_keep_the_message() {
+        let prompt = interrupt_prompt(&Interrupt {
+            id: "i1".into(),
+            reason: "Approve the action".into(),
+            message: Some("May Copilot continue?".into()),
+            metadata: None,
+        });
+        assert_eq!(prompt.question.header, "Approve the action");
+        assert_eq!(prompt.question.question, "May Copilot continue?");
+        assert_eq!(prompt.answer, InterruptAnswer::Approval);
+    }
 }
