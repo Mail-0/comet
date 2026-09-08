@@ -3884,7 +3884,12 @@ impl Transcript {
                 // turn actually began (user report). Bridge it as "Sending…"
                 // with no timer instead; the word + timer start with the
                 // turn.
-                let turn_started = state.session_for(&chat_id).and_then(|s| s.started_at);
+                let turn_started = state
+                    .session_for(&chat_id)
+                    .and_then(|s| s.started_at)
+                    // A keiki steered turn is the chat's run and has no
+                    // session row; its start rides the conversation instead.
+                    .or_else(|| state.keiki_pending_started(&chat_id));
                 let sending =
                     sending_bridge(state.pending_send_started(&chat_id, now), turn_started);
                 // Degraded delivery path: the send is a durable local write

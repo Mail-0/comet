@@ -4666,8 +4666,12 @@ impl Composer {
         if let Some(selected_chat) = state.selected_chat.as_deref() {
             if crate::keiki::is_desktop_conversation(selected_chat) {
                 // No contact on the other end: the operator's words go
-                // straight to the agent as a steered turn.
-                return state.keiki_conversation().is_none();
+                // straight to the agent as a steered turn. While a turn is in
+                // flight the send is a Stop instead — the platform rejects a
+                // second claim anyway.
+                return state
+                    .keiki_conversation()
+                    .is_none_or(|conversation| conversation.pending.is_some());
             }
             if crate::keiki::is_keiki_chat(selected_chat) {
                 return state
@@ -5018,6 +5022,18 @@ impl Composer {
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {
+        if self
+            .state
+            .read(cx)
+            .selected_chat
+            .as_deref()
+            .is_some_and(crate::keiki::is_keiki_chat)
+        {
+            // Keiki turns are HTTP requests, not engine sessions — the stop is
+            // dropping the request, which the platform reads as a turn abort.
+            crate::keiki::interrupt_steer(self.state.clone(), cx);
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };

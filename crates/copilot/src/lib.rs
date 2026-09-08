@@ -286,6 +286,13 @@ pub enum AgUiEvent {
     TextMessageEnd {
         message_id: String,
     },
+    /// Not an AG-UI type — the platform's steered turns emit it when a
+    /// completion the client already read was then discarded (guard-rejected
+    /// or degenerate text). Clients that only handle upstream vocabulary see
+    /// it as `Unknown`.
+    TextMessageDiscarded {
+        message_id: String,
+    },
     ReasoningStart {
         message_id: String,
     },
@@ -411,6 +418,12 @@ impl AgUiEvent {
             "TEXT_MESSAGE_END" => {
                 let wire: TextMessageEndWire = serde_json::from_value(value)?;
                 Ok(Self::TextMessageEnd {
+                    message_id: wire.message_id,
+                })
+            }
+            "TEXT_MESSAGE_DISCARDED" => {
+                let wire: TextMessageEndWire = serde_json::from_value(value)?;
+                Ok(Self::TextMessageDiscarded {
                     message_id: wire.message_id,
                 })
             }
@@ -758,6 +771,9 @@ impl TurnMapper {
                     assistant_message_id: message_id,
                 }]
             }
+            // Caller-meaningful only: a consumer folding parts needs the
+            // message id the mapper drops, so it handles the event itself.
+            AgUiEvent::TextMessageDiscarded { .. } => Vec::new(),
             AgUiEvent::ReasoningMessageContent { delta, .. }
             | AgUiEvent::ReasoningMessageChunk {
                 delta: Some(delta), ..
@@ -1105,6 +1121,34 @@ data: {\"type\":\"RUN_FINISHED\",\"runId\":\"r\",\"outcome\":{\"type\":\"success
                 .filter(|event| matches!(event, AgentEvent::ToolCall { .. }))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn text_message_discarded_decodes_and_maps_to_nothing() {
+        // A steered turn's discarded completion must not leave deltas behind:
+        // the mapper emits no event — the consumer drops the part it opened.
+        let events = events_from_chunks(&[
+            b"data: {\"type\":\"TEXT_MESSAGE_START\",\"messageId\":\"text\"}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"text\",\"delta\":\"declined draft\"}\n\n",
+            b"data: {\"type\":\"TEXT_MESSAGE_DISCARDED\",\"messageId\":\"text\"}\n\n",
+        ]);
+        assert_eq!(
+            events[2],
+            AgUiEvent::TextMessageDiscarded {
+                message_id: "text".into()
+            }
+        );
+        let mut mapper = TurnMapper::new();
+        let mapped = events
+            .into_iter()
+            .flat_map(|event| mapper.handle(event))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mapped,
+            vec![AgentEvent::TextDelta {
+                text: "declined draft".into()
+            }]
         );
     }
 
