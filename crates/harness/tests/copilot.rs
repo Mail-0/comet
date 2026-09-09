@@ -264,6 +264,7 @@ fn controls_with_observer(
                     .map(|question| UserInputAnswer {
                         question_id: question.id.clone(),
                         labels: vec![label.clone()],
+                        payload: None,
                     })
                     .collect()
             });

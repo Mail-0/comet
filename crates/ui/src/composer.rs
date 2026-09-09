@@ -26,8 +26,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
 use zeron_proto::{
-    FileSearchMatch, HarnessId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
-    UserInputQuestion,
+    FileSearchMatch, HarnessId, McpConnectSpec, RunRequest, SandboxLevel, SlashCommand,
+    UserInputAnswer, UserInputQuestion,
 };
 use zeron_rpc::{RpcError, methods};
 
@@ -72,6 +72,10 @@ pub const INPUT_LINE_HEIGHT: f32 = 22.75;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
 /// Single-select questions auto-advance after this long.
 pub const AUTO_ADVANCE_MS: u64 = 220;
+/// A minted OAuth link is live for minutes, not hours — the poll mirrors the
+/// dashboard's connect button exactly.
+const MCP_CONNECT_POLL: Duration = Duration::from_secs(3);
+const MCP_CONNECT_DEADLINE: Duration = Duration::from_secs(5 * 60);
 /// Drag-selection autoscroll runs at the display-friendly 60fps cadence.
 pub const DRAG_SCROLL_FRAME_MS: u64 = 16;
 
@@ -482,6 +486,135 @@ pub fn input_request_resolved(transcript: &[SessionMessageEntry], request_id: &s
     })
 }
 
+/// One authorization round-trip behind a connect answer: ask the daemon to
+/// (re)start the saved preset's OAuth, hand the provider page to the system
+/// browser, then poll the preset until it reports connected or the minted
+/// link goes stale — the connect → status polling the dashboard's own button
+/// runs. Returns the tool's resume payload; a credential never leaves Keiki.
+async fn connect_mcp_answer(
+    state: &Entity<AppState>,
+    spec: &McpConnectSpec,
+    cx: &mut gpui::AsyncApp,
+) -> serde_json::Value {
+    let context = state.update(cx, |state, _| {
+        Some((
+            state.keiki_client.clone()?,
+            state.keiki_token.clone()?,
+            state.keiki_credentials.clone()?,
+        ))
+    });
+    let Some((client, token, credentials)) = context else {
+        return serde_json::json!({
+            "status": "needs_auth",
+            "error": format!("Sign in to Keiki to authorize {}.", spec.name),
+        });
+    };
+    let weak = state.downgrade();
+    let preset = {
+        let (agent_id, preset_id) = (spec.agent_id.clone(), spec.preset_id.clone());
+        match crate::keiki::authorized(
+            &weak,
+            client,
+            token,
+            credentials,
+            "MCP connect",
+            move |client, token| {
+                let (agent_id, preset_id) = (agent_id.clone(), preset_id.clone());
+                async move {
+                    client
+                        .connect_mcp_preset(&token, &agent_id, &preset_id)
+                        .await
+                }
+            },
+            cx,
+        )
+        .await
+        {
+            Ok(preset) => preset,
+            Err(error) => {
+                return serde_json::json!({
+                    "status": "needs_auth",
+                    "error": format!("{} authorization did not start: {error}", spec.name),
+                });
+            }
+        }
+    };
+    if preset.authorized() {
+        return serde_json::json!({ "connected": true, "status": preset.status });
+    }
+    let Some(url) = preset.authorization_url.clone() else {
+        return serde_json::json!({
+            "status": preset.status,
+            "error": preset
+                .last_error
+                .unwrap_or_else(|| format!("{} provided no authorization link.", spec.name)),
+        });
+    };
+    // `open_url` reports nothing — a silently-blocked browser surfaces as the
+    // deadline below, not here.
+    cx.update(|cx| cx.open_url(url.as_str()));
+    // The daemon's callback stores the token but can't update the preset, so
+    // the status stays "needs authorization" until a re-check — the same
+    // reason the dashboard polls. Transient failures keep polling until the
+    // deadline.
+    let deadline = Instant::now() + MCP_CONNECT_DEADLINE;
+    loop {
+        cx.background_executor().timer(MCP_CONNECT_POLL).await;
+        let context = state.update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        });
+        let Some((client, token, credentials)) = context else {
+            continue;
+        };
+        let (agent_id, preset_id) = (spec.agent_id.clone(), spec.preset_id.clone());
+        let preset = crate::keiki::authorized(
+            &state.downgrade(),
+            client,
+            token,
+            credentials,
+            "MCP preset status",
+            move |client, token| {
+                let (agent_id, preset_id) = (agent_id.clone(), preset_id.clone());
+                async move {
+                    client
+                        .refresh_mcp_preset_status(&token, &agent_id, &preset_id)
+                        .await
+                }
+            },
+            cx,
+        )
+        .await;
+        match preset {
+            Ok(preset) if preset.authorized() => {
+                return serde_json::json!({ "connected": true, "status": preset.status });
+            }
+            // A terminal daemon error is worth reporting now.
+            Ok(preset) if preset.status == "error" => {
+                return serde_json::json!({
+                    "status": preset.status,
+                    "error": preset
+                        .last_error
+                        .unwrap_or_else(|| format!("{} failed to connect.", spec.name)),
+                });
+            }
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            return serde_json::json!({
+                "status": "needs_auth",
+                "error": format!(
+                    "Authorization for {} did not finish before the link went stale.",
+                    spec.name
+                ),
+            });
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Question wizard (pure reducer)
 // ---------------------------------------------------------------------------
@@ -505,6 +638,9 @@ pub struct Wizard {
     pub page: usize,
     picked: Vec<Vec<usize>>,
     typed: Vec<String>,
+    /// Service name while a browser authorization is running: the panel
+    /// switches to an authorizing view and answers wait for the outcome.
+    connecting: Option<String>,
 }
 
 impl Wizard {
@@ -516,6 +652,7 @@ impl Wizard {
             page: 0,
             picked: vec![Vec::new(); n],
             typed: vec![String::new(); n],
+            connecting: None,
         }
     }
 
@@ -540,6 +677,9 @@ impl Wizard {
 
     /// Click/tap an option.
     pub fn select(&mut self, option_ix: usize) -> WizardStep {
+        if self.connecting.is_some() {
+            return WizardStep::Stay;
+        }
         let Some(question) = self.questions.get(self.page) else {
             return WizardStep::Stay;
         };
@@ -580,6 +720,9 @@ impl Wizard {
 
     /// Explicit submit / auto-advance landing.
     pub fn advance(&mut self) -> WizardStep {
+        if self.connecting.is_some() {
+            return WizardStep::Stay;
+        }
         if self.page + 1 < self.questions.len() {
             self.page += 1;
             WizardStep::Stay
@@ -590,6 +733,9 @@ impl Wizard {
 
     /// Page back; false when already on the first page.
     pub fn back(&mut self) -> bool {
+        if self.connecting.is_some() {
+            return false;
+        }
         if self.page > 0 {
             self.page -= 1;
             true
@@ -621,6 +767,7 @@ impl Wizard {
                 UserInputAnswer {
                     question_id: q.id.clone(),
                     labels,
+                    payload: None,
                 }
             })
             .collect()
@@ -3402,6 +3549,11 @@ pub struct Composer {
     /// frame marks them resolved).
     answered_requests: HashSet<String>,
     advance_task: Option<Task<()>>,
+    /// Browser authorization running for a connect answer.
+    connect_task: Option<Task<()>>,
+    /// Bumped to invalidate a connect task whose answers were superseded by a
+    /// cancel — a late finish must not clobber the cancelled answers.
+    connect_gen: u64,
     send_task: Option<Task<()>>,
     /// Interrupt/answer commands get their own slot: assigning `send_task`
     /// DROPPED an in-flight send future mid-upload — no banner, no cleanup,
@@ -3545,6 +3697,8 @@ impl Composer {
             failure_key: None,
             action_task: None,
             advance_task: None,
+            connect_task: None,
+            connect_gen: 0,
             send_task: None,
             expanded_mode: false,
             flip_epoch: 0,
@@ -5117,13 +5271,125 @@ impl Composer {
         }
     }
 
-    /// Submit RespondInput and retire the panel.
+    /// The "Authorize" label alone can't be the answer: the service's consent
+    /// has to happen in this device's browser first, and the outcome rides
+    /// back as the answer's payload.
     fn wizard_finish(&mut self, answers: Vec<UserInputAnswer>, cx: &mut Context<Self>) {
-        let Some(wizard) = self.wizard.take() else {
+        let needs_connect = self.wizard.as_ref().is_some_and(|wizard| {
+            wizard.questions.iter().any(|question| {
+                question.mcp_connect.is_some()
+                    && answers.iter().any(|answer| {
+                        answer.question_id == question.id
+                            && answer.labels.first().map(String::as_str) == Some("Authorize")
+                    })
+            })
+        });
+        if needs_connect {
+            self.start_mcp_connect(answers, cx);
+            return;
+        }
+        let Some(wizard) = self.wizard.as_ref() else {
             return;
         };
+        let request_id = wizard.request_id.clone();
+        self.submit_answers(request_id, answers, cx);
+    }
+
+    /// Run each connect answer's browser consent, then submit. The panel
+    /// stays up in its authorizing view so the request can't be answered
+    /// twice while a tab is open.
+    fn start_mcp_connect(&mut self, mut answers: Vec<UserInputAnswer>, cx: &mut Context<Self>) {
+        let Some(wizard) = self.wizard.as_ref() else {
+            return;
+        };
+        let request_id = wizard.request_id.clone();
+        let jobs: Vec<(String, McpConnectSpec)> = wizard
+            .questions
+            .iter()
+            .filter_map(|question| {
+                let spec = question.mcp_connect.clone()?;
+                let authorize = answers.iter().any(|answer| {
+                    answer.question_id == question.id
+                        && answer.labels.first().map(String::as_str) == Some("Authorize")
+                });
+                authorize.then(|| (question.id.clone(), spec))
+            })
+            .collect();
+        self.connect_gen += 1;
+        let generation = self.connect_gen;
+        let state = self.state.clone();
+        self.connect_task = Some(cx.spawn(async move |this, cx| {
+            for (question_id, spec) in jobs {
+                this.update(cx, |composer, cx| {
+                    if let Some(wizard) = composer.wizard.as_mut() {
+                        wizard.connecting = Some(spec.name.clone());
+                    }
+                    cx.notify();
+                })
+                .ok();
+                let payload = connect_mcp_answer(&state, &spec, cx).await;
+                if let Some(answer) = answers
+                    .iter_mut()
+                    .find(|answer| answer.question_id == question_id)
+                {
+                    answer.payload = Some(payload);
+                }
+            }
+            this.update(cx, |composer, cx| {
+                if composer.connect_gen == generation {
+                    composer.submit_answers(request_id, answers, cx);
+                }
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// "Cancel" while a consent tab is open: every connect answer goes out as
+    /// cancelled and the in-flight flow is disowned.
+    fn cancel_mcp_connect(&mut self, cx: &mut Context<Self>) {
+        let Some(wizard) = self.wizard.as_mut() else {
+            return;
+        };
+        if wizard.connecting.is_none() {
+            return;
+        }
+        wizard.connecting = None;
+        self.connect_gen += 1;
+        self.connect_task = None;
+        let mut answers = wizard.answers();
+        for question in &wizard.questions {
+            if question.mcp_connect.is_none() {
+                continue;
+            }
+            if let Some(answer) = answers
+                .iter_mut()
+                .find(|answer| answer.question_id == question.id)
+            {
+                answer.payload = Some(serde_json::json!({ "cancelled": true }));
+            }
+        }
+        let request_id = wizard.request_id.clone();
+        self.submit_answers(request_id, answers, cx);
+    }
+
+    /// Submit RespondInput and retire the panel.
+    fn submit_answers(
+        &mut self,
+        request_id: String,
+        answers: Vec<UserInputAnswer>,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .wizard
+            .as_ref()
+            .is_some_and(|wizard| wizard.request_id == request_id)
+        {
+            self.wizard = None;
+        }
         self.advance_task = None;
-        self.answered_requests.insert(wizard.request_id.clone());
+        self.connect_task = None;
+        self.answered_requests.insert(request_id.clone());
         self.input.update(cx, |input, cx| {
             input.set_text("", cx);
             // The panel borrowed the composer input; hand back its identity.
@@ -5135,7 +5401,6 @@ impl Composer {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
-        let request_id = wizard.request_id.clone();
         let command = SessionCommandPayload::RespondInput {
             request_id: request_id.clone(),
             answers,
@@ -5228,6 +5493,7 @@ impl Composer {
         };
         let page = wizard.page;
         let last = page + 1 >= wizard.questions.len();
+        let connecting = wizard.connecting.clone();
         let typed_empty = self.input.read(cx).is_empty();
         let can_advance = wizard.page_has_pick() || !typed_empty;
 
@@ -5371,52 +5637,90 @@ impl Composer {
                                 .child(SharedString::from("Select one or more options.")),
                         )
                     })
-                    .child(
-                        div()
-                            .mt(px(12.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .children(options),
-                    )
-                    // Free-text override over a hairline (shares the composer
-                    // input entity).
-                    .child(
-                        div()
-                            .mt(px(12.0))
-                            .border_t_1()
-                            .border_color(crate::theme::hairline(0.06))
-                            .pt(px(12.0))
-                            .pb(px(4.0))
-                            .px(px(4.0))
-                            .child(self.input.clone()),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .px(px(16.0))
-                    .pb(px(16.0))
-                    .pt(px(4.0))
-                    .child(if page > 0 {
-                        crate::popover::btn_ghost(&theme, "Back", "wizard-back")
-                            .id("wizard-back")
-                            .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
-                            .into_any_element()
-                    } else {
-                        gpui::Empty.into_any_element()
+                    .when(connecting.is_none(), |el| {
+                        el.child(
+                            div()
+                                .mt(px(12.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .children(options),
+                        )
+                        // Free-text override over a hairline (shares the
+                        // composer input entity).
+                        .child(
+                            div()
+                                .mt(px(12.0))
+                                .border_t_1()
+                                .border_color(crate::theme::hairline(0.06))
+                                .pt(px(12.0))
+                                .pb(px(4.0))
+                                .px(px(4.0))
+                                .child(self.input.clone()),
+                        )
                     })
-                    .child(
-                        crate::popover::btn_primary(&theme, if last { "Submit" } else { "Next" })
+                    .when_some(connecting.clone(), |el, name| {
+                        el.child(
+                            div()
+                                .mt(px(12.0))
+                                .text_size(crate::typography::ui_rems(12.5))
+                                .line_height(px(17.0))
+                                .text_color(theme.text_muted.opacity(0.75))
+                                .child(SharedString::from(format!(
+                                    "Authorizing {name} — finish the sign-in in your browser."
+                                ))),
+                        )
+                    }),
+            )
+            .when(connecting.is_none(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_between()
+                        .items_center()
+                        .px(px(16.0))
+                        .pb(px(16.0))
+                        .pt(px(4.0))
+                        .child(if page > 0 {
+                            crate::popover::btn_ghost(&theme, "Back", "wizard-back")
+                                .id("wizard-back")
+                                .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
+                                .into_any_element()
+                        } else {
+                            gpui::Empty.into_any_element()
+                        })
+                        .child(
+                            crate::popover::btn_primary(
+                                &theme,
+                                if last { "Submit" } else { "Next" },
+                            )
                             .id("wizard-submit")
                             .px(px(16.0))
                             .when(!can_advance, |el| el.opacity(0.4))
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
-                    ),
-            )
+                        ),
+                )
+            })
+            .when(connecting.is_some(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .items_center()
+                        .px(px(16.0))
+                        .pb(px(16.0))
+                        .pt(px(4.0))
+                        .child(
+                            crate::popover::btn_ghost(&theme, "Cancel", "wizard-connect-cancel")
+                                .id("wizard-connect-cancel")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cancel_mcp_connect(cx)),
+                                ),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -6393,6 +6697,7 @@ mod tests {
             question: format!("Question {id}"),
             options: options.iter().map(|s| s.to_string()).collect(),
             multi_select: multi,
+            mcp_connect: None,
         }
     }
 

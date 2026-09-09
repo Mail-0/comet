@@ -17,8 +17,8 @@ use zeron_copilot::{
     ResumeEntry, ResumePayload, ResumeStatus, SseDecoder, TurnMapper,
 };
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, McpConnectSpec, Model, ReasoningLevel, RunRequest,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls, SteerMessage};
@@ -486,8 +486,7 @@ async fn await_interrupts(
         .map(|prompt| {
             let answer = answers
                 .iter()
-                .find(|answer| answer.question_id == prompt.question.id)
-                .and_then(|answer| answer.labels.first());
+                .find(|answer| answer.question_id == prompt.question.id);
             let (status, payload) = match prompt.answer.resume(answer) {
                 Some(payload) => (ResumeStatus::Resolved, Some(payload)),
                 None => (ResumeStatus::Cancelled, None),
@@ -510,10 +509,16 @@ enum InterruptAnswer {
     /// The copilot's `ask_choice` client tool: its output `{ chosen }` is the
     /// picked option's id (label → id), or the typed text verbatim.
     Choice { ids_by_label: Vec<(String, String)> },
+    /// The copilot's `connect_mcp` client tool: the consent happened in the
+    /// user's browser on this device, so the UI reports the outcome back as
+    /// the answer's `payload` (`{ connected, status }`, `{ cancelled }`, or
+    /// `{ status, error }`) — the picked label alone can't carry it.
+    McpConnect,
 }
 
 impl InterruptAnswer {
-    fn resume(&self, label: Option<&String>) -> Option<Value> {
+    fn resume(&self, answer: Option<&UserInputAnswer>) -> Option<Value> {
+        let label = answer.and_then(|answer| answer.labels.first());
         match self {
             Self::Approval => match label.map(|label| label.to_ascii_lowercase()) {
                 Some(label)
@@ -539,6 +544,18 @@ impl InterruptAnswer {
                     .map(|(_, id)| id.clone())
                     .unwrap_or_else(|| label.clone());
                 Some(json!({ "chosen": chosen }))
+            }
+            Self::McpConnect => {
+                if let Some(payload) = answer.and_then(|answer| answer.payload.clone()) {
+                    return Some(payload);
+                }
+                match label.map(|label| label.to_ascii_lowercase()).as_deref() {
+                    Some("skip") | Some("cancel") => Some(json!({ "cancelled": true })),
+                    // "Authorize" with no payload means the answer reached the
+                    // harness before the consent flow ran — resolve as
+                    // cancelled rather than resuming with a silent no-op.
+                    _ => None,
+                }
             }
         }
     }
@@ -572,10 +589,13 @@ fn interrupt_prompt(interrupt: &Interrupt) -> InterruptPrompt {
         .clone()
         .unwrap_or_else(|| interrupt.reason.clone());
 
-    if kind == "client_tool"
-        && let Some(prompt) = choice_prompt(interrupt, input)
-    {
-        return prompt;
+    if kind == "client_tool" {
+        if let Some(prompt) = connect_prompt(interrupt, tool_name, input) {
+            return prompt;
+        }
+        if let Some(prompt) = choice_prompt(interrupt, input) {
+            return prompt;
+        }
     }
 
     let (header, question) = if kind == "approval" && !tool_name.is_empty() {
@@ -595,6 +615,7 @@ fn interrupt_prompt(interrupt: &Interrupt) -> InterruptPrompt {
             question,
             options: vec!["Approve".into(), "Decline".into()],
             multi_select: false,
+            mcp_connect: None,
         },
         answer: InterruptAnswer::Approval,
     }
@@ -647,8 +668,51 @@ fn choice_prompt(interrupt: &Interrupt, input: Option<&Value>) -> Option<Interru
                 .map(|(label, _)| label.clone())
                 .collect(),
             multi_select: false,
+            mcp_connect: None,
         },
         answer: InterruptAnswer::Choice { ids_by_label },
+    })
+}
+
+/// `connect_mcp` input: `{ agentId, presetId, name }`. The question carries
+/// an `mcp_connect` spec so the device answering it knows it owns the browser
+/// round-trip; a plain label answer isn't enough to resume with.
+fn connect_prompt(
+    interrupt: &Interrupt,
+    tool_name: &str,
+    input: Option<&Value>,
+) -> Option<InterruptPrompt> {
+    if tool_name != "connect_mcp" {
+        return None;
+    }
+    let input = input?.as_object()?;
+    let agent_id = input.get("agentId")?.as_str()?.trim();
+    let preset_id = input.get("presetId")?.as_str()?.trim();
+    if agent_id.is_empty() || preset_id.is_empty() {
+        return None;
+    }
+    let name = input
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("This service");
+    Some(InterruptPrompt {
+        question: UserInputQuestion {
+            id: interrupt.id.clone(),
+            header: format!("Connect {name}"),
+            question: format!(
+                "{name} needs your authorization. Authorizing opens the service's own sign-in in your browser."
+            ),
+            options: vec!["Authorize".into(), "Skip".into()],
+            multi_select: false,
+            mcp_connect: Some(McpConnectSpec {
+                agent_id: agent_id.to_owned(),
+                preset_id: preset_id.to_owned(),
+                name: name.to_owned(),
+            }),
+        },
+        answer: InterruptAnswer::McpConnect,
     })
 }
 
@@ -717,6 +781,14 @@ mod interrupt_prompt_tests {
         }
     }
 
+    fn answer(label: &str) -> UserInputAnswer {
+        UserInputAnswer {
+            question_id: "i1".into(),
+            labels: vec![label.to_owned()],
+            payload: None,
+        }
+    }
+
     #[test]
     fn ask_choice_shows_the_question_and_resumes_with_the_option_id() {
         let prompt = interrupt_prompt(&interrupt(
@@ -744,13 +816,13 @@ mod interrupt_prompt_tests {
             vec!["Support agent — Routes to the support inbox", "Sales agent"]
         );
         assert_eq!(
-            prompt.answer.resume(Some(&"Sales agent".to_owned())),
+            prompt.answer.resume(Some(&answer("Sales agent"))),
             Some(json!({ "chosen": "sales" }))
         );
         assert_eq!(
             prompt
                 .answer
-                .resume(Some(&"neither, use the default".to_owned())),
+                .resume(Some(&answer("neither, use the default"))),
             Some(json!({ "chosen": "neither, use the default" }))
         );
         assert_eq!(prompt.answer.resume(None), None);
@@ -774,11 +846,11 @@ mod interrupt_prompt_tests {
         assert_eq!(prompt.question.question, "await deleteAgent('a1')");
         assert_eq!(prompt.question.options, vec!["Approve", "Decline"]);
         assert_eq!(
-            prompt.answer.resume(Some(&"Approve".to_owned())),
+            prompt.answer.resume(Some(&answer("Approve"))),
             Some(json!({ "approved": true }))
         );
         assert_eq!(
-            prompt.answer.resume(Some(&"Decline".to_owned())),
+            prompt.answer.resume(Some(&answer("Decline"))),
             Some(json!({ "approved": false }))
         );
     }
@@ -810,5 +882,56 @@ mod interrupt_prompt_tests {
         assert_eq!(prompt.question.header, "Approve the action");
         assert_eq!(prompt.question.question, "May Copilot continue?");
         assert_eq!(prompt.answer, InterruptAnswer::Approval);
+    }
+
+    #[test]
+    fn connect_mcp_carries_the_preset_spec_and_resumes_with_the_payload() {
+        let prompt = interrupt_prompt(&interrupt(
+            "tanstack:client_tool_execution",
+            "Client tool connect_mcp is ready to run",
+            json!({
+                "kind": "client_tool",
+                "toolName": "connect_mcp",
+                "input": {"agentId": "a1", "presetId": "p1", "name": "GitHub"}
+            }),
+        ));
+        assert_eq!(prompt.question.header, "Connect GitHub");
+        assert_eq!(
+            prompt.question.mcp_connect,
+            Some(McpConnectSpec {
+                agent_id: "a1".into(),
+                preset_id: "p1".into(),
+                name: "GitHub".into(),
+            })
+        );
+        // The label alone is not the outcome — the browser flow's report is.
+        let mut authorized = answer("Authorize");
+        authorized.payload = Some(json!({ "connected": true, "status": "connected" }));
+        assert_eq!(
+            prompt.answer.resume(Some(&authorized)),
+            Some(json!({ "connected": true, "status": "connected" }))
+        );
+        assert_eq!(
+            prompt.answer.resume(Some(&answer("Skip"))),
+            Some(json!({ "cancelled": true }))
+        );
+        // "Authorize" with no payload means the consent never ran: resolved
+        // as cancelled, not a silent no-op.
+        assert_eq!(prompt.answer.resume(Some(&answer("Authorize"))), None);
+    }
+
+    #[test]
+    fn connect_mcp_without_ids_falls_back_to_approval() {
+        let prompt = interrupt_prompt(&interrupt(
+            "tanstack:client_tool_execution",
+            "Client tool connect_mcp is ready to run",
+            json!({
+                "kind": "client_tool",
+                "toolName": "connect_mcp",
+                "input": {"name": "GitHub"}
+            }),
+        ));
+        assert_eq!(prompt.answer, InterruptAnswer::Approval);
+        assert!(prompt.question.mcp_connect.is_none());
     }
 }

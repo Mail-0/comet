@@ -331,6 +331,22 @@ pub struct UserInputQuestion {
     pub options: Vec<String>,
     #[serde(default)]
     pub multi_select: bool,
+    /// Set when answering this question means authorizing a saved service
+    /// preset in the system browser. The answer is the picked label plus a
+    /// `payload` carrying the outcome — the labels alone can't say whether
+    /// the consent actually landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_connect: Option<McpConnectSpec>,
+}
+
+/// The saved service preset an `mcpConnect` question authorizes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConnectSpec {
+    pub agent_id: String,
+    pub preset_id: String,
+    /// Service name to show ("GitHub").
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -338,6 +354,10 @@ pub struct UserInputQuestion {
 pub struct UserInputAnswer {
     pub question_id: String,
     pub labels: Vec<String>,
+    /// Structured outcome for answers a label can't express — the consent
+    /// result of an `mcp_connect` question (`{ connected, status, error }`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

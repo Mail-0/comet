@@ -5,12 +5,12 @@ pub use keiki_model::{
     AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
     BlockConversationResponse, ClearConversationResponse, ConversationDetail, ConversationLocator,
     ConversationSearchHit, ConversationSummary, ConversationTakeover, CreateAgentFromTemplate,
-    CreateAgentResponse, OrganizationSummary, SendConversationMessageResponse, SessionResponse,
-    SessionUser, SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
+    CreateAgentResponse, McpPreset, OrganizationSummary, SendConversationMessageResponse,
+    SessionResponse, SessionUser, SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
 };
 use keiki_model::{
     AgentTemplatesResponse, AgentsResponse, ConversationSteerInput, ConversationTextInput,
-    ConversationsResponse, SwitchOrgRequest,
+    ConversationsResponse, McpPresetResponse, SwitchOrgRequest,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::Rng as _;
@@ -546,6 +546,44 @@ impl Client {
             .send_json(self.list_agents_authenticated_request(access_token))
             .await?;
         Ok(response.agents)
+    }
+
+    /// Ask the daemon to (re)start a saved preset's authorization. The
+    /// returned preset carries the provider URL to open in the user's browser
+    /// when one is needed — the same response the dashboard's connect button
+    /// receives.
+    pub async fn connect_mcp_preset(
+        &self,
+        access_token: &str,
+        agent_id: &str,
+        preset_id: &str,
+    ) -> Result<McpPreset, Error> {
+        let request = self
+            .http
+            .post(self.endpoint(&format!(
+                "/api/webapp/agents/{agent_id}/mcp-presets/{preset_id}/connect"
+            )))
+            .bearer_auth(access_token);
+        let response: McpPresetResponse = self.send_json(request).await?;
+        Ok(response.preset)
+    }
+
+    /// One status tick of the authorization poll: flips to `connected` once
+    /// the daemon reports the consent landed, without re-initiating OAuth.
+    pub async fn refresh_mcp_preset_status(
+        &self,
+        access_token: &str,
+        agent_id: &str,
+        preset_id: &str,
+    ) -> Result<McpPreset, Error> {
+        let request = self
+            .http
+            .post(self.endpoint(&format!(
+                "/api/webapp/agents/{agent_id}/mcp-presets/{preset_id}/status"
+            )))
+            .bearer_auth(access_token);
+        let response: McpPresetResponse = self.send_json(request).await?;
+        Ok(response.preset)
     }
 
     pub fn list_agent_templates_authenticated_request(
