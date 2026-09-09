@@ -420,6 +420,10 @@ pub struct ConversationDetail {
     pub agent: Option<ConversationAgent>,
     pub blocked: bool,
     pub takeover: Option<ConversationTakeover>,
+    /// When the agent's turn now in flight on this conversation began; `None`
+    /// while the agent is idle. Older backends omit it.
+    #[serde(default)]
+    pub active_turn_started_at: Option<String>,
     /// The asker behind the thread when this is an inter-agent
     /// (`agent:`) conversation.
     #[serde(default)]
