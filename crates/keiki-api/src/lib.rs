@@ -78,6 +78,7 @@ pub enum ConversationAction {
     Messages,
     Steer,
     Terminal,
+    Browser,
     /// Ends an inter-agent (`agent:`) thread — not a contact block.
     End,
 }
@@ -91,6 +92,7 @@ impl ConversationAction {
             Self::Messages => "messages",
             Self::Steer => "steer",
             Self::Terminal => "terminal",
+            Self::Browser => "browser",
             Self::End => "end",
         }
     }
@@ -101,6 +103,19 @@ impl ConversationAction {
 pub struct TerminalSize {
     pub cols: u16,
     pub rows: u16,
+}
+
+/// A short-lived capability to watch and drive the browser the conversation's
+/// agent handed off: `url` is the runner's screencast WebSocket, `token` the
+/// first message's credential. The bearer secrets stay on the platform.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserScreencast {
+    pub session_id: String,
+    /// Unix millis.
+    pub expires_at: u64,
+    pub url: String,
+    pub token: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1147,6 +1162,39 @@ impl Client {
     }
 
     /// `/conversations/:identity/terminal[/:terminal_id/:tail]?agentId=`.
+    /// Whether the conversation's agent currently has a browser handed off.
+    pub async fn browser_available(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<bool, Error> {
+        #[derive(Deserialize)]
+        struct Availability {
+            available: bool,
+        }
+        let endpoint = self.conversation_endpoint(locator, Some(ConversationAction::Browser))?;
+        let response: Availability = self
+            .send_json(self.http.get(endpoint).bearer_auth(access_token))
+            .await?;
+        Ok(response.available)
+    }
+
+    /// Mint a screencast capability for the conversation's live browser.
+    pub async fn browser_screencast(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<BrowserScreencast, Error> {
+        let mut endpoint =
+            self.conversation_endpoint(locator, Some(ConversationAction::Browser))?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::InvalidContract)?
+            .push("screencast");
+        self.send_json(self.http.post(endpoint).bearer_auth(access_token))
+            .await
+    }
+
     fn terminal_endpoint(
         &self,
         locator: &ConversationLocator,

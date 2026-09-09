@@ -78,6 +78,8 @@ libc = "0.2"
 gethostname = "1"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3"
+# JPEG decode for the browser screencast; the same crate gpui already builds.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 async-trait = "0.1"
 
 # serialization
