@@ -52,6 +52,7 @@ use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod spaces;
 mod tabs;
+mod threads;
 
 use spaces::{AddSpaceFlow, RenameSpaceDialog};
 
@@ -427,6 +428,8 @@ pub enum RightSurface {
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
     /// keys [`Shell::subagent_tabs`].
     Subagent(u64),
+    /// The selected agent's agent-to-agent threads (one per chat).
+    Conversations,
 }
 
 /// Per-chat panel open flags (zeron parity: `sessionPanels` — the terminal and
@@ -1647,6 +1650,9 @@ impl Shell {
                     .subagent_tabs
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone())),
+                RightSurface::Conversations => {
+                    Some((*surface, SharedString::from("Conversations")))
+                }
                 RightSurface::Picker => None,
             })
             .collect()
@@ -1724,9 +1730,20 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
-            RightSurface::Picker => {}
+            RightSurface::Conversations | RightSurface::Picker => {}
         }
         cx.notify();
+    }
+
+    /// The picker's Conversations row: one tab per chat, re-activated when it
+    /// already exists.
+    fn add_conversations_surface(&mut self, cx: &mut Context<Self>) {
+        let key = self.panel_key(cx);
+        let tabs = self.right_tabs.entry(key).or_default();
+        if !tabs.contains(&RightSurface::Conversations) {
+            tabs.push(RightSurface::Conversations);
+        }
+        self.set_right_active(RightSurface::Conversations, cx);
     }
 
     /// The picker's Git card / the `+` menu's Diff row: every click opens a
@@ -1891,7 +1908,7 @@ impl Shell {
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
                 }
             }
-            RightSurface::Picker => {}
+            RightSurface::Conversations | RightSurface::Picker => {}
         }
         self.panels.update(&key, |p| {
             if p.right_active == surface {
@@ -5189,6 +5206,7 @@ impl Shell {
                         .children(pill)
                         .into_any_element()
                 }
+                RightSurface::Conversations => self.render_peer_threads_surface(cx),
                 _ => self.render_surface_picker(cx),
             }
         } else {
@@ -5236,6 +5254,11 @@ impl Shell {
         let muted = theme.text_muted;
         let border = theme.border;
         let border_strong = theme.border_strong;
+        let keiki_space = self
+            .state
+            .read(cx)
+            .selected_space_row()
+            .is_some_and(|space| crate::keiki::is_keiki_space(&space.id));
         let row = |id: &'static str, icon_path: &'static str, title: &'static str| {
             div()
                 .id(id)
@@ -5281,6 +5304,19 @@ impl Shell {
                             }),
                         ),
                     )
+                    // Agent-to-agent threads only exist on Keiki agents.
+                    .when(keiki_space, |el| {
+                        el.child(
+                            row(
+                                "surface-card-conversations",
+                                icons::CHAT_ROUND_LINE,
+                                "Conversations",
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.add_conversations_surface(cx);
+                            })),
+                        )
+                    })
                     // Git only where there IS git — the pane itself no
                     // longer gates on it (terminals work anywhere).
                     .when(self.space_git_detected(cx), |el| {
@@ -5378,6 +5414,7 @@ impl Shell {
             let icon_path = match surface {
                 RightSurface::Diff(_) => icons::GIT_BRANCH,
                 RightSurface::Subagent(_) => icons::BOT,
+                RightSurface::Conversations => icons::CHAT_ROUND_LINE,
                 _ => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working

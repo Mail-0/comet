@@ -1301,6 +1301,71 @@ pub fn unblock<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
     spawn_conversation_action(state, chat_id, ConversationAction::Unblock, None, None, cx);
 }
 
+/// Whether a peer thread is known to be ended: blocked on the fetched
+/// (selected) conversation, or ended from the Conversations surface.
+pub fn peer_thread_ended(state: &AppState, chat_id: &str) -> bool {
+    state.keiki_ended_threads.contains(chat_id)
+        || state
+            .keiki_conversation()
+            .is_some_and(|conversation| conversation.chat_id == chat_id && conversation.blocked)
+}
+
+/// End an agent-to-agent thread from the Conversations surface: block the
+/// asker's identity on the target agent so the next ask drops at dispatch.
+/// Unlike [`block`] the thread need not be the selected conversation, so the
+/// outcome is kept in [`AppState::keiki_ended_threads`] rather than on the
+/// fetched conversation.
+pub fn end_peer_thread<R: 'static>(state: Entity<AppState>, chat_id: String, cx: &mut Context<R>) {
+    let Some(locator) = conversation_locator(&chat_id) else {
+        return;
+    };
+    let context = state
+        .read(cx)
+        .keiki_client
+        .clone()
+        .zip(state.read(cx).keiki_token.clone());
+    let Some(((client, token), credentials)) =
+        context.zip(state.read(cx).keiki_credentials.clone())
+    else {
+        return;
+    };
+    cx.spawn(async move |_, cx| {
+        let result = authorized(
+            &state.downgrade(),
+            client,
+            token,
+            credentials,
+            "Keiki block update",
+            move |client, access_token| {
+                let locator = locator.clone();
+                async move {
+                    client
+                        .set_conversation_blocked(&access_token, &locator, true)
+                        .await
+                }
+            },
+            cx,
+        )
+        .await;
+        state.update(cx, |state, cx| {
+            match result {
+                Ok(response) if response.blocked => {
+                    state.keiki_ended_threads.insert(chat_id.clone());
+                    if let Some(conversation) = state.keiki_conversation.as_mut()
+                        && conversation.chat_id == chat_id
+                    {
+                        conversation.blocked = true;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%chat_id, %error, "failed to end the peer thread"),
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
 pub fn send<R: 'static>(
     state: Entity<AppState>,
     text: String,

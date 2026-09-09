@@ -394,6 +394,9 @@ pub struct AppState {
     /// Keiki agent ids whose sidebar group shows every conversation, not just
     /// the ones inside the org-wide recent window. Session-only.
     pub(crate) keiki_expanded_agents: HashSet<String>,
+    /// Peer threads this desktop ended (blocked) from the Conversations
+    /// surface — only the selected conversation carries a fetched `blocked`.
+    pub(crate) keiki_ended_threads: HashSet<String>,
     /// Agents whose first full-history fetch is still in flight.
     pub(crate) keiki_expanding_agents: HashSet<String>,
     /// Conversations opened from the sidebar's `+` that Keiki has not seen
@@ -455,6 +458,7 @@ impl AppState {
             keiki_conversation: None,
             keiki_steer_task: None,
             keiki_expanded_agents: HashSet::new(),
+            keiki_ended_threads: HashSet::new(),
             keiki_expanding_agents: HashSet::new(),
             keiki_draft_chats: HashSet::new(),
             engine: None,
