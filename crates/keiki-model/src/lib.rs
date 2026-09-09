@@ -89,6 +89,35 @@ pub struct AgentsResponse {
     pub agents: Vec<AgentSummary>,
 }
 
+/// One saved MCP/service preset on an agent, as the connect and status
+/// endpoints return it. `authorization_url` is the provider page to open when
+/// `status` is `needs_auth`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPreset {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub authorization_url: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpPresetResponse {
+    pub preset: McpPreset,
+}
+
+impl McpPreset {
+    /// `connected_no_tools` counts: the link landed even when the daemon
+    /// couldn't list the service's tools yet.
+    pub fn authorized(&self) -> bool {
+        matches!(self.status.as_str(), "connected" | "connected_no_tools")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrganizationSummary {

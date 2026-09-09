@@ -819,6 +819,7 @@ async fn respond_input_resolves_pending_question() {
                     question: "Which one?".into(),
                     options: vec!["a".into(), "b".into()],
                     multi_select: false,
+                    mcp_connect: None,
                 }])
                 .await
                 .unwrap_or_default();
@@ -897,6 +898,7 @@ async fn respond_input_resolves_pending_question() {
             answers: vec![zeron_proto::UserInputAnswer {
                 question_id: "q1".into(),
                 labels: vec!["b".into()],
+                payload: None,
             }],
         },
     );
@@ -972,6 +974,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
                     question: "Which one?".into(),
                     options: vec!["a".into(), "b".into()],
                     multi_select: false,
+                    mcp_connect: None,
                 }])
                 .await
                 .unwrap_or_default();
@@ -1039,6 +1042,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
             answers: vec![zeron_proto::UserInputAnswer {
                 question_id: "q1".into(),
                 labels: vec!["a".into()],
+                payload: None,
             }],
         },
     );
@@ -1086,6 +1090,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
             answers: vec![zeron_proto::UserInputAnswer {
                 question_id: "q1".into(),
                 labels: vec!["b".into()],
+                payload: None,
             }],
         },
     );
@@ -1163,6 +1168,7 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
                         question: "Which one?".into(),
                         options: vec!["a".into(), "b".into()],
                         multi_select: false,
+                        mcp_connect: None,
                     }])
                     .await;
                     interrupt.cancelled().await;
@@ -1310,6 +1316,7 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
                     question: "Which one?".into(),
                     options: vec!["a".into(), "b".into()],
                     multi_select: false,
+                    mcp_connect: None,
                 };
                 // The pre-fix Claude/Codex shape: surface the question under
                 // the harness's own id BEFORE asking through the bridge.
@@ -1414,6 +1421,7 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
             answers: vec![zeron_proto::UserInputAnswer {
                 question_id: "q1".into(),
                 labels: vec!["a".into()],
+                payload: None,
             }],
         },
     );
