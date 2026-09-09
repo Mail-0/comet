@@ -44,6 +44,7 @@ pub enum KeikiConversationPending {
     Block,
     Send,
     Steer,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +131,22 @@ pub fn desktop_identity(agent_id: &str) -> String {
         "{DESKTOP_IDENTITY_PREFIX}{agent_id}:{}",
         uuid::Uuid::new_v4().simple()
     )
+}
+
+/// The stored title for a conversation: the asker's name on an agent-to-agent
+/// thread (`AppState::chat_title` pairs it with the target), the contact (or
+/// its raw identity) otherwise.
+pub fn conversation_title(conversation: &keiki_model::ConversationSummary) -> String {
+    if let Some(peer) = &conversation.peer {
+        return peer
+            .from_agent_name
+            .clone()
+            .unwrap_or_else(|| "An agent".to_string());
+    }
+    conversation
+        .contact_name
+        .clone()
+        .unwrap_or_else(|| conversation.phone.clone())
 }
 
 /// A chat whose identity was minted by the desktop (see [`desktop_identity`]).
@@ -238,12 +255,7 @@ pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Opti
     Some(Chat {
         id: chat_id(agent_id, &conversation.phone),
         device_id: DEVICE_ID.to_string(),
-        title: Some(
-            conversation
-                .contact_name
-                .clone()
-                .unwrap_or_else(|| conversation.phone.clone()),
-        ),
+        title: Some(conversation_title(conversation)),
         archived: false,
         cwd: None,
         branch: None,
@@ -540,6 +552,7 @@ enum ConversationAction {
     Unblock,
     Send,
     Steer,
+    End,
 }
 
 fn spawn_conversation_action<R: 'static>(
@@ -556,6 +569,7 @@ fn spawn_conversation_action<R: 'static>(
         ConversationAction::Block | ConversationAction::Unblock => KeikiConversationPending::Block,
         ConversationAction::Send => KeikiConversationPending::Send,
         ConversationAction::Steer => KeikiConversationPending::Steer,
+        ConversationAction::End => KeikiConversationPending::End,
     };
     let started = state.update(cx, |state, cx| {
         let started = state.set_keiki_pending(&chat_id, pending);
@@ -698,6 +712,24 @@ fn spawn_conversation_action<R: 'static>(
                     Err(error) => Err(error),
                 }
             }
+            ConversationAction::End => authorized(
+                &task_state.downgrade(),
+                client,
+                token,
+                credentials,
+                "Keiki thread end",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    async move {
+                        client
+                            .end_agent_thread(&access_token, &locator, false)
+                            .await
+                    }
+                },
+                cx,
+            )
+            .await
+            .map(|_| ActionResult::Ended),
             ConversationAction::Steer if is_desktop_conversation(&chat_id) => {
                 // A desktop conversation has no contact on the other end: the
                 // turn streams its answer live, the way a copilot chat does.
@@ -789,6 +821,11 @@ fn spawn_conversation_action<R: 'static>(
                         });
                     }
                 }
+                Ok(ActionResult::Ended) => {
+                    // Ending puts the thread's block in place, so it reads
+                    // ended the same way an ended chat reads blocked.
+                    conversation.blocked = true;
+                }
                 Ok(ActionResult::Steered { reply, detail }) => {
                     // A desktop conversation has no recipient to forward the
                     // reply to; it lands in the transcript instead.
@@ -828,6 +865,7 @@ enum ActionResult {
     Takeover(ConversationTakeover),
     HandBack,
     Blocked(bool),
+    Ended,
     Sent {
         response: keiki_api::SendConversationMessageResponse,
         detail: Option<ConversationDetail>,
@@ -1310,9 +1348,8 @@ pub fn peer_thread_ended(state: &AppState, chat_id: &str) -> bool {
             .is_some_and(|conversation| conversation.chat_id == chat_id && conversation.blocked)
 }
 
-/// End an agent-to-agent thread from the Conversations surface: block the
-/// asker's identity on the target agent so the next ask drops at dispatch.
-/// Unlike [`block`] the thread need not be the selected conversation, so the
+/// End an agent-to-agent thread from the Conversations surface. Unlike
+/// [`end_thread`] the thread need not be the selected conversation, so the
 /// outcome is kept in [`AppState::keiki_ended_threads`] rather than on the
 /// fetched conversation.
 pub fn end_peer_thread<R: 'static>(state: Entity<AppState>, chat_id: String, cx: &mut Context<R>) {
@@ -1335,12 +1372,12 @@ pub fn end_peer_thread<R: 'static>(state: Entity<AppState>, chat_id: String, cx:
             client,
             token,
             credentials,
-            "Keiki block update",
+            "Keiki thread end",
             move |client, access_token| {
                 let locator = locator.clone();
                 async move {
                     client
-                        .set_conversation_blocked(&access_token, &locator, true)
+                        .end_agent_thread(&access_token, &locator, false)
                         .await
                 }
             },
@@ -1349,7 +1386,7 @@ pub fn end_peer_thread<R: 'static>(state: Entity<AppState>, chat_id: String, cx:
         .await;
         state.update(cx, |state, cx| {
             match result {
-                Ok(response) if response.blocked => {
+                Ok(_) => {
                     state.keiki_ended_threads.insert(chat_id.clone());
                     if let Some(conversation) = state.keiki_conversation.as_mut()
                         && conversation.chat_id == chat_id
@@ -1357,13 +1394,21 @@ pub fn end_peer_thread<R: 'static>(state: Entity<AppState>, chat_id: String, cx:
                         conversation.blocked = true;
                     }
                 }
-                Ok(_) => {}
                 Err(error) => tracing::warn!(%chat_id, %error, "failed to end the peer thread"),
             }
             cx.notify();
         });
     })
     .detach();
+}
+
+/// End an inter-agent (`agent:`) thread — block it, settle the asks still
+/// waiting on it, and refuse new asks. The inter-agent equivalent of Block.
+pub fn end_thread<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::End, None, None, cx);
 }
 
 pub fn send<R: 'static>(
@@ -2329,6 +2374,7 @@ mod tests {
             blocked: false,
             takeover: None,
             active_turn_started_at: None,
+            peer: None,
         };
 
         let transcript = map_transcript(&detail);
@@ -2404,6 +2450,7 @@ mod tests {
             blocked: false,
             takeover: None,
             active_turn_started_at: None,
+            peer: None,
         };
 
         let transcript = map_transcript(&detail);

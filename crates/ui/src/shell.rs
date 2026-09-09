@@ -4260,7 +4260,31 @@ impl Shell {
 
         let block_id = chat_id.to_string();
         let unblock_id = chat_id.to_string();
+        // An inter-agent thread's "block" is the end endpoint — it settles
+        // the asks still waiting rather than dropping them silently.
+        let inter_agent = crate::keiki::peer_conversation(chat_id).is_some();
         let mut rows = vec![popover::menu_separator().into_any_element()];
+        if inter_agent && !keiki_blocked {
+            let end_id = chat_id.to_string();
+            rows.push(
+                popover::menu_row(theme, false, format!("chat-keiki-end-{chat_id}"))
+                    .id("chat-keiki-end")
+                    .when(
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::End),
+                        |row| row.opacity(0.45),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if keiki_pending != Some(crate::keiki::KeikiConversationPending::End)
+                            && this.state.read(cx).selected_chat.as_deref() == Some(end_id.as_str())
+                        {
+                            crate::keiki::end_thread(this.state.clone(), cx);
+                        }
+                    }))
+                    .child(SharedString::from("End thread"))
+                    .into_any_element(),
+            );
+            return rows;
+        }
         if !keiki_blocked {
             rows.push(
                 popover::menu_row(theme, false, format!("chat-keiki-block-{chat_id}"))
@@ -4285,18 +4309,24 @@ impl Shell {
                 popover::menu_row(theme, false, format!("chat-keiki-unblock-{chat_id}"))
                     .id("chat-keiki-unblock")
                     .when(
-                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Block),
+                        keiki_pending == Some(crate::keiki::KeikiConversationPending::Block)
+                            || keiki_pending == Some(crate::keiki::KeikiConversationPending::End),
                         |row| row.opacity(0.45),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if keiki_pending != Some(crate::keiki::KeikiConversationPending::Block)
+                            && keiki_pending != Some(crate::keiki::KeikiConversationPending::End)
                             && this.state.read(cx).selected_chat.as_deref()
                                 == Some(unblock_id.as_str())
                         {
                             crate::keiki::unblock(this.state.clone(), cx);
                         }
                     }))
-                    .child(SharedString::from("Unblock"))
+                    .child(SharedString::from(if inter_agent {
+                        "Reopen thread"
+                    } else {
+                        "Unblock"
+                    }))
                     .into_any_element(),
             );
         }
