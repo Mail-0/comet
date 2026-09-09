@@ -394,6 +394,9 @@ pub struct AppState {
     /// Keiki agent ids whose sidebar group shows every conversation, not just
     /// the ones inside the org-wide recent window. Session-only.
     pub(crate) keiki_expanded_agents: HashSet<String>,
+    /// Peer threads this desktop ended (blocked) from the Conversations
+    /// surface — only the selected conversation carries a fetched `blocked`.
+    pub(crate) keiki_ended_threads: HashSet<String>,
     /// Agents whose first full-history fetch is still in flight.
     pub(crate) keiki_expanding_agents: HashSet<String>,
     /// Conversations opened from the sidebar's `+` that Keiki has not seen
@@ -402,7 +405,7 @@ pub struct AppState {
     pub(crate) keiki_draft_chats: HashSet<String>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
-    transcript_task: Option<Task<()>>,
+    pub(crate) transcript_task: Option<Task<()>>,
     change_requests: ChangeRequestClientState,
     change_request_tasks: HashMap<ChangeRequestWatchKey, Task<()>>,
     change_requests_visible: bool,
@@ -455,6 +458,7 @@ impl AppState {
             keiki_conversation: None,
             keiki_steer_task: None,
             keiki_expanded_agents: HashSet::new(),
+            keiki_ended_threads: HashSet::new(),
             keiki_expanding_agents: HashSet::new(),
             keiki_draft_chats: HashSet::new(),
             engine: None,
@@ -1047,6 +1051,24 @@ impl AppState {
         self.spaces.iter().find(|s| s.id == space_id)
     }
 
+    /// A chat's title as shown. A thread another agent opened reads as that
+    /// agent's name — its own row when it is in this org, else the contact
+    /// name the platform stored for it — never its `agent:` identity.
+    pub fn chat_title(&self, chat: &Chat) -> String {
+        if let Some(peer) = crate::keiki::peer_conversation(&chat.id) {
+            return self
+                .space_row(&crate::keiki::agent_id(&peer.source_agent_id))
+                .map(|space| space.display_name().to_string())
+                .or_else(|| {
+                    chat.title
+                        .clone()
+                        .filter(|title| !title.starts_with(crate::keiki::PEER_IDENTITY_PREFIX))
+                })
+                .unwrap_or_else(|| "Agent".to_string());
+        }
+        chat.title.clone().unwrap_or_else(|| "New session".into())
+    }
+
     /// Spaces in display order — case-insensitive alphabetical, the order
     /// both space selectors (sidebar filter, composer picker) list rows in.
     /// Ties break on id so the order is stable across renders.
@@ -1100,7 +1122,7 @@ impl AppState {
     /// flight ([`Self::begin_pending_send`]) reads as Working while its local
     /// command is being drained.
     pub fn display_status_for(&self, chat: &Chat, now: DateTime<Utc>) -> ChatIndicator {
-        if self.send_pending(&chat.id, now) {
+        if self.send_pending(&chat.id, now) || self.keiki_turn_running(&chat.id) {
             return ChatIndicator::Working;
         }
         display_status(chat, self.session_for(&chat.id), now)
@@ -1148,27 +1170,28 @@ impl AppState {
     /// Staleness-checked status dot for a chat row. A send in flight reads as
     /// Working (see [`Self::display_status_for`]).
     pub fn indicator_for(&self, chat_id: &str, now: DateTime<Utc>) -> Indicator {
-        if self.send_pending(chat_id, now) {
+        if self.send_pending(chat_id, now) || self.keiki_turn_running(chat_id) {
             return Indicator::Working;
         }
-        // A steered keiki turn IS the chat's run: there is no engine session
-        // row or pending send to read, so the conversation's pending flag is
-        // the Working signal.
-        if crate::keiki::is_keiki_chat(chat_id)
+        effective_indicator(self.session_for(chat_id), now)
+    }
+
+    /// A keiki turn IS the chat's run: there is no engine session row or
+    /// pending send to read. A steer this desktop sent, or a turn Keiki
+    /// reports running on the conversation (an agent answering a peer agent,
+    /// or a contact), is the Working signal.
+    fn keiki_turn_running(&self, chat_id: &str) -> bool {
+        crate::keiki::is_keiki_chat(chat_id)
             && self
                 .keiki_conversation
                 .as_ref()
                 .is_some_and(|conversation| {
                     conversation.chat_id == chat_id
-                        && matches!(
+                        && (matches!(
                             conversation.pending,
                             Some(crate::keiki::KeikiConversationPending::Steer)
-                        )
+                        ) || conversation.remote_turn_started.is_some())
                 })
-        {
-            return Indicator::Working;
-        }
-        effective_indicator(self.session_for(chat_id), now)
     }
 
     pub fn selected_chat_row(&self) -> Option<&Chat> {
@@ -1198,9 +1221,35 @@ impl AppState {
         }
         conversation.blocked = detail.blocked;
         conversation.takeover = detail.takeover.clone();
+        conversation.remote_turn_started = crate::keiki::remote_turn_started(detail);
         conversation.pending = None;
         conversation.pending_started = None;
         conversation.error = None;
+    }
+
+    /// A refresh while a local action is in flight: that action owns the
+    /// transcript and the pending state, so only what Keiki knows and the
+    /// desktop cannot — the remote turn — is taken from the fetch.
+    pub(crate) fn keiki_action_pending(&self, chat_id: &str) -> bool {
+        self.keiki_conversation
+            .as_ref()
+            .is_some_and(|conversation| {
+                conversation.chat_id == chat_id && conversation.pending.is_some()
+            })
+    }
+
+    pub(crate) fn set_keiki_remote_turn(
+        &mut self,
+        chat_id: &str,
+        detail: &keiki_model::ConversationDetail,
+    ) {
+        if let Some(conversation) = self
+            .keiki_conversation
+            .as_mut()
+            .filter(|conversation| conversation.chat_id == chat_id)
+        {
+            conversation.remote_turn_started = crate::keiki::remote_turn_started(detail);
+        }
     }
 
     pub(crate) fn replace_keiki_conversation(&mut self, chat_id: Option<&str>) {
@@ -1232,7 +1281,11 @@ impl AppState {
         self.keiki_conversation
             .as_ref()
             .filter(|conversation| conversation.chat_id == chat_id)
-            .and_then(|conversation| conversation.pending_started)
+            .and_then(|conversation| {
+                conversation
+                    .pending_started
+                    .or(conversation.remote_turn_started)
+            })
     }
 
     /// The live entry a streamed steered turn folds into. It rides the

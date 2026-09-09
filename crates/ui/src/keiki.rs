@@ -44,6 +44,7 @@ pub enum KeikiConversationPending {
     Block,
     Send,
     Steer,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,10 @@ pub struct KeikiConversation {
     /// When the in-flight action began — the working trailer's timer has no
     /// session row to read for a keiki turn.
     pub pending_started: Option<DateTime<Utc>>,
+    /// When the agent's own turn now running on Keiki began — a reply to a
+    /// peer agent or a contact this desktop did not send. Reported by the
+    /// conversation fetch, so it survives a refresh (unlike `pending`).
+    pub remote_turn_started: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub steer_reply: Option<String>,
 }
@@ -67,6 +72,7 @@ impl KeikiConversation {
             takeover: None,
             pending: None,
             pending_started: None,
+            remote_turn_started: None,
             error: None,
             steer_reply: None,
         }
@@ -127,10 +133,50 @@ pub fn desktop_identity(agent_id: &str) -> String {
     )
 }
 
+/// The stored title for a conversation: the asker's name on an agent-to-agent
+/// thread (`AppState::chat_title` pairs it with the target), the contact (or
+/// its raw identity) otherwise.
+pub fn conversation_title(conversation: &keiki_model::ConversationSummary) -> String {
+    if let Some(peer) = &conversation.peer {
+        return peer
+            .from_agent_name
+            .clone()
+            .unwrap_or_else(|| "An agent".to_string());
+    }
+    conversation
+        .contact_name
+        .clone()
+        .unwrap_or_else(|| conversation.phone.clone())
+}
+
 /// A chat whose identity was minted by the desktop (see [`desktop_identity`]).
 pub fn is_desktop_conversation(chat_id: &str) -> bool {
     conversation_locator(chat_id)
         .is_some_and(|locator| locator.identity.starts_with(DESKTOP_IDENTITY_PREFIX))
+}
+
+/// Identity prefix of the thread one agent opens on another:
+/// `agent:{source_agent_id}:{hashed_source_thread}` (the platform's
+/// `peerThreadIdentity`). The source agent is the "contact" on such a thread.
+pub const PEER_IDENTITY_PREFIX: &str = "agent:";
+
+/// Both ends of an agent-to-agent thread; `None` for any other chat.
+pub struct PeerConversation {
+    pub source_agent_id: String,
+    pub target_agent_id: String,
+}
+
+pub fn peer_conversation(chat_id: &str) -> Option<PeerConversation> {
+    let locator = conversation_locator(chat_id)?;
+    let rest = locator.identity.strip_prefix(PEER_IDENTITY_PREFIX)?;
+    let (source_agent_id, _) = rest.split_once(':')?;
+    if source_agent_id.is_empty() {
+        return None;
+    }
+    Some(PeerConversation {
+        source_agent_id: source_agent_id.to_string(),
+        target_agent_id: locator.agent_id?,
+    })
 }
 
 /// A sidebar row for a conversation Keiki has not stored yet.
@@ -209,12 +255,7 @@ pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Opti
     Some(Chat {
         id: chat_id(agent_id, &conversation.phone),
         device_id: DEVICE_ID.to_string(),
-        title: Some(
-            conversation
-                .contact_name
-                .clone()
-                .unwrap_or_else(|| conversation.phone.clone()),
-        ),
+        title: Some(conversation_title(conversation)),
         archived: false,
         cwd: None,
         branch: None,
@@ -229,6 +270,14 @@ pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Opti
         space_id: Some(crate::keiki::agent_id(agent_id)),
         last_seen_at: None,
     })
+}
+
+/// When the agent's turn now running on the conversation began, if any.
+pub fn remote_turn_started(detail: &ConversationDetail) -> Option<DateTime<Utc>> {
+    detail
+        .active_turn_started_at
+        .as_deref()
+        .and_then(parse_timestamp)
 }
 
 pub fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
@@ -503,6 +552,7 @@ enum ConversationAction {
     Unblock,
     Send,
     Steer,
+    End,
 }
 
 fn spawn_conversation_action<R: 'static>(
@@ -519,6 +569,7 @@ fn spawn_conversation_action<R: 'static>(
         ConversationAction::Block | ConversationAction::Unblock => KeikiConversationPending::Block,
         ConversationAction::Send => KeikiConversationPending::Send,
         ConversationAction::Steer => KeikiConversationPending::Steer,
+        ConversationAction::End => KeikiConversationPending::End,
     };
     let started = state.update(cx, |state, cx| {
         let started = state.set_keiki_pending(&chat_id, pending);
@@ -661,6 +712,24 @@ fn spawn_conversation_action<R: 'static>(
                     Err(error) => Err(error),
                 }
             }
+            ConversationAction::End => authorized(
+                &task_state.downgrade(),
+                client,
+                token,
+                credentials,
+                "Keiki thread end",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    async move {
+                        client
+                            .end_agent_thread(&access_token, &locator, false)
+                            .await
+                    }
+                },
+                cx,
+            )
+            .await
+            .map(|_| ActionResult::Ended),
             ConversationAction::Steer if is_desktop_conversation(&chat_id) => {
                 // A desktop conversation has no contact on the other end: the
                 // turn streams its answer live, the way a copilot chat does.
@@ -752,6 +821,11 @@ fn spawn_conversation_action<R: 'static>(
                         });
                     }
                 }
+                Ok(ActionResult::Ended) => {
+                    // Ending puts the thread's block in place, so it reads
+                    // ended the same way an ended chat reads blocked.
+                    conversation.blocked = true;
+                }
                 Ok(ActionResult::Steered { reply, detail }) => {
                     // A desktop conversation has no recipient to forward the
                     // reply to; it lands in the transcript instead.
@@ -791,6 +865,7 @@ enum ActionResult {
     Takeover(ConversationTakeover),
     HandBack,
     Blocked(bool),
+    Ended,
     Sent {
         response: keiki_api::SendConversationMessageResponse,
         detail: Option<ConversationDetail>,
@@ -1230,8 +1305,8 @@ pub fn interrupt_steer<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>)
         true
     });
     if cancelled {
-        state.update(cx, |_, cx| {
-            spawn_transcript_watch(cx, chat_id).detach();
+        state.update(cx, |state, cx| {
+            state.transcript_task = Some(spawn_transcript_watch(cx, chat_id));
         });
     }
 }
@@ -1262,6 +1337,78 @@ pub fn unblock<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
         return;
     };
     spawn_conversation_action(state, chat_id, ConversationAction::Unblock, None, None, cx);
+}
+
+/// Whether a peer thread is known to be ended: blocked on the fetched
+/// (selected) conversation, or ended from the Conversations surface.
+pub fn peer_thread_ended(state: &AppState, chat_id: &str) -> bool {
+    state.keiki_ended_threads.contains(chat_id)
+        || state
+            .keiki_conversation()
+            .is_some_and(|conversation| conversation.chat_id == chat_id && conversation.blocked)
+}
+
+/// End an agent-to-agent thread from the Conversations surface. Unlike
+/// [`end_thread`] the thread need not be the selected conversation, so the
+/// outcome is kept in [`AppState::keiki_ended_threads`] rather than on the
+/// fetched conversation.
+pub fn end_peer_thread<R: 'static>(state: Entity<AppState>, chat_id: String, cx: &mut Context<R>) {
+    let Some(locator) = conversation_locator(&chat_id) else {
+        return;
+    };
+    let context = state
+        .read(cx)
+        .keiki_client
+        .clone()
+        .zip(state.read(cx).keiki_token.clone());
+    let Some(((client, token), credentials)) =
+        context.zip(state.read(cx).keiki_credentials.clone())
+    else {
+        return;
+    };
+    cx.spawn(async move |_, cx| {
+        let result = authorized(
+            &state.downgrade(),
+            client,
+            token,
+            credentials,
+            "Keiki thread end",
+            move |client, access_token| {
+                let locator = locator.clone();
+                async move {
+                    client
+                        .end_agent_thread(&access_token, &locator, false)
+                        .await
+                }
+            },
+            cx,
+        )
+        .await;
+        state.update(cx, |state, cx| {
+            match result {
+                Ok(_) => {
+                    state.keiki_ended_threads.insert(chat_id.clone());
+                    if let Some(conversation) = state.keiki_conversation.as_mut()
+                        && conversation.chat_id == chat_id
+                    {
+                        conversation.blocked = true;
+                    }
+                }
+                Err(error) => tracing::warn!(%chat_id, %error, "failed to end the peer thread"),
+            }
+            cx.notify();
+        });
+    })
+    .detach();
+}
+
+/// End an inter-agent (`agent:`) thread — block it, settle the asks still
+/// waiting on it, and refuse new asks. The inter-agent equivalent of Block.
+pub fn end_thread<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::End, None, None, cx);
 }
 
 pub fn send<R: 'static>(
@@ -1695,66 +1842,94 @@ async fn poll(entity: gpui::WeakEntity<AppState>, cx: &mut gpui::AsyncApp) {
     }
 }
 
+/// How often the open conversation is re-read while the agent is idle, and
+/// while a turn is running on Keiki (a peer agent's question being answered,
+/// a contact's message) — the latter is what the working indicator follows.
+const TRANSCRIPT_IDLE_POLL: Duration = Duration::from_secs(10);
+const TRANSCRIPT_LIVE_POLL: Duration = Duration::from_secs(3);
+
+/// Follows the selected keiki conversation for as long as it stays selected:
+/// the first read is the transcript, the rest track turns the desktop did not
+/// start. Owned by `transcript_task`, so re-selecting drops it.
 pub fn spawn_transcript_watch(cx: &mut Context<AppState>, chat_id: String) -> Task<()> {
     cx.spawn(async move |this, cx| {
         let locator = match conversation_locator(&chat_id) {
             Some(locator) => locator,
             None => return,
         };
-        let context = this
-            .update(cx, |state, _| {
-                // Nothing to fetch until the first turn has run.
-                if state.is_keiki_draft_chat(&chat_id) {
-                    return None;
-                }
-                Some((
-                    state.keiki_client.clone()?,
-                    state.keiki_token.clone()?,
-                    state.keiki_credentials.clone()?,
-                ))
-            })
-            .ok()
-            .flatten();
-        let Some((client, token, credentials)) = context else {
-            return;
-        };
-        let request_locator = locator.clone();
-        match authorized(
-            &this,
-            client,
-            token,
-            credentials,
-            "Keiki transcript fetch",
-            move |client, access_token| {
-                let locator = request_locator.clone();
-                async move { client.conversation(&access_token, &locator).await }
-            },
-            cx,
-        )
-        .await
-        {
-            Ok(detail) => {
-                this.update(cx, |state, cx| {
-                    if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
-                        state.set_keiki_conversation_detail(&chat_id, &detail);
-                        state.apply_transcript(map_transcript(&detail));
-                        cx.notify();
-                    }
-                })
-                .ok();
-            }
-            Err(error) => {
-                tracing::warn!(%error, %chat_id, "Keiki transcript fetch failed");
-                this.update(cx, |state, cx| {
-                    if let Some(conversation) = state.keiki_conversation.as_mut()
-                        && conversation.chat_id == chat_id
+        loop {
+            let context = this
+                .update(cx, |state, _| {
+                    // Nothing to fetch until the first turn has run.
+                    if state.is_keiki_draft_chat(&chat_id)
+                        || state.selected_chat.as_deref() != Some(chat_id.as_str())
                     {
-                        conversation.error = Some(error.to_string());
-                        cx.notify();
+                        return None;
                     }
+                    Some((
+                        state.keiki_client.clone()?,
+                        state.keiki_token.clone()?,
+                        state.keiki_credentials.clone()?,
+                    ))
                 })
-                .ok();
-            }
+                .ok()
+                .flatten();
+            let Some((client, token, credentials)) = context else {
+                return;
+            };
+            let request_locator = locator.clone();
+            let running = match authorized(
+                &this,
+                client,
+                token,
+                credentials,
+                "Keiki transcript fetch",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    async move { client.conversation(&access_token, &locator).await }
+                },
+                cx,
+            )
+            .await
+            {
+                Ok(detail) => {
+                    let running = detail.active_turn_started_at.is_some();
+                    this.update(cx, |state, cx| {
+                        if state.selected_chat.as_deref() != Some(chat_id.as_str()) {
+                            return;
+                        }
+                        if state.keiki_action_pending(&chat_id) {
+                            state.set_keiki_remote_turn(&chat_id, &detail);
+                        } else {
+                            state.set_keiki_conversation_detail(&chat_id, &detail);
+                            state.apply_transcript(map_transcript(&detail));
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    running
+                }
+                Err(error) => {
+                    tracing::warn!(%error, %chat_id, "Keiki transcript fetch failed");
+                    this.update(cx, |state, cx| {
+                        if let Some(conversation) = state.keiki_conversation.as_mut()
+                            && conversation.chat_id == chat_id
+                        {
+                            conversation.error = Some(error.to_string());
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                    false
+                }
+            };
+            cx.background_executor()
+                .timer(if running {
+                    TRANSCRIPT_LIVE_POLL
+                } else {
+                    TRANSCRIPT_IDLE_POLL
+                })
+                .await;
         }
     })
 }
@@ -2089,6 +2264,19 @@ mod tests {
     }
 
     #[test]
+    fn peer_threads_name_both_agents() {
+        let peer = peer_conversation(&chat_id("target-1", "agent:source-1:abc123"))
+            .expect("an agent: identity is a peer thread");
+        assert_eq!(peer.source_agent_id, "source-1");
+        assert_eq!(peer.target_agent_id, "target-1");
+
+        assert!(peer_conversation(&chat_id("target-1", "+15551234")).is_none());
+        assert!(peer_conversation(&chat_id("target-1", "api:target-1:conv")).is_none());
+        assert!(peer_conversation(&chat_id("target-1", "agent::abc")).is_none());
+        assert!(peer_conversation("chat-1").is_none());
+    }
+
+    #[test]
     fn conversation_dashboard_url_includes_agent_id_without_credentials() {
         let locator = ConversationLocator {
             identity: "+15551234".into(),
@@ -2185,6 +2373,8 @@ mod tests {
             agent: None,
             blocked: false,
             takeover: None,
+            active_turn_started_at: None,
+            peer: None,
         };
 
         let transcript = map_transcript(&detail);
@@ -2259,6 +2449,8 @@ mod tests {
             agent: None,
             blocked: false,
             takeover: None,
+            active_turn_started_at: None,
+            peer: None,
         };
 
         let transcript = map_transcript(&detail);

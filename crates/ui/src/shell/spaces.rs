@@ -1275,7 +1275,7 @@ impl Shell {
                         }
                         SidebarOrganization::ByProject | SidebarOrganization::InOneList => None,
                     };
-                    let raw_title = chat.title.clone().unwrap_or_else(|| "New session".into());
+                    let raw_title = state.chat_title(&chat);
                     // `api:<id>` identities read as the channel label on line 1
                     // and the bare id as the title. Under a group header the
                     // agent name is already the title, so the row doesn't

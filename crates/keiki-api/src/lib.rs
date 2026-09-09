@@ -4,9 +4,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use keiki_model::{
     AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
     BlockConversationResponse, ClearConversationResponse, ConversationDetail, ConversationLocator,
-    ConversationSearchHit, ConversationSummary, ConversationTakeover, CreateAgentFromTemplate,
-    CreateAgentResponse, McpPreset, OrganizationSummary, SendConversationMessageResponse,
-    SessionResponse, SessionUser, SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
+    ConversationSearchHit, ConversationSummary, ConversationTakeover, ConversationThreadPeer,
+    CreateAgentFromTemplate, CreateAgentResponse, EndConversationResponse, McpPreset,
+    OrganizationSummary, SendConversationMessageResponse, SessionResponse, SessionUser,
+    SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
 };
 use keiki_model::{
     AgentTemplatesResponse, AgentsResponse, ConversationSteerInput, ConversationTextInput,
@@ -77,6 +78,8 @@ pub enum ConversationAction {
     Messages,
     Steer,
     Terminal,
+    /// Ends an inter-agent (`agent:`) thread — not a contact block.
+    End,
 }
 
 impl ConversationAction {
@@ -88,6 +91,7 @@ impl ConversationAction {
             Self::Messages => "messages",
             Self::Steer => "steer",
             Self::Terminal => "terminal",
+            Self::End => "end",
         }
     }
 }
@@ -878,6 +882,39 @@ impl Client {
             return Err(Error::InvalidContract);
         }
         Ok(())
+    }
+
+    /// End an inter-agent (`agent:`) conversation thread: the platform
+    /// blocks it, answers every ask still waiting with a terminal notice,
+    /// and refuses new asks at call time. `stop_origin` also blocks the
+    /// asker's own conversation — where the loop driving the thread runs.
+    ///
+    /// The endpoint is a no-op (409) on ordinary conversations.
+    pub fn end_agent_thread_authenticated_request(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        stop_origin: bool,
+    ) -> Result<reqwest::RequestBuilder, Error> {
+        let mut endpoint = self.conversation_endpoint(locator, Some(ConversationAction::End))?;
+        if stop_origin {
+            endpoint.query_pairs_mut().append_pair("origin", "true");
+        }
+        Ok(self.http.post(endpoint).bearer_auth(access_token))
+    }
+
+    pub async fn end_agent_thread(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        stop_origin: bool,
+    ) -> Result<EndConversationResponse, Error> {
+        self.send_json(self.end_agent_thread_authenticated_request(
+            access_token,
+            locator,
+            stop_origin,
+        )?)
+        .await
     }
 
     pub async fn clear_conversation_history(
