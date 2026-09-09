@@ -44,6 +44,7 @@ pub enum KeikiConversationPending {
     Block,
     Send,
     Steer,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +126,32 @@ pub fn desktop_identity(agent_id: &str) -> String {
         "{DESKTOP_IDENTITY_PREFIX}{agent_id}:{}",
         uuid::Uuid::new_v4().simple()
     )
+}
+
+/// Identity prefix the platform gives a thread one agent opened against
+/// another (`agent:{from_agent_id}:{thread}` — see services/agent-peers).
+pub const AGENT_THREAD_IDENTITY_PREFIX: &str = "agent:";
+
+/// Whether a chat's identity is an inter-agent thread.
+pub fn is_agent_thread(id: &str) -> bool {
+    conversation_locator(id)
+        .is_some_and(|locator| locator.identity.starts_with(AGENT_THREAD_IDENTITY_PREFIX))
+}
+
+/// The sidebar/list title for a conversation: `Asker → Agent` on
+/// inter-agent threads, the contact (or its raw identity) otherwise.
+pub fn conversation_title(conversation: &keiki_model::ConversationSummary) -> String {
+    if let Some(peer) = &conversation.peer {
+        return format!(
+            "{} → {}",
+            peer.from_agent_name.as_deref().unwrap_or("An agent"),
+            conversation.agent_name
+        );
+    }
+    conversation
+        .contact_name
+        .clone()
+        .unwrap_or_else(|| conversation.phone.clone())
 }
 
 /// A chat whose identity was minted by the desktop (see [`desktop_identity`]).
@@ -209,12 +236,7 @@ pub fn map_conversation(conversation: &keiki_model::ConversationSummary) -> Opti
     Some(Chat {
         id: chat_id(agent_id, &conversation.phone),
         device_id: DEVICE_ID.to_string(),
-        title: Some(
-            conversation
-                .contact_name
-                .clone()
-                .unwrap_or_else(|| conversation.phone.clone()),
-        ),
+        title: Some(conversation_title(conversation)),
         archived: false,
         cwd: None,
         branch: None,
@@ -503,6 +525,7 @@ enum ConversationAction {
     Unblock,
     Send,
     Steer,
+    End,
 }
 
 fn spawn_conversation_action<R: 'static>(
@@ -519,6 +542,7 @@ fn spawn_conversation_action<R: 'static>(
         ConversationAction::Block | ConversationAction::Unblock => KeikiConversationPending::Block,
         ConversationAction::Send => KeikiConversationPending::Send,
         ConversationAction::Steer => KeikiConversationPending::Steer,
+        ConversationAction::End => KeikiConversationPending::End,
     };
     let started = state.update(cx, |state, cx| {
         let started = state.set_keiki_pending(&chat_id, pending);
@@ -661,6 +685,24 @@ fn spawn_conversation_action<R: 'static>(
                     Err(error) => Err(error),
                 }
             }
+            ConversationAction::End => authorized(
+                &task_state.downgrade(),
+                client,
+                token,
+                credentials,
+                "Keiki thread end",
+                move |client, access_token| {
+                    let locator = request_locator.clone();
+                    async move {
+                        client
+                            .end_agent_thread(&access_token, &locator, false)
+                            .await
+                    }
+                },
+                cx,
+            )
+            .await
+            .map(|_| ActionResult::Ended),
             ConversationAction::Steer if is_desktop_conversation(&chat_id) => {
                 // A desktop conversation has no contact on the other end: the
                 // turn streams its answer live, the way a copilot chat does.
@@ -752,6 +794,11 @@ fn spawn_conversation_action<R: 'static>(
                         });
                     }
                 }
+                Ok(ActionResult::Ended) => {
+                    // Ending puts the thread's block in place, so it reads
+                    // ended the same way an ended chat reads blocked.
+                    conversation.blocked = true;
+                }
                 Ok(ActionResult::Steered { reply, detail }) => {
                     // A desktop conversation has no recipient to forward the
                     // reply to; it lands in the transcript instead.
@@ -791,6 +838,7 @@ enum ActionResult {
     Takeover(ConversationTakeover),
     HandBack,
     Blocked(bool),
+    Ended,
     Sent {
         response: keiki_api::SendConversationMessageResponse,
         detail: Option<ConversationDetail>,
@@ -1262,6 +1310,15 @@ pub fn unblock<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
         return;
     };
     spawn_conversation_action(state, chat_id, ConversationAction::Unblock, None, None, cx);
+}
+
+/// End an inter-agent (`agent:`) thread — block it, settle the asks still
+/// waiting on it, and refuse new asks. The inter-agent equivalent of Block.
+pub fn end_thread<R: 'static>(state: Entity<AppState>, cx: &mut Context<R>) {
+    let Some((chat_id, ..)) = selected_conversation(&state, cx) else {
+        return;
+    };
+    spawn_conversation_action(state, chat_id, ConversationAction::End, None, None, cx);
 }
 
 pub fn send<R: 'static>(
@@ -2185,6 +2242,7 @@ mod tests {
             agent: None,
             blocked: false,
             takeover: None,
+            peer: None,
         };
 
         let transcript = map_transcript(&detail);
@@ -2259,6 +2317,7 @@ mod tests {
             agent: None,
             blocked: false,
             takeover: None,
+            peer: None,
         };
 
         let transcript = map_transcript(&detail);

@@ -322,6 +322,31 @@ pub struct ConversationSummary {
     pub message_count: u32,
     pub is_active: bool,
     pub has_errors: bool,
+    /// The asker behind the thread — set only for inter-agent (`agent:`)
+    /// conversations, where another agent is the contact.
+    #[serde(default)]
+    pub peer: Option<ConversationThreadPeer>,
+}
+
+/// The asker behind an inter-agent (`agent:`) conversation thread. The
+/// summary rows carry only the fields the list needs; the detail rows add
+/// the asker conversation and the ask counts.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationThreadPeer {
+    pub from_agent_id: String,
+    pub from_agent_name: Option<String>,
+    /// The conversation the asks originate from.
+    #[serde(default)]
+    pub from_phone: Option<String>,
+    #[serde(default)]
+    pub asks: u64,
+    /// Asks still unanswered.
+    #[serde(default)]
+    pub pending_asks: u64,
+    /// Asks in the last ten minutes — a high count is a loop, not a dialogue.
+    #[serde(default)]
+    pub recent_asks: u64,
 }
 
 impl ConversationSummary {
@@ -349,6 +374,7 @@ impl std::fmt::Debug for ConversationSummary {
             .field("message_count", &self.message_count)
             .field("is_active", &self.is_active)
             .field("has_errors", &self.has_errors)
+            .field("peer", &self.peer)
             .finish()
     }
 }
@@ -394,6 +420,10 @@ pub struct ConversationDetail {
     pub agent: Option<ConversationAgent>,
     pub blocked: bool,
     pub takeover: Option<ConversationTakeover>,
+    /// The asker behind the thread when this is an inter-agent
+    /// (`agent:`) conversation.
+    #[serde(default)]
+    pub peer: Option<ConversationThreadPeer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -457,6 +487,14 @@ pub struct ConversationSteerInput {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BlockConversationResponse {
     pub blocked: bool,
+}
+
+/// An inter-agent thread the operator ended: `settled` is how many asks
+/// still waiting were answered with the terminal notice.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EndConversationResponse {
+    pub ended: bool,
+    pub settled: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
