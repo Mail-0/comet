@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use keiki_model::{
-    AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
+    AgentGroupSummary, AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
     BlockConversationResponse, ClearConversationResponse, ConversationDetail, ConversationLocator,
     ConversationSearchHit, ConversationSummary, ConversationTakeover, ConversationThreadPeer,
     CreateAgentFromTemplate, CreateAgentResponse, EndConversationResponse, McpPreset,
@@ -10,8 +10,8 @@ pub use keiki_model::{
     SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
 };
 use keiki_model::{
-    AgentTemplatesResponse, AgentsResponse, ConversationSteerInput, ConversationTextInput,
-    ConversationsResponse, McpPresetResponse, SwitchOrgRequest,
+    AgentGroupsResponse, AgentTemplatesResponse, AgentsResponse, ConversationSteerInput,
+    ConversationTextInput, ConversationsResponse, McpPresetResponse, SwitchOrgRequest,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::Rng as _;
@@ -550,6 +550,20 @@ impl Client {
             .send_json(self.list_agents_authenticated_request(access_token))
             .await?;
         Ok(response.agents)
+    }
+
+    pub async fn list_agent_groups(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<AgentGroupSummary>, Error> {
+        let response: AgentGroupsResponse = self
+            .send_json(
+                self.http
+                    .get(self.endpoint("/api/webapp/agent-groups"))
+                    .bearer_auth(access_token),
+            )
+            .await?;
+        Ok(response.groups)
     }
 
     /// Ask the daemon to (re)start a saved preset's authorization. The

@@ -98,6 +98,14 @@ pub fn agent_id(agent_id: &str) -> String {
     format!("{AGENT_PREFIX}{agent_id}")
 }
 
+/// Sidebar section key for an agent group, distinct from the agent keys so
+/// the per-agent affordances (`+`, history) don't attach to it.
+pub const GROUP_PREFIX: &str = "keiki-group:";
+
+pub fn group_id(group_id: &str) -> String {
+    format!("{GROUP_PREFIX}{group_id}")
+}
+
 pub fn chat_id(agent_id: &str, phone: &str) -> String {
     format!("{CHAT_PREFIX}{agent_id}:{phone}")
 }
@@ -134,8 +142,9 @@ pub fn desktop_identity(agent_id: &str) -> String {
 }
 
 /// The stored title for a conversation: the asker's name on an agent-to-agent
-/// thread (`AppState::chat_title` pairs it with the target), the contact (or
-/// its raw identity) otherwise.
+/// thread (`AppState::chat_title` pairs it with the target), the contact
+/// otherwise. A desktop-minted identity is a UUID nobody typed, so a chat
+/// without a contact name is titled by its latest message instead.
 pub fn conversation_title(conversation: &keiki_model::ConversationSummary) -> String {
     if let Some(peer) = &conversation.peer {
         return peer
@@ -143,10 +152,18 @@ pub fn conversation_title(conversation: &keiki_model::ConversationSummary) -> St
             .clone()
             .unwrap_or_else(|| "An agent".to_string());
     }
-    conversation
-        .contact_name
-        .clone()
-        .unwrap_or_else(|| conversation.phone.clone())
+    if let Some(name) = &conversation.contact_name {
+        return name.clone();
+    }
+    if conversation.phone.starts_with(DESKTOP_IDENTITY_PREFIX) {
+        let title = crate::rail::truncate_preview(&conversation.last_message, 48);
+        return if title.is_empty() {
+            "New conversation".to_string()
+        } else {
+            title
+        };
+    }
+    conversation.phone.clone()
 }
 
 /// A chat whose identity was minted by the desktop (see [`desktop_identity`]).
@@ -1678,6 +1695,16 @@ pub(crate) async fn refresh_keiki_snapshot(
         .map_err(|error| request_task_error("Keiki state read", error))?
         .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
     let (client, token, credentials, expanded_agents) = context;
+    let groups = authorized(
+        &entity,
+        client.clone(),
+        token.clone(),
+        credentials.clone(),
+        "Keiki agent group list",
+        |client, access_token| async move { client.list_agent_groups(&access_token).await },
+        cx,
+    )
+    .await?;
     let mut conversations = authorized(
         &entity,
         client.clone(),
@@ -1722,6 +1749,7 @@ pub(crate) async fn refresh_keiki_snapshot(
     entity
         .update(cx, |state, cx| {
             state.apply_keiki_snapshot(spaces, chats);
+            state.keiki_agent_groups = groups;
             state.keiki_expanding_agents.clear();
             cx.notify();
         })
@@ -2528,5 +2556,33 @@ mod tests {
             .unwrap();
 
         assert!(map_conversation(&conversation).is_some());
+    }
+
+    fn summary(phone: &str, last_message: &str) -> keiki_model::ConversationSummary {
+        serde_json::from_value(serde_json::json!({
+            "phone": phone,
+            "contactName": null,
+            "agentName": "Planner",
+            "agentId": "agent-1",
+            "apiKey": "redacted-test-key",
+            "lastMessage": last_message,
+            "lastMessageAt": "2026-01-01T00:00:00Z",
+            "lastDirection": "inbound",
+            "messageCount": 1,
+            "isActive": true,
+            "hasErrors": false
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn desktop_conversation_is_titled_by_its_message_not_its_identity() {
+        let phone = format!("{DESKTOP_IDENTITY_PREFIX}agent-1:1bed2607");
+        assert_eq!(
+            conversation_title(&summary(&phone, "say hi to reviewer\nplease")),
+            "say hi to reviewer please"
+        );
+        assert_eq!(conversation_title(&summary(&phone, "")), "New conversation");
+        assert_eq!(conversation_title(&summary("+15551234", "hi")), "+15551234");
     }
 }

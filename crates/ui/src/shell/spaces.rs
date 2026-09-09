@@ -159,6 +159,8 @@ const SIDEBAR_ORGANIZATION_ROWS: usize = 2;
 /// How long after its last message a conversation keeps its agent group's
 /// avatar animating.
 const GROUP_RECENT_ACTIVITY: chrono::Duration = chrono::Duration::minutes(5);
+/// How far each orb in an agent group's header overlaps the one before it.
+const GROUP_ORB_OVERLAP: f32 = 6.0;
 
 // With the search field and card insets, this lets the project picker grow to
 // roughly the same maximum footprint as the sidebar view-options menu while
@@ -1188,9 +1190,13 @@ impl Shell {
         for chat in chats {
             let key = Some(match self.settings.sidebar_organization {
                 SidebarOrganization::ByDevice => (chat.device_id.clone(), String::new()),
-                SidebarOrganization::ByAgent => {
-                    (chat.space_id.clone().unwrap_or_default(), String::new())
-                }
+                SidebarOrganization::ByAgent => (
+                    state
+                        .sidebar_agent_group(&chat)
+                        .map(|(key, _)| key)
+                        .unwrap_or_default(),
+                    String::new(),
+                ),
                 SidebarOrganization::ByProject | SidebarOrganization::InOneList => {
                     (String::new(), String::new())
                 }
@@ -1266,16 +1272,19 @@ impl Shell {
                     let change_request = state.change_request_for_chat(&chat).cloned();
                     let group = match self.settings.sidebar_organization {
                         SidebarOrganization::ByDevice => Some((chat.device_id.clone(), device)),
-                        SidebarOrganization::ByAgent => {
-                            chat.space_id.as_deref().and_then(|space_id| {
-                                state.space_for_chat(&chat).map(|space| {
-                                    (space_id.to_string(), space.display_name().to_string())
-                                })
-                            })
-                        }
+                        SidebarOrganization::ByAgent => state.sidebar_agent_group(&chat),
                         SidebarOrganization::ByProject | SidebarOrganization::InOneList => None,
                     };
-                    let raw_title = state.chat_title(&chat);
+                    // Under an agent group both sides are named, `Asker ↔
+                    // Answerer`; under the answering agent the asker alone.
+                    let in_agent_group = group
+                        .as_ref()
+                        .is_some_and(|(key, _)| key.starts_with(crate::keiki::GROUP_PREFIX));
+                    let raw_title = if in_agent_group {
+                        format!("{} ↔ {project}", state.chat_title(&chat))
+                    } else {
+                        state.chat_title(&chat)
+                    };
                     // `api:<id>` identities read as the channel label on line 1
                     // and the bare id as the title. Under a group header the
                     // agent name is already the title, so the row doesn't
@@ -1532,6 +1541,33 @@ impl Shell {
             } else {
                 keiki_model::AvatarState::Idle
             };
+            // An agent group's header stacks one orb per member, each lit by
+            // the threads that member is answering.
+            let member_avatars: Vec<(String, keiki_model::AvatarState)> = group
+                .as_ref()
+                .and_then(|(key, _)| key.strip_prefix(crate::keiki::GROUP_PREFIX))
+                .and_then(|group_id| {
+                    let state = self.state.read(cx);
+                    let group = state.keiki_agent_groups.iter().find(|g| g.id == group_id)?;
+                    Some(
+                        group
+                            .members
+                            .iter()
+                            .map(|member| {
+                                let space_id = crate::keiki::agent_id(&member.agent_id);
+                                let answering = rows
+                                    .iter()
+                                    .filter(|row| row.chat.space_id.as_deref() == Some(&space_id))
+                                    .map(|row| crate::avatars::avatar_state(row.status));
+                                (
+                                    member.agent_id.clone(),
+                                    crate::avatars::group_avatar_state(answering),
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default();
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for row in rows {
                 let ActiveChatRow {
@@ -1639,17 +1675,46 @@ impl Shell {
             let toggle_motion_key = motion_key.clone();
             let group_avatar = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
             {
-                key.strip_prefix(crate::keiki::AGENT_PREFIX)
-                    .map(|agent_id| {
-                        self.avatar_element(
-                            agent_id,
-                            format!("keiki-avatar-{key}").into(),
-                            group_state,
-                            20.0,
-                            theme,
-                            cx,
-                        )
-                    })
+                if !member_avatars.is_empty() {
+                    let orbs =
+                        member_avatars
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (agent_id, state))| {
+                                div()
+                                    .when(index > 0, |el| el.ml(px(-GROUP_ORB_OVERLAP)))
+                                    .child(self.avatar_element(
+                                        agent_id,
+                                        format!("keiki-avatar-{key}-{agent_id}").into(),
+                                        *state,
+                                        20.0,
+                                        theme,
+                                        cx,
+                                    ))
+                                    .into_any_element()
+                            });
+                    Some(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .flex_none()
+                            .children(orbs.collect::<Vec<_>>())
+                            .into_any_element(),
+                    )
+                } else {
+                    key.strip_prefix(crate::keiki::AGENT_PREFIX)
+                        .map(|agent_id| {
+                            self.avatar_element(
+                                agent_id,
+                                format!("keiki-avatar-{key}").into(),
+                                group_state,
+                                20.0,
+                                theme,
+                                cx,
+                            )
+                        })
+                }
             } else {
                 None
             };

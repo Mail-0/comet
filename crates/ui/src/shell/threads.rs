@@ -23,29 +23,38 @@ impl Shell {
             let Some(space) = state.selected_space_row() else {
                 return self.peer_threads_empty("Select an agent to see its conversations", &theme);
             };
-            let mut chats: Vec<&zeron_proto::Chat> = state
-                .chats_in_space(&space.id)
-                .into_iter()
-                .filter(|chat| crate::keiki::peer_conversation(&chat.id).is_some())
+            // Threads this agent is on either end of: the ones others opened
+            // on it (its own chats) and the ones it opened on other agents
+            // (chats of those agents' spaces, keyed by the asker id).
+            let mut chats: Vec<(&zeron_proto::Chat, crate::keiki::PeerConversation)> = state
+                .visible_chats()
+                .filter_map(|chat| Some((chat, crate::keiki::peer_conversation(&chat.id)?)))
+                .filter(|(chat, peer)| {
+                    chat.space_id.as_deref() == Some(space.id.as_str())
+                        || crate::keiki::agent_id(&peer.source_agent_id) == space.id
+                })
                 .collect();
-            chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_message_at));
+            chats.sort_by_key(|(chat, _)| std::cmp::Reverse(chat.last_message_at));
             chats
                 .into_iter()
-                .filter_map(|chat| {
-                    let peer = crate::keiki::peer_conversation(&chat.id)?;
+                .map(|(chat, peer)| {
                     let status = state.display_status_for(chat, now);
                     let ago = chat
                         .last_message_at
                         .map(|at| zeron_proto::view::format_time_ago(at, now))
                         .unwrap_or_default();
-                    Some(PeerThreadRow {
+                    let target = state
+                        .space_for_chat(chat)
+                        .map(|s| s.display_name().to_string())
+                        .unwrap_or_else(|| "Agent".to_string());
+                    PeerThreadRow {
                         chat_id: chat.id.clone(),
-                        title: format!("{} ↔ {}", state.chat_title(chat), space.display_name()),
+                        title: format!("{} ↔ {}", state.chat_title(chat), target),
                         peer,
                         target_state: crate::avatars::avatar_state(status),
                         ago,
                         ended: crate::keiki::peer_thread_ended(state, &chat.id),
-                    })
+                    }
                 })
                 .collect()
         };
