@@ -98,6 +98,14 @@ pub fn agent_id(agent_id: &str) -> String {
     format!("{AGENT_PREFIX}{agent_id}")
 }
 
+/// Sidebar section key for an agent group, distinct from the agent keys so
+/// the per-agent affordances (`+`, history) don't attach to it.
+pub const GROUP_PREFIX: &str = "keiki-group:";
+
+pub fn group_id(group_id: &str) -> String {
+    format!("{GROUP_PREFIX}{group_id}")
+}
+
 pub fn chat_id(agent_id: &str, phone: &str) -> String {
     format!("{CHAT_PREFIX}{agent_id}:{phone}")
 }
@@ -1687,6 +1695,16 @@ pub(crate) async fn refresh_keiki_snapshot(
         .map_err(|error| request_task_error("Keiki state read", error))?
         .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
     let (client, token, credentials, expanded_agents) = context;
+    let groups = authorized(
+        &entity,
+        client.clone(),
+        token.clone(),
+        credentials.clone(),
+        "Keiki agent group list",
+        |client, access_token| async move { client.list_agent_groups(&access_token).await },
+        cx,
+    )
+    .await?;
     let mut conversations = authorized(
         &entity,
         client.clone(),
@@ -1731,6 +1749,7 @@ pub(crate) async fn refresh_keiki_snapshot(
     entity
         .update(cx, |state, cx| {
             state.apply_keiki_snapshot(spaces, chats);
+            state.keiki_agent_groups = groups;
             state.keiki_expanding_agents.clear();
             cx.notify();
         })

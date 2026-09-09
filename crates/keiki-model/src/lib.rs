@@ -89,6 +89,29 @@ pub struct AgentsResponse {
     pub agents: Vec<AgentSummary>,
 }
 
+/// An agent group: the set of agents allowed to ask each other with
+/// `ask_agent`, as `/api/webapp/agent-groups` returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGroupSummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub members: Vec<AgentGroupMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGroupMember {
+    pub agent_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentGroupsResponse {
+    pub groups: Vec<AgentGroupSummary>,
+}
+
 /// One saved MCP/service preset on an agent, as the connect and status
 /// endpoints return it. `authorization_url` is the provider page to open when
 /// `status` is `needs_auth`.

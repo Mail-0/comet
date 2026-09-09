@@ -394,6 +394,9 @@ pub struct AppState {
     /// Keiki agent ids whose sidebar group shows every conversation, not just
     /// the ones inside the org-wide recent window. Session-only.
     pub(crate) keiki_expanded_agents: HashSet<String>,
+    /// The org's agent groups; an inter-agent thread whose two agents share
+    /// one is listed under the group in the sidebar. Session-only.
+    pub(crate) keiki_agent_groups: Vec<keiki_model::AgentGroupSummary>,
     /// Peer threads this desktop ended (blocked) from the Conversations
     /// surface — only the selected conversation carries a fetched `blocked`.
     pub(crate) keiki_ended_threads: HashSet<String>,
@@ -458,6 +461,7 @@ impl AppState {
             keiki_conversation: None,
             keiki_steer_task: None,
             keiki_expanded_agents: HashSet::new(),
+            keiki_agent_groups: Vec::new(),
             keiki_ended_threads: HashSet::new(),
             keiki_expanding_agents: HashSet::new(),
             keiki_draft_chats: HashSet::new(),
@@ -1067,6 +1071,28 @@ impl AppState {
                 .unwrap_or_else(|| "Agent".to_string());
         }
         chat.title.clone().unwrap_or_else(|| "New session".into())
+    }
+
+    /// The agent group an inter-agent thread belongs to: the first group both
+    /// its asker and its answerer are members of.
+    pub fn agent_group_for_chat(&self, chat: &Chat) -> Option<&keiki_model::AgentGroupSummary> {
+        let peer = crate::keiki::peer_conversation(&chat.id)?;
+        self.keiki_agent_groups.iter().find(|group| {
+            let has = |agent_id: &str| group.members.iter().any(|m| m.agent_id == agent_id);
+            has(&peer.source_agent_id) && has(&peer.target_agent_id)
+        })
+    }
+
+    /// The sidebar section a chat sits under when organised by agent, as
+    /// `(key, label)`: its agent group for an inter-agent thread, else the
+    /// agent that owns it.
+    pub fn sidebar_agent_group(&self, chat: &Chat) -> Option<(String, String)> {
+        if let Some(group) = self.agent_group_for_chat(chat) {
+            return Some((crate::keiki::group_id(&group.id), group.name.clone()));
+        }
+        let space_id = chat.space_id.as_deref()?;
+        let space = self.space_for_chat(chat)?;
+        Some((space_id.to_string(), space.display_name().to_string()))
     }
 
     /// Spaces in display order — case-insensitive alphabetical, the order
@@ -2636,6 +2662,48 @@ mod tests {
                 .chats
                 .iter()
                 .any(|chat| chat.id == "keiki-conv:old:+1555")
+        );
+    }
+
+    #[test]
+    fn inter_agent_thread_sits_under_its_agent_group_else_its_answerer() {
+        let mut state = AppState::new();
+        let mut reviewer = space(
+            "keiki-agent:reviewer",
+            crate::keiki::DEVICE_ID,
+            "Reviewer",
+            1,
+        );
+        reviewer.name = Some("Reviewer".into());
+        let mut thread = chat("keiki-conv:reviewer:agent:planner:abc", 2, None);
+        thread.device_id = crate::keiki::DEVICE_ID.into();
+        thread.space_id = Some("keiki-agent:reviewer".into());
+        state.apply_keiki_snapshot(vec![reviewer], vec![thread.clone()]);
+
+        assert_eq!(
+            state.sidebar_agent_group(&thread),
+            Some(("keiki-agent:reviewer".into(), "Reviewer".into()))
+        );
+
+        let member = |agent_id: &str| keiki_model::AgentGroupMember {
+            agent_id: agent_id.into(),
+            name: agent_id.into(),
+        };
+        state.keiki_agent_groups = vec![
+            keiki_model::AgentGroupSummary {
+                id: "g-other".into(),
+                name: "Other".into(),
+                members: vec![member("planner"), member("executor")],
+            },
+            keiki_model::AgentGroupSummary {
+                id: "g-review".into(),
+                name: "Review loop".into(),
+                members: vec![member("planner"), member("reviewer")],
+            },
+        ];
+        assert_eq!(
+            state.sidebar_agent_group(&thread),
+            Some(("keiki-group:g-review".into(), "Review loop".into()))
         );
     }
 
