@@ -77,6 +77,7 @@ pub enum ConversationAction {
     Takeover,
     Messages,
     Steer,
+    Terminal,
     /// Ends an inter-agent (`agent:`) thread — not a contact block.
     End,
 }
@@ -89,9 +90,17 @@ impl ConversationAction {
             Self::Takeover => "takeover",
             Self::Messages => "messages",
             Self::Steer => "steer",
+            Self::Terminal => "terminal",
             Self::End => "end",
         }
     }
+}
+
+/// A terminal's `{cols, rows}`, as the platform takes it on open and resize.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1024,6 +1033,137 @@ impl Client {
         }
     }
 
+    /// Whether the conversation has a sandbox a terminal could attach to.
+    pub async fn terminal_available(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<bool, Error> {
+        #[derive(Deserialize)]
+        struct Availability {
+            available: bool,
+        }
+        let response: Availability = self
+            .send_json(
+                self.http
+                    .get(self.terminal_endpoint(locator, None)?)
+                    .bearer_auth(access_token),
+            )
+            .await?;
+        Ok(response.available)
+    }
+
+    /// Open a shell in the conversation's sandbox; returns the terminal id.
+    pub async fn open_terminal(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        size: TerminalSize,
+    ) -> Result<String, Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Opened {
+            terminal_id: String,
+        }
+        let response: Opened = self
+            .send_json(
+                self.http
+                    .post(self.terminal_endpoint(locator, None)?)
+                    .bearer_auth(access_token)
+                    .json(&size),
+            )
+            .await?;
+        Ok(response.terminal_id)
+    }
+
+    /// The terminal's output as a `text/event-stream` of `TerminalEvent`
+    /// frames, live from the moment of attaching (the shell keeps no replay).
+    pub async fn terminal_stream(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        terminal_id: &str,
+    ) -> Result<reqwest::Response, Error> {
+        let response = self
+            .http
+            .get(self.terminal_endpoint(locator, Some((terminal_id, "stream")))?)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(Error::Request)?;
+        if response.status().is_success() {
+            Ok(response)
+        } else {
+            Err(response_error(response).await)
+        }
+    }
+
+    /// Keyboard bytes for the shell, base64.
+    pub async fn write_terminal(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        terminal_id: &str,
+        data: String,
+    ) -> Result<(), Error> {
+        self.send_ok(
+            self.http
+                .post(self.terminal_endpoint(locator, Some((terminal_id, "input")))?)
+                .bearer_auth(access_token)
+                .json(&serde_json::json!({ "data": data })),
+        )
+        .await
+    }
+
+    pub async fn resize_terminal(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        terminal_id: &str,
+        size: TerminalSize,
+    ) -> Result<(), Error> {
+        self.send_ok(
+            self.http
+                .post(self.terminal_endpoint(locator, Some((terminal_id, "resize")))?)
+                .bearer_auth(access_token)
+                .json(&size),
+        )
+        .await
+    }
+
+    pub async fn close_terminal(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+        terminal_id: &str,
+    ) -> Result<(), Error> {
+        let mut endpoint = self.terminal_endpoint(locator, None)?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|_| Error::InvalidContract)?
+            .push(terminal_id);
+        self.send_ok(self.http.delete(endpoint).bearer_auth(access_token))
+            .await
+    }
+
+    /// `/conversations/:identity/terminal[/:terminal_id/:tail]?agentId=`.
+    fn terminal_endpoint(
+        &self,
+        locator: &ConversationLocator,
+        terminal: Option<(&str, &str)>,
+    ) -> Result<Url, Error> {
+        let mut endpoint =
+            self.conversation_endpoint(locator, Some(ConversationAction::Terminal))?;
+        if let Some((terminal_id, tail)) = terminal {
+            endpoint
+                .path_segments_mut()
+                .map_err(|_| Error::InvalidContract)?
+                .push(terminal_id)
+                .push(tail);
+        }
+        Ok(endpoint)
+    }
+
     fn conversation_endpoint(
         &self,
         locator: &ConversationLocator,
@@ -1091,6 +1231,16 @@ impl Client {
 
     fn endpoint(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+
+    /// Send and only care that the server accepted it.
+    async fn send_ok(&self, request: reqwest::RequestBuilder) -> Result<(), Error> {
+        let response = request.send().await.map_err(Error::Request)?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(response_error(response).await)
+        }
     }
 
     async fn send_json<T: DeserializeOwned>(

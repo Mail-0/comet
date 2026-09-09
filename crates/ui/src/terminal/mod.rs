@@ -5,7 +5,9 @@
 //! - [`view`] — cell palette, keystroke→bytes encoding, input coalescing, and
 //!   the custom grid-painting element;
 //! - [`panel`] — session-scoped tabs, subscriptions with reconnect backoff,
-//!   drag-reorder, and the Cmd/Ctrl+J toggle action.
+//!   drag-reorder, and the Cmd/Ctrl+J toggle action;
+//! - [`transport`] — where the PTY lives: the engine's terminal RPCs for local
+//!   chats, the platform's sandbox terminal routes for Keiki conversations.
 //!
 //! Method names come from `zeron_rpc::methods` and wire types from
 //! `zeron_proto` (`TerminalSession`, `TerminalEvent`) — the same contract the
@@ -13,4 +15,5 @@
 
 pub mod emulator;
 pub mod panel;
+pub mod transport;
 pub mod view;

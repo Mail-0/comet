@@ -890,6 +890,9 @@ pub struct Shell {
     panels: SessionPanels,
     /// The panel key of the chat currently shown.
     active_chat: String,
+    /// Keiki chats whose sandbox was checked this session: the Terminal
+    /// surface is offered only where a sandbox exists to attach to.
+    keiki_terminal_available: std::collections::HashMap<String, bool>,
     /// Last rendered sidebar order (key + estimated height) — the FLIP baseline
     /// for the §1.6 resort glide.
     sidebar_prev_order: Vec<(String, f32)>,
@@ -1172,6 +1175,7 @@ impl Shell {
             settings,
             panels: SessionPanels::default(),
             active_chat: String::new(),
+            keiki_terminal_available: std::collections::HashMap::new(),
             sidebar_prev_order: Vec::new(),
             sidebar_resort: std::collections::HashMap::new(),
             sidebar_new_keys: std::collections::HashSet::new(),
@@ -1453,6 +1457,7 @@ impl Shell {
         let selected = state.read(cx).selected_chat.clone().unwrap_or_default();
         if selected != self.active_chat {
             self.active_chat = selected;
+            self.check_keiki_terminal(cx);
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched empty state REPLACES that entry —
             // zeron's `/` route redirected into the last-used chat, leaving no
@@ -1517,6 +1522,54 @@ impl Shell {
     /// gates the Changes pane, its toggle, and Cmd-B with zero RPCs.
     fn space_git_detected(&self, cx: &App) -> bool {
         self.state.read(cx).selected_space_git()
+    }
+
+    /// Local chats always have a shell; a Keiki chat only once its sandbox is
+    /// known to exist (never assumed while the check is in flight).
+    fn terminal_offered(&self) -> bool {
+        !crate::keiki::is_keiki_chat(&self.active_chat)
+            || self.keiki_terminal_available.get(&self.active_chat) == Some(&true)
+    }
+
+    fn check_keiki_terminal(&mut self, cx: &mut Context<Self>) {
+        let chat_id = self.active_chat.clone();
+        if self.keiki_terminal_available.contains_key(&chat_id) {
+            return;
+        }
+        let Some(locator) = crate::keiki::conversation_locator(&chat_id) else {
+            return;
+        };
+        let (client, token) = {
+            let state = self.state.read(cx);
+            let Some(client) = state.keiki_client.clone() else {
+                return;
+            };
+            let Some(token) = state.keiki_token.as_ref() else {
+                return;
+            };
+            (client, token.access_token().to_string())
+        };
+        cx.spawn(async move |this, cx| {
+            let request = cx.update(|cx| {
+                gpui_tokio::Tokio::spawn(cx, async move {
+                    client.terminal_available(&token, &locator).await
+                })
+            });
+            let available = match request.await {
+                Ok(Ok(available)) => available,
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, chat_id, "Keiki sandbox check failed");
+                    return;
+                }
+                Err(_) => return,
+            };
+            this.update(cx, |this, cx| {
+                this.keiki_terminal_available.insert(chat_id, available);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The current chat's changes-pane flag (per-session, in-memory), gated on
@@ -1786,6 +1839,9 @@ impl Shell {
     /// The picker's Terminal card / the `+` menu's Terminal row: every click
     /// opens a fresh embedded terminal tab.
     fn add_terminal_surface(&mut self, cx: &mut Context<Self>) {
+        if !self.terminal_offered() {
+            return;
+        }
         let panel = self.right_terminal_panel(cx);
         let opened = panel.update(cx, |panel, cx| {
             panel.set_open(true, cx);
@@ -5327,13 +5383,15 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .child(
-                        row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.add_terminal_surface(cx);
-                            }),
-                        ),
-                    )
+                    .when(self.terminal_offered(), |el| {
+                        el.child(
+                            row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.add_terminal_surface(cx);
+                                }),
+                            ),
+                        )
+                    })
                     // Agent-to-agent threads only exist on Keiki agents.
                     .when(keiki_space, |el| {
                         el.child(
@@ -5666,20 +5724,22 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .child(
-                            popover::menu_row(&theme, false, "right-plus-terminal")
-                                .id("right-plus-terminal-row")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.add_terminal_surface(cx);
-                                    this.close_right_plus(cx);
-                                }))
-                                .child(
-                                    icon(icons::TERMINAL)
-                                        .size(px(13.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(SharedString::from("Terminal")),
-                        )
+                        .when(self.terminal_offered(), |menu| {
+                            menu.child(
+                                popover::menu_row(&theme, false, "right-plus-terminal")
+                                    .id("right-plus-terminal-row")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.add_terminal_surface(cx);
+                                        this.close_right_plus(cx);
+                                    }))
+                                    .child(
+                                        icon(icons::TERMINAL)
+                                            .size(px(13.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Terminal")),
+                            )
+                        })
                         .when(self.space_git_detected(cx), |menu| {
                             menu.child(
                                 popover::menu_row(&theme, false, "right-plus-diff")

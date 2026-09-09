@@ -443,14 +443,19 @@ pub struct TerminalSession {
 }
 
 /// One `SubscribeTerminal` stream item. `seq` is a per-terminal monotonic counter
-/// used for replay resumption (`afterSeq`).
+/// used for replay resumption (`afterSeq`); sources without replay omit it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TerminalEvent {
     /// Output chunk; `data` is base64 (PTY output is raw bytes, not valid UTF-8).
-    Data { seq: u64, data: String },
+    Data {
+        #[serde(default)]
+        seq: u64,
+        data: String,
+    },
     #[serde(rename_all = "camelCase")]
     Exit {
+        #[serde(default)]
         seq: u64,
         exit_code: i32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
