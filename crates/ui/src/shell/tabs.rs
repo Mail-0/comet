@@ -182,11 +182,14 @@ impl Shell {
         // drag region, and buttons. A session appends its target as a muted
         // "project @ device" tag right of the title (the composer footer no
         // longer carries it).
-        let (title, target, harness, on_canvas): (
+        // An agent-to-agent thread is titled by both ends instead —
+        // "[orb] Source ↔ Target [orb]", the target's orb following the run.
+        let (title, target, harness, on_canvas, peer): (
             SharedString,
             Option<SharedString>,
             Option<zeron_proto::HarnessId>,
             bool,
+            Option<(crate::keiki::PeerConversation, keiki_model::AvatarState)>,
         ) = {
             let state = self.state.read(cx);
             match state.selected_chat_row() {
@@ -197,18 +200,48 @@ impl Shell {
                         .and_then(|id| state.space_row(id))
                         .map(|s| s.display_name().to_string())
                         .unwrap_or_else(|| "~".to_string());
+                    let peer = crate::keiki::peer_conversation(&chat.id).map(|peer| {
+                        let status = state.display_status_for(chat, chrono::Utc::now());
+                        (peer, crate::avatars::avatar_state(status))
+                    });
+                    let title = if peer.is_some() {
+                        format!("{} ↔ {folder}", state.chat_title(chat))
+                    } else {
+                        state.chat_title(chat)
+                    };
                     (
-                        SharedString::from(transcript::single_line(
-                            &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                        )),
-                        Some(SharedString::from(folder)),
+                        SharedString::from(transcript::single_line(&title)),
+                        peer.is_none().then(|| SharedString::from(folder)),
                         chat.config.as_ref().map(|c| c.harness),
                         false,
+                        peer,
                     )
                 }
-                None => (SharedString::from(""), None, None, true),
+                None => (SharedString::from(""), None, None, true, None),
             }
         };
+        let (source_orb, target_orb) = peer
+            .map(|(peer, target_state)| {
+                (
+                    Some(self.avatar_element(
+                        &peer.source_agent_id,
+                        "keiki-title-source-avatar".into(),
+                        keiki_model::AvatarState::Idle,
+                        16.0,
+                        &theme,
+                        cx,
+                    )),
+                    Some(self.avatar_element(
+                        &peer.target_agent_id,
+                        "keiki-title-target-avatar".into(),
+                        target_state,
+                        16.0,
+                        &theme,
+                        cx,
+                    )),
+                )
+            })
+            .unwrap_or((None, None));
         let conversation_status = if on_canvas {
             None
         } else {
@@ -477,6 +510,7 @@ impl Shell {
                                 )
                             },
                         )
+                        .children(source_orb)
                         .child(
                             div()
                                 .min_w_0()
@@ -490,6 +524,7 @@ impl Shell {
                                 })
                                 .child(title),
                         )
+                        .children(target_orb)
                         .when_some(target, |el, target| {
                             el.child(
                                 div()
