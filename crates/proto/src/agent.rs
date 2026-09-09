@@ -355,7 +355,9 @@ pub struct UserInputAnswer {
     pub question_id: String,
     pub labels: Vec<String>,
     /// Structured outcome for answers a label can't express — the consent
-    /// result of an `mcp_connect` question (`{ connected, status, error }`).
+    /// result of an `mcp_connect` question (`{ connected, status, error }`,
+    /// `{ check: true }` when the person reports the consent done themselves,
+    /// or `{ cancelled }`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
 }

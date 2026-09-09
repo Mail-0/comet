@@ -426,7 +426,15 @@ pub fn apply_sidecar_refs(chat_id: &str, parts: &mut [MessagePart]) {
 /// identifiers the chip names the child by).
 /// Drops: WriteFile content, EditFile old/new strings, WebFetch prompt, Mcp/Unknown input.
 /// Full inputs remain only in the host's local run journal. Idempotent.
-pub fn sanitize_tool_call(call: &ToolCall) -> ToolCall {
+///
+/// `named_call_inputs` keeps the `Mcp`/`Unknown` argument object — for a run
+/// whose owner already holds the whole call (the copilot: the platform authored
+/// the arguments and stores them with the run), stripping them buys no privacy
+/// and leaves the chip with nothing to show but the tool's name. A local
+/// harness's arguments are host data and stay journal-only, so it passes false.
+/// The heavy file/fetch bodies above are dropped either way: they are bulk, not
+/// the call's identity.
+pub fn sanitize_tool_call(call: &ToolCall, named_call_inputs: bool) -> ToolCall {
     match call {
         ToolCall::WriteFile { path, .. } => ToolCall::WriteFile {
             path: path.clone(),
@@ -441,14 +449,26 @@ pub fn sanitize_tool_call(call: &ToolCall) -> ToolCall {
             url: url.clone(),
             prompt: None,
         },
-        ToolCall::Mcp { server, tool, .. } => ToolCall::Mcp {
+        ToolCall::Mcp {
+            server,
+            tool,
+            input,
+        } => ToolCall::Mcp {
             server: server.clone(),
             tool: tool.clone(),
-            input: spawn_badge(call),
+            input: if named_call_inputs {
+                input.clone()
+            } else {
+                spawn_badge(call)
+            },
         },
-        ToolCall::Unknown { name, .. } => ToolCall::Unknown {
+        ToolCall::Unknown { name, input } => ToolCall::Unknown {
             name: name.clone(),
-            input: spawn_badge(call),
+            input: if named_call_inputs {
+                input.clone()
+            } else {
+                spawn_badge(call)
+            },
         },
         other => other.clone(),
     }
@@ -718,7 +738,7 @@ mod tests {
             path: "/x".into(),
             content: Some("secret".into()),
         };
-        let clean = sanitize_tool_call(&call);
+        let clean = sanitize_tool_call(&call, false);
         assert_eq!(
             clean,
             ToolCall::WriteFile {
@@ -726,7 +746,7 @@ mod tests {
                 content: None
             }
         );
-        assert_eq!(sanitize_tool_call(&clean), clean);
+        assert_eq!(sanitize_tool_call(&clean, false), clean);
     }
 
     /// A spawn keeps the two short identifiers its chip names the child by and
@@ -742,7 +762,7 @@ mod tests {
                 "prompt": "a very long private prompt",
             })),
         };
-        let clean = sanitize_tool_call(&call);
+        let clean = sanitize_tool_call(&call, false);
         assert_eq!(
             clean,
             ToolCall::Unknown {
@@ -754,7 +774,7 @@ mod tests {
             }
         );
         assert_eq!(clean.subagent_model(), Some("haiku"));
-        assert_eq!(sanitize_tool_call(&clean), clean);
+        assert_eq!(sanitize_tool_call(&clean, false), clean);
     }
 
     /// An ordinary tool's input still goes, even when it happens to carry a
@@ -766,7 +786,7 @@ mod tests {
             input: Some(serde_json::json!({ "model": "haiku", "prompt": "secret" })),
         };
         assert_eq!(
-            sanitize_tool_call(&call),
+            sanitize_tool_call(&call, false),
             ToolCall::Unknown {
                 name: "SomeTool".into(),
                 input: None,
@@ -782,7 +802,7 @@ mod tests {
             name: "Agent".into(),
             input: Some(serde_json::json!({ "prompt": "secret", "model": "  " })),
         };
-        let clean = sanitize_tool_call(&call);
+        let clean = sanitize_tool_call(&call, false);
         assert_eq!(
             clean,
             ToolCall::Unknown {
@@ -791,6 +811,37 @@ mod tests {
             }
         );
         assert_eq!(clean.subagent_model(), None);
+    }
+
+    /// A run whose owner already holds the whole call keeps the arguments —
+    /// the heavy bodies still go, and the strip remains the default.
+    #[test]
+    fn sanitize_keeps_named_call_inputs_when_permitted() {
+        let call = ToolCall::Unknown {
+            name: "talk_to_agent".into(),
+            input: Some(serde_json::json!({ "agent": "planner", "goal": "check it" })),
+        };
+        assert_eq!(sanitize_tool_call(&call, true), call.clone());
+        // The same call still strips under the default policy.
+        assert_eq!(
+            sanitize_tool_call(&call, false),
+            ToolCall::Unknown {
+                name: "talk_to_agent".into(),
+                input: None,
+            }
+        );
+        // Bulk bodies are dropped either way.
+        let write = ToolCall::WriteFile {
+            path: "/x".into(),
+            content: Some("body".into()),
+        };
+        assert_eq!(
+            sanitize_tool_call(&write, true),
+            ToolCall::WriteFile {
+                path: "/x".into(),
+                content: None
+            }
+        );
     }
 
     #[test]

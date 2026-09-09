@@ -5373,6 +5373,37 @@ impl Composer {
         self.submit_answers(request_id, answers, cx);
     }
 
+    /// "Done" while a consent tab is open: the person says they finished the
+    /// sign-in but the status poll hasn't seen it flip (a consent that closes
+    /// outside the daemon's callback, a status that lags). Every connect
+    /// answer goes out as `check` — the run verifies the preset itself — and
+    /// the in-flight flow is disowned.
+    fn finish_mcp_connect(&mut self, cx: &mut Context<Self>) {
+        let Some(wizard) = self.wizard.as_mut() else {
+            return;
+        };
+        if wizard.connecting.is_none() {
+            return;
+        }
+        wizard.connecting = None;
+        self.connect_gen += 1;
+        self.connect_task = None;
+        let mut answers = wizard.answers();
+        for question in &wizard.questions {
+            if question.mcp_connect.is_none() {
+                continue;
+            }
+            if let Some(answer) = answers
+                .iter_mut()
+                .find(|answer| answer.question_id == question.id)
+            {
+                answer.payload = Some(serde_json::json!({ "check": true }));
+            }
+        }
+        let request_id = wizard.request_id.clone();
+        self.submit_answers(request_id, answers, cx);
+    }
+
     /// Submit RespondInput and retire the panel.
     fn submit_answers(
         &mut self,
@@ -5709,6 +5740,7 @@ impl Composer {
                         .flex_row()
                         .justify_end()
                         .items_center()
+                        .gap(px(8.0))
                         .px(px(16.0))
                         .pb(px(16.0))
                         .pt(px(4.0))
@@ -5717,6 +5749,13 @@ impl Composer {
                                 .id("wizard-connect-cancel")
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.cancel_mcp_connect(cx)),
+                                ),
+                        )
+                        .child(
+                            crate::popover::btn_ghost(&theme, "Done", "wizard-connect-done")
+                                .id("wizard-connect-done")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.finish_mcp_connect(cx)),
                                 ),
                         ),
                 )
