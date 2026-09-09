@@ -2108,6 +2108,15 @@ impl Shell {
         cx.notify();
     }
 
+    fn copy_keiki_conversation_id(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        if let Some(locator) = crate::keiki::conversation_locator(chat_id) {
+            cx.write_to_clipboard(ClipboardItem::new_string(locator.identity));
+            self.sidebar_notice = Some("Conversation ID copied".into());
+        }
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         self.route = Route::Settings(section);
         self.nav.push(NavEntry::Settings(section));
@@ -4452,6 +4461,29 @@ impl Shell {
                             .child(SharedString::from("Harness session ID")),
                         )
                     })
+                    .when(
+                        crate::keiki::conversation_locator(&chat_id).is_some(),
+                        |menu| {
+                            let copy_id = chat_id.clone();
+                            menu.child(
+                                popover::menu_row(
+                                    &theme,
+                                    false,
+                                    format!("chat-copy-conversation-{chat_id}"),
+                                )
+                                .id("chat-copy-conversation")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_keiki_conversation_id(&copy_id, cx)
+                                }))
+                                .child(
+                                    icon(icons::COPY)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Conversation ID")),
+                            )
+                        },
+                    )
                 }
             }
             .into_any_element();

@@ -511,7 +511,8 @@ enum InterruptAnswer {
     Choice { ids_by_label: Vec<(String, String)> },
     /// The copilot's `connect_mcp` client tool: the consent happened in the
     /// user's browser on this device, so the UI reports the outcome back as
-    /// the answer's `payload` (`{ connected, status }`, `{ cancelled }`, or
+    /// the answer's `payload` (`{ connected, status }`, `{ check }` — the
+    /// person says they finished, verify it — `{ cancelled }`, or
     /// `{ status, error }`) — the picked label alone can't carry it.
     McpConnect,
 }

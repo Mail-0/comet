@@ -1020,6 +1020,7 @@ struct SubagentSink {
     doc_id: String,
     doc: Arc<SessionDoc>,
     entry_id: String,
+    harness_id: HarnessId,
     started_at: i64,
     entry_index: Option<usize>,
     written: Vec<MessagePart>,
@@ -1032,7 +1033,7 @@ impl SubagentSink {
         if !self.dirty || self.folded.is_empty() {
             return;
         }
-        let rendered = render_parts(&self.folded);
+        let rendered = render_parts(&self.folded, self.harness_id);
         let result = match self.entry_index {
             Some(ix) => {
                 let mut w = SegmentWriter::resume(&self.doc, ix, std::mem::take(&mut self.written));
@@ -1069,7 +1070,7 @@ impl SubagentSink {
     /// opens a fresh assistant entry below it — the subagent transcript then
     /// reads like any steered chat.
     fn push_user(&mut self, device_id: &str, text: &str) {
-        let rendered = render_parts(&self.folded);
+        let rendered = render_parts(&self.folded, self.harness_id);
         let closed = match self.entry_index.take() {
             Some(ix) => SegmentWriter::resume(&self.doc, ix, std::mem::take(&mut self.written))
                 .finish(&rendered, MessageStatus::Complete),
@@ -1109,7 +1110,7 @@ impl SubagentSink {
     /// Final flush + entry finalize; returns the transcript JSON for the
     /// frozen blob (entries as the client renders them).
     fn finish(mut self, device_id: &str, status: MessageStatus) -> Option<String> {
-        let rendered = render_parts(&self.folded);
+        let rendered = render_parts(&self.folded, self.harness_id);
         let finished = match self.entry_index {
             Some(ix) => SegmentWriter::resume(&self.doc, ix, std::mem::take(&mut self.written))
                 .finish(&rendered, status),
@@ -1142,9 +1143,21 @@ fn subagent_chip_update(event: &AgentEvent) -> Option<&'static str> {
     }
 }
 
+/// Whether a harness's `Mcp`/`Unknown` call arguments may enter the doc.
+///
+/// Only the copilot's: its calls are authored and stored by the platform that
+/// ran them, so keeping the arguments beside the chip discloses nothing the
+/// run's owner does not already have — and without them the chip can only name
+/// the tool. Every local harness runs on this host, where an argument is the
+/// user's own data and stays in the run journal.
+fn keeps_call_inputs(harness_id: HarnessId) -> bool {
+    matches!(harness_id, HarnessId::Copilot)
+}
+
 /// Apply the render-parts privacy policy: strip heavy/sensitive tool inputs before doc
 /// entry. Full inputs live only in the local run journal.
-fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
+fn render_parts(parts: &[MessagePart], harness_id: HarnessId) -> Vec<MessagePart> {
+    let named_call_inputs = keeps_call_inputs(harness_id);
     parts
         .iter()
         .map(|part| match part {
@@ -1164,7 +1177,7 @@ fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
                 subagent_tail,
             } => MessagePart::Tool {
                 id: id.clone(),
-                call: sanitize_tool_call(call),
+                call: sanitize_tool_call(call, named_call_inputs),
                 is_error: *is_error,
                 resolved: *resolved,
                 // Output summaries, diff stats, and sidecar refs are
@@ -1205,11 +1218,12 @@ fn sync_segment<'a>(
     device_id: &str,
     started_at: i64,
     folded: &[MessagePart],
+    harness_id: HarnessId,
 ) -> Result<(), DocError> {
     if folded.is_empty() {
         return Ok(());
     }
-    let rendered = render_parts(folded);
+    let rendered = render_parts(folded, harness_id);
     if writer.is_none() {
         *writer = Some(SegmentWriter::begin(doc, entry_id, device_id, started_at)?);
     }
@@ -1219,6 +1233,7 @@ fn sync_segment<'a>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_segment<'a>(
     doc: &'a SessionDoc,
     writer: Option<SegmentWriter<'a>>,
@@ -1227,8 +1242,9 @@ fn finish_segment<'a>(
     started_at: i64,
     folded: &[MessagePart],
     status: MessageStatus,
+    harness_id: HarnessId,
 ) -> Result<(), DocError> {
-    let rendered = render_parts(folded);
+    let rendered = render_parts(folded, harness_id);
     match writer {
         Some(w) => w.finish(&rendered, status),
         None if !folded.is_empty() => {
@@ -1489,6 +1505,7 @@ async fn drive_run(
                 if dirty {
                     if let Err(err) = sync_segment(
                         doc_ref, &mut writer, &entry_id, &device_id, segment_started, &folded,
+                        harness_id,
                     ) {
                         tracing::warn!(chat = %chat_id, error = %err, "segment sync failed");
                     }
@@ -1541,6 +1558,7 @@ async fn drive_run(
                         segment_started,
                         &folded,
                         MessageStatus::Complete,
+                        harness_id,
                     ) {
                         tracing::warn!(chat = %chat_id, error = %err, "quiesce segment finish failed");
                     }
@@ -1636,6 +1654,7 @@ async fn drive_run(
                             doc_id: sub_id.clone(),
                             doc: sub_doc,
                             entry_id: new_id(),
+                            harness_id,
                             started_at: now_ms(),
                             entry_index: None,
                             written: Vec::new(),
@@ -1913,6 +1932,7 @@ async fn drive_run(
                 segment_started,
                 &folded,
                 MessageStatus::Complete,
+                harness_id,
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
@@ -2013,6 +2033,7 @@ async fn drive_run(
                     segment_started,
                     &folded,
                     message_status,
+                    harness_id,
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
