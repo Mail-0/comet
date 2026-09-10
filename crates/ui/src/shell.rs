@@ -27,7 +27,7 @@ use zeron_rpc::methods;
 use crate::avatars::{self, AvatarKey, AvatarSnapshot};
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
-use crate::desktop::{Desktop, DesktopEvent};
+use crate::desktop::Desktop;
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
@@ -785,8 +785,6 @@ struct SubagentTab {
 
 struct DesktopTab {
     view: Entity<Desktop>,
-    /// A viewer that finds the sandbox gone closes its own tab.
-    _events: Subscription,
 }
 
 pub struct Shell {
@@ -907,9 +905,6 @@ pub struct Shell {
     panels: SessionPanels,
     /// The panel key of the chat currently shown.
     active_chat: String,
-    /// Keiki chats whose sandbox was checked this session: the Terminal
-    /// surface is offered only where a sandbox exists to attach to.
-    keiki_terminal_available: std::collections::HashMap<String, bool>,
     /// Per Keiki chat: does the agent currently have a browser handed off?
     /// Re-asked on every visit — handoffs come and go within a chat.
     keiki_browser_available: std::collections::HashMap<String, bool>,
@@ -1198,7 +1193,6 @@ impl Shell {
             settings,
             panels: SessionPanels::default(),
             active_chat: String::new(),
-            keiki_terminal_available: std::collections::HashMap::new(),
             keiki_browser_available: std::collections::HashMap::new(),
             sidebar_prev_order: Vec::new(),
             sidebar_resort: std::collections::HashMap::new(),
@@ -1481,7 +1475,6 @@ impl Shell {
         let selected = state.read(cx).selected_chat.clone().unwrap_or_default();
         if selected != self.active_chat {
             self.active_chat = selected;
-            self.check_keiki_terminal(cx);
             self.check_keiki_browser(cx);
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched empty state REPLACES that entry —
@@ -1549,32 +1542,10 @@ impl Shell {
         self.state.read(cx).selected_space_git()
     }
 
-    /// Local chats always have a shell; a Keiki chat only once its sandbox is
-    /// known to exist (never assumed while the check is in flight).
-    fn terminal_offered(&self) -> bool {
-        !crate::keiki::is_keiki_chat(&self.active_chat)
-            || self.keiki_terminal_available.get(&self.active_chat) == Some(&true)
-    }
-
-    /// The desktop lives on the same sandbox as the terminal, but only
-    /// Keiki conversations have one (a local chat's shell is the host's).
+    /// A Keiki conversation's sandbox — created or woken by the platform when
+    /// a surface opens on it — has a desktop; a local chat's host shell has none.
     fn desktop_offered(&self) -> bool {
         crate::keiki::is_keiki_chat(&self.active_chat)
-            && self.keiki_terminal_available.get(&self.active_chat) == Some(&true)
-    }
-
-    fn check_keiki_terminal(&mut self, cx: &mut Context<Self>) {
-        if self
-            .keiki_terminal_available
-            .contains_key(&self.active_chat)
-        {
-            return;
-        }
-        self.check_keiki_availability(
-            |client, token, locator| async move { client.terminal_available(&token, &locator).await },
-            |this| &mut this.keiki_terminal_available,
-            cx,
-        );
     }
 
     fn browser_offered(&self) -> bool {
@@ -1935,9 +1906,6 @@ impl Shell {
     /// The picker's Terminal card / the `+` menu's Terminal row: every click
     /// opens a fresh embedded terminal tab.
     fn add_terminal_surface(&mut self, cx: &mut Context<Self>) {
-        if !self.terminal_offered() {
-            return;
-        }
         let panel = self.right_terminal_panel(cx);
         let opened = panel.update(cx, |panel, cx| {
             panel.set_open(true, cx);
@@ -1975,19 +1943,7 @@ impl Shell {
         self.desktop_seq += 1;
         let id = self.desktop_seq;
         let view = cx.new(|cx| Desktop::new(client, token, locator, cx));
-        let events = cx.subscribe(&view, move |this: &mut Self, _, event, cx| match event {
-            DesktopEvent::Gone => {
-                this.keiki_terminal_available.insert(chat_id.clone(), false);
-                this.drop_desktop_surface(id, cx);
-            }
-        });
-        self.desktops.insert(
-            id,
-            DesktopTab {
-                view,
-                _events: events,
-            },
-        );
+        self.desktops.insert(id, DesktopTab { view });
         let key = self.panel_key(cx);
         self.right_tabs
             .entry(key)
@@ -5548,15 +5504,13 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .when(self.terminal_offered(), |el| {
-                        el.child(
-                            row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.add_terminal_surface(cx);
-                                }),
-                            ),
-                        )
-                    })
+                    .child(
+                        row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.add_terminal_surface(cx);
+                            }),
+                        ),
+                    )
                     .when(self.desktop_offered(), |el| {
                         el.child(
                             row("surface-card-desktop", icons::LAPTOP, "Desktop").on_click(
@@ -5909,22 +5863,20 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .when(self.terminal_offered(), |menu| {
-                            menu.child(
-                                popover::menu_row(&theme, false, "right-plus-terminal")
-                                    .id("right-plus-terminal-row")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.add_terminal_surface(cx);
-                                        this.close_right_plus(cx);
-                                    }))
-                                    .child(
-                                        icon(icons::TERMINAL)
-                                            .size(px(13.0))
-                                            .text_color(theme.text_muted),
-                                    )
-                                    .child(SharedString::from("Terminal")),
-                            )
-                        })
+                        .child(
+                            popover::menu_row(&theme, false, "right-plus-terminal")
+                                .id("right-plus-terminal-row")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.add_terminal_surface(cx);
+                                    this.close_right_plus(cx);
+                                }))
+                                .child(
+                                    icon(icons::TERMINAL)
+                                        .size(px(13.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Terminal")),
+                        )
                         .when(self.desktop_offered(), |menu| {
                             menu.child(
                                 popover::menu_row(&theme, false, "right-plus-desktop")

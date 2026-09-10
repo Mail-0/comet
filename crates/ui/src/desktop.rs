@@ -32,13 +32,6 @@ use vnc::{
 use crate::icons;
 use crate::theme::Theme;
 
-/// The desktop is offered wherever the platform's records say the sandbox
-/// exists; the provider gets the last word when the viewer actually opens.
-pub enum DesktopEvent {
-    /// The sandbox is gone — nothing to show, and the offer should go too.
-    Gone,
-}
-
 enum Status {
     Opening,
     Connected,
@@ -160,8 +153,6 @@ pub struct Desktop {
     _session: Task<()>,
 }
 
-impl EventEmitter<DesktopEvent> for Desktop {}
-
 impl Focusable for Desktop {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -184,17 +175,7 @@ impl Desktop {
                 })
                 .await;
                 let viewer = match opened {
-                    Ok(Some(viewer)) => viewer,
-                    Ok(None) => {
-                        this.update(cx, |this, cx| {
-                            this.status =
-                                Status::Closed("This conversation's sandbox is gone.".into());
-                            cx.emit(DesktopEvent::Gone);
-                            cx.notify();
-                        })
-                        .ok();
-                        return;
-                    }
+                    Ok(viewer) => viewer,
                     Err(message) => {
                         this.update(cx, |this, cx| this.close(message, cx)).ok();
                         return;
