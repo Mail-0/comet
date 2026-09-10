@@ -28,6 +28,53 @@ Do **not** use `xdotool key super+Up` (tiles to half screen).
 
 Cleanup: `pkill -x zeron`. Never `pkill -f zeron` — it matches and kills your own shell command.
 
+### If the X11 window exists but paints stale pixels
+
+First focus and maximize it with `wmctrl`, verify there is only one `zeron`
+process, and check whether actual sidebar/titlebar chrome is visible. A blank
+transcript with visible chrome can be the intended empty state.
+
+If logs select Vulkan llvmpipe but the window keeps pixels from another app,
+relaunch with `VK_ICD_FILENAMES=/dev/null` to make the GPUI wgpu fork fall back
+to GL. Confirm the log says `Selected GPU adapter: ... (Gl)`. Do not assume
+`WGPU_BACKEND=gl` is honored: some versions hardcode Vulkan and GL discovery.
+This is a testing-environment workaround, not a feature fix.
+
+### Native input checks
+
+For Terminal and remote-desktop controls, use real key events rather than
+clipboard-paste `type` actions when testing keyboard forwarding. Click inside
+the surface to focus it first. If a rapid synthetic click does not focus it,
+retry explicit mouse-down, a 0.3-second hold, and mouse-up. Report the initial
+failure and retry result separately; do not silently treat a held-click
+workaround as proof that all click delivery works. Verify Terminal by observing
+the output of a harmless command such as `echo ok`.
+
+### Paired local platform for Desktop testing
+
+When the deployed platform cannot be used, follow sms-kit's
+`.agents/skills/testing-platform-web/SKILL.md`, run its matching Desktop-route
+branch, and launch Comet with `KEIKI_API_URL=http://localhost:8080`.
+Approve the native client's browser OAuth consent against that local platform.
+Use disposable local conversations: one with an existing real Computer Use
+sandbox and one without. Fixture identities must satisfy the platform identity
+validator; arbitrary prefixes such as `qa:` may list but fail detail/terminal
+routes. Never send outbound messages to create a test fixture.
+
+For an isolated disposable Daytona fixture without Archil credentials,
+`SANDBOX_ARCHIL=false` disables Archil (`off` is not the recognized value).
+`SANDBOX_PERSIST_VOLUME=false` also avoids persistent volume setup if durability
+is not being tested. Start Computer Use on the owned sandbox and preserve its
+scope mapping for Comet's availability check. Record the sandbox ID for cleanup;
+do not replace a real framebuffer with a mock. Keep provider secrets out of
+screenshots and logs.
+
+#### Devin Secrets Needed
+
+- `DAYTONA_API_KEY` for the paired local platform's real sandbox provider.
+- Production Keiki credentials only if production coverage is required; a local
+  disposable account can cover the paired branches without production access.
+
 ## Secret Service / keyring is required for sign-in persistence
 
 GPUI writes credentials through the DBus Secret Service. A bare cloud box has no user DBus
