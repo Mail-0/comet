@@ -434,6 +434,8 @@ pub enum RightSurface {
     /// The conversation sandbox's live desktop — the handle keys
     /// [`Shell::desktops`].
     Desktop(u64),
+    /// The live browser the chat's agent handed off (one per chat).
+    Browser,
 }
 
 /// Per-chat panel open flags (zeron parity: `sessionPanels` — the terminal and
@@ -824,6 +826,8 @@ pub struct Shell {
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
     right_terminal: Option<Entity<TerminalPanel>>,
+    /// Browser surfaces by chat id — each holds its own screencast socket.
+    browsers: std::collections::HashMap<String, Entity<crate::browser::BrowserPanel>>,
     /// The surface-tab strip's `+` menu (Terminal / Git diff rows).
     right_plus: popover::Popup<()>,
     /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
@@ -906,6 +910,9 @@ pub struct Shell {
     /// Keiki chats whose sandbox was checked this session: the Terminal
     /// surface is offered only where a sandbox exists to attach to.
     keiki_terminal_available: std::collections::HashMap<String, bool>,
+    /// Per Keiki chat: does the agent currently have a browser handed off?
+    /// Re-asked on every visit — handoffs come and go within a chat.
+    keiki_browser_available: std::collections::HashMap<String, bool>,
     /// Last rendered sidebar order (key + estimated height) — the FLIP baseline
     /// for the §1.6 resort glide.
     sidebar_prev_order: Vec<(String, f32)>,
@@ -1148,6 +1155,7 @@ impl Shell {
             jump_hints: false,
             terminal: None,
             right_terminal: None,
+            browsers: std::collections::HashMap::new(),
             right_plus: popover::Popup::default(),
             diffs: std::collections::HashMap::new(),
             diff_subs: std::collections::HashMap::new(),
@@ -1191,6 +1199,7 @@ impl Shell {
             panels: SessionPanels::default(),
             active_chat: String::new(),
             keiki_terminal_available: std::collections::HashMap::new(),
+            keiki_browser_available: std::collections::HashMap::new(),
             sidebar_prev_order: Vec::new(),
             sidebar_resort: std::collections::HashMap::new(),
             sidebar_new_keys: std::collections::HashSet::new(),
@@ -1473,6 +1482,7 @@ impl Shell {
         if selected != self.active_chat {
             self.active_chat = selected;
             self.check_keiki_terminal(cx);
+            self.check_keiki_browser(cx);
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched empty state REPLACES that entry —
             // zeron's `/` route redirected into the last-used chat, leaving no
@@ -1554,10 +1564,45 @@ impl Shell {
     }
 
     fn check_keiki_terminal(&mut self, cx: &mut Context<Self>) {
-        let chat_id = self.active_chat.clone();
-        if self.keiki_terminal_available.contains_key(&chat_id) {
+        if self
+            .keiki_terminal_available
+            .contains_key(&self.active_chat)
+        {
             return;
         }
+        self.check_keiki_availability(
+            |client, token, locator| async move { client.terminal_available(&token, &locator).await },
+            |this| &mut this.keiki_terminal_available,
+            cx,
+        );
+    }
+
+    fn browser_offered(&self) -> bool {
+        self.keiki_browser_available.get(&self.active_chat) == Some(&true)
+    }
+
+    fn check_keiki_browser(&mut self, cx: &mut Context<Self>) {
+        self.check_keiki_availability(
+            |client, token, locator| async move { client.browser_available(&token, &locator).await },
+            |this| &mut this.keiki_browser_available,
+            cx,
+        );
+    }
+
+    /// Ask the platform whether the active Keiki chat offers a capability and
+    /// record the answer under the chat id.
+    fn check_keiki_availability<F, Fut>(
+        &mut self,
+        probe: F,
+        table: fn(&mut Self) -> &mut std::collections::HashMap<String, bool>,
+        cx: &mut Context<Self>,
+    ) where
+        F: FnOnce(keiki_api::Client, String, keiki_api::ConversationLocator) -> Fut
+            + Send
+            + 'static,
+        Fut: Future<Output = Result<bool, keiki_api::Error>> + Send + 'static,
+    {
+        let chat_id = self.active_chat.clone();
         let Some(locator) = crate::keiki::conversation_locator(&chat_id) else {
             return;
         };
@@ -1572,21 +1617,18 @@ impl Shell {
             (client, token.access_token().to_string())
         };
         cx.spawn(async move |this, cx| {
-            let request = cx.update(|cx| {
-                gpui_tokio::Tokio::spawn(cx, async move {
-                    client.terminal_available(&token, &locator).await
-                })
-            });
+            let request =
+                cx.update(|cx| gpui_tokio::Tokio::spawn(cx, probe(client, token, locator)));
             let available = match request.await {
                 Ok(Ok(available)) => available,
                 Ok(Err(error)) => {
-                    tracing::warn!(%error, chat_id, "Keiki sandbox check failed");
+                    tracing::warn!(%error, chat_id, "Keiki capability check failed");
                     return;
                 }
                 Err(_) => return,
             };
             this.update(cx, |this, cx| {
-                this.keiki_terminal_available.insert(chat_id, available);
+                table(this).insert(chat_id, available);
                 cx.notify();
             })
             .ok();
@@ -1732,6 +1774,10 @@ impl Shell {
                     .desktops
                     .contains_key(id)
                     .then(|| (*surface, SharedString::from("Desktop"))),
+                RightSurface::Browser => self
+                    .browsers
+                    .contains_key(&self.active_chat)
+                    .then(|| (*surface, SharedString::from("Browser"))),
                 RightSurface::Picker => None,
             })
             .collect()
@@ -1809,9 +1855,33 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
-            RightSurface::Conversations | RightSurface::Desktop(_) | RightSurface::Picker => {}
+            RightSurface::Conversations
+            | RightSurface::Desktop(_)
+            | RightSurface::Browser
+            | RightSurface::Picker => {}
         }
         cx.notify();
+    }
+
+    /// The picker's Browser row: one live stream per chat, re-activated when
+    /// it already exists.
+    fn add_browser_surface(&mut self, cx: &mut Context<Self>) {
+        if !self.browser_offered() {
+            return;
+        }
+        let Some(locator) = crate::keiki::conversation_locator(&self.active_chat) else {
+            return;
+        };
+        let state = self.state.clone();
+        self.browsers
+            .entry(self.active_chat.clone())
+            .or_insert_with(|| cx.new(|cx| crate::browser::BrowserPanel::new(state, locator, cx)));
+        let key = self.panel_key(cx);
+        let tabs = self.right_tabs.entry(key).or_default();
+        if !tabs.contains(&RightSurface::Browser) {
+            tabs.push(RightSurface::Browser);
+        }
+        self.set_right_active(RightSurface::Browser, cx);
     }
 
     /// The picker's Conversations row: one tab per chat, re-activated when it
@@ -2044,6 +2114,10 @@ impl Shell {
                 }
             }
             RightSurface::Desktop(id) => self.drop_desktop_surface(id, cx),
+            // Dropping the entity closes its socket.
+            RightSurface::Browser => {
+                self.browsers.remove(&self.active_chat);
+            }
             RightSurface::Conversations | RightSurface::Picker => {}
         }
         self.panels.update(&key, |p| {
@@ -5380,6 +5454,10 @@ impl Shell {
                     .view
                     .clone()
                     .into_any_element(),
+                RightSurface::Browser => match self.browsers.get(&self.active_chat) {
+                    Some(browser) => browser.clone().into_any_element(),
+                    None => self.render_surface_picker(cx),
+                },
                 _ => self.render_surface_picker(cx),
             }
         } else {
@@ -5481,9 +5559,18 @@ impl Shell {
                     })
                     .when(self.desktop_offered(), |el| {
                         el.child(
-                            row("surface-card-desktop", icons::MONITOR, "Desktop").on_click(
+                            row("surface-card-desktop", icons::LAPTOP, "Desktop").on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.add_desktop_surface(cx);
+                                }),
+                            ),
+                        )
+                    })
+                    .when(self.browser_offered(), |el| {
+                        el.child(
+                            row("surface-card-browser", icons::MONITOR, "Browser").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.add_browser_surface(cx);
                                 }),
                             ),
                         )
@@ -5599,7 +5686,8 @@ impl Shell {
                 RightSurface::Diff(_) => icons::GIT_BRANCH,
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::Conversations => icons::CHAT_ROUND_LINE,
-                RightSurface::Desktop(_) => icons::MONITOR,
+                RightSurface::Desktop(_) => icons::LAPTOP,
+                RightSurface::Browser => icons::MONITOR,
                 _ => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working
@@ -5846,11 +5934,27 @@ impl Shell {
                                         this.close_right_plus(cx);
                                     }))
                                     .child(
-                                        icon(icons::MONITOR)
+                                        icon(icons::LAPTOP)
                                             .size(px(13.0))
                                             .text_color(theme.text_muted),
                                     )
                                     .child(SharedString::from("Desktop")),
+                            )
+                        })
+                        .when(self.browser_offered(), |menu| {
+                            menu.child(
+                                popover::menu_row(&theme, false, "right-plus-browser")
+                                    .id("right-plus-browser-row")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.add_browser_surface(cx);
+                                        this.close_right_plus(cx);
+                                    }))
+                                    .child(
+                                        icon(icons::MONITOR)
+                                            .size(px(13.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Browser")),
                             )
                         })
                         .when(self.space_git_detected(cx), |menu| {

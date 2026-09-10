@@ -450,7 +450,7 @@ impl Render for Desktop {
                     .text_size(crate::typography::ui_rems(13.0))
                     .text_color(theme.text_muted)
                     .child(
-                        icons::icon(icons::MONITOR)
+                        icons::icon(icons::LAPTOP)
                             .size(px(20.0))
                             .text_color(theme.text_muted),
                     )
