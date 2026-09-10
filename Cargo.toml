@@ -77,6 +77,10 @@ tokio-util = "0.7"
 libc = "0.2"
 gethostname = "1"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# The Desktop surface: RFB client over the sandbox's noVNC websocket.
+vnc-rs = "0.5"
+# Same major as gpui's, so its `Frame` is the one `RenderImage::new` takes.
+image = { version = "0.25", default-features = false }
 futures = "0.3"
 async-trait = "0.1"
 

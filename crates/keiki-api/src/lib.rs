@@ -78,6 +78,7 @@ pub enum ConversationAction {
     Messages,
     Steer,
     Terminal,
+    Desktop,
     /// Ends an inter-agent (`agent:`) thread — not a contact block.
     End,
 }
@@ -91,6 +92,7 @@ impl ConversationAction {
             Self::Messages => "messages",
             Self::Steer => "steer",
             Self::Terminal => "terminal",
+            Self::Desktop => "desktop",
             Self::End => "end",
         }
     }
@@ -101,6 +103,15 @@ impl ConversationAction {
 pub struct TerminalSize {
     pub cols: u16,
     pub rows: u16,
+}
+
+/// A way into the sandbox's desktop: its noVNC websocket behind the
+/// provider's preview proxy, plus the token that proxy wants
+/// (`x-daytona-preview-token`). Short-lived; fetch one per connection.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DesktopViewer {
+    pub url: String,
+    pub token: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1051,6 +1062,29 @@ impl Client {
             )
             .await?;
         Ok(response.available)
+    }
+
+    /// A viewer for the conversation sandbox's desktop (Computer Use).
+    /// Offered exactly where [`Self::terminal_available`] is (same sandbox),
+    /// but that answer comes from the platform's records — `None` here is
+    /// the provider's word that the sandbox is gone.
+    pub async fn open_desktop(
+        &self,
+        access_token: &str,
+        locator: &ConversationLocator,
+    ) -> Result<Option<DesktopViewer>, Error> {
+        let request = self
+            .http
+            .post(self.conversation_endpoint(locator, Some(ConversationAction::Desktop))?)
+            .bearer_auth(access_token);
+        match self.send_json(request).await {
+            Ok(viewer) => Ok(Some(viewer)),
+            Err(Error::Api {
+                status: StatusCode::NOT_FOUND,
+                ..
+            }) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Open a shell in the conversation's sandbox; returns the terminal id.

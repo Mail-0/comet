@@ -27,6 +27,7 @@ use zeron_rpc::methods;
 use crate::avatars::{self, AvatarKey, AvatarSnapshot};
 use crate::changes::{Changes, ChangesEvent};
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
+use crate::desktop::{Desktop, DesktopEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT, TAB_SLIDE};
@@ -430,6 +431,9 @@ pub enum RightSurface {
     Subagent(u64),
     /// The selected agent's agent-to-agent threads (one per chat).
     Conversations,
+    /// The conversation sandbox's live desktop — the handle keys
+    /// [`Shell::desktops`].
+    Desktop(u64),
 }
 
 /// Per-chat panel open flags (zeron parity: `sessionPanels` — the terminal and
@@ -777,6 +781,12 @@ struct SubagentTab {
     _events: Subscription,
 }
 
+struct DesktopTab {
+    view: Entity<Desktop>,
+    /// A viewer that finds the sandbox gone closes its own tab.
+    _events: Subscription,
+}
+
 pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
@@ -826,6 +836,9 @@ pub struct Shell {
     /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
     subagent_seq: u64,
+    /// Desktop surfaces by id — each tab its own VNC session.
+    desktops: std::collections::HashMap<u64, DesktopTab>,
+    desktop_seq: u64,
     /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
     /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
@@ -1141,6 +1154,8 @@ impl Shell {
             diff_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
             subagent_seq: 0,
+            desktops: std::collections::HashMap::new(),
+            desktop_seq: 0,
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
@@ -1531,6 +1546,13 @@ impl Shell {
             || self.keiki_terminal_available.get(&self.active_chat) == Some(&true)
     }
 
+    /// The desktop lives on the same sandbox as the terminal, but only
+    /// Keiki conversations have one (a local chat's shell is the host's).
+    fn desktop_offered(&self) -> bool {
+        crate::keiki::is_keiki_chat(&self.active_chat)
+            && self.keiki_terminal_available.get(&self.active_chat) == Some(&true)
+    }
+
     fn check_keiki_terminal(&mut self, cx: &mut Context<Self>) {
         let chat_id = self.active_chat.clone();
         if self.keiki_terminal_available.contains_key(&chat_id) {
@@ -1706,6 +1728,10 @@ impl Shell {
                 RightSurface::Conversations => {
                     Some((*surface, SharedString::from("Conversations")))
                 }
+                RightSurface::Desktop(id) => self
+                    .desktops
+                    .contains_key(id)
+                    .then(|| (*surface, SharedString::from("Desktop"))),
                 RightSurface::Picker => None,
             })
             .collect()
@@ -1783,7 +1809,7 @@ impl Shell {
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
-            RightSurface::Conversations | RightSurface::Picker => {}
+            RightSurface::Conversations | RightSurface::Desktop(_) | RightSurface::Picker => {}
         }
         cx.notify();
     }
@@ -1855,6 +1881,59 @@ impl Shell {
                 .push(RightSurface::Terminal(tab));
             self.set_right_active(RightSurface::Terminal(tab), cx);
         }
+    }
+
+    /// The picker's Desktop row / the `+` menu's Desktop row: a fresh VNC
+    /// session onto the conversation sandbox's desktop.
+    fn add_desktop_surface(&mut self, cx: &mut Context<Self>) {
+        if !self.desktop_offered() {
+            return;
+        }
+        let chat_id = self.active_chat.clone();
+        let Some(locator) = crate::keiki::conversation_locator(&chat_id) else {
+            return;
+        };
+        let (client, token) = {
+            let state = self.state.read(cx);
+            let (Some(client), Some(token)) =
+                (state.keiki_client.clone(), state.keiki_token.as_ref())
+            else {
+                return;
+            };
+            (client, token.access_token().to_string())
+        };
+        self.desktop_seq += 1;
+        let id = self.desktop_seq;
+        let view = cx.new(|cx| Desktop::new(client, token, locator, cx));
+        let events = cx.subscribe(&view, move |this: &mut Self, _, event, cx| match event {
+            DesktopEvent::Gone => {
+                this.keiki_terminal_available.insert(chat_id.clone(), false);
+                this.drop_desktop_surface(id, cx);
+            }
+        });
+        self.desktops.insert(
+            id,
+            DesktopTab {
+                view,
+                _events: events,
+            },
+        );
+        let key = self.panel_key(cx);
+        self.right_tabs
+            .entry(key)
+            .or_default()
+            .push(RightSurface::Desktop(id));
+        self.set_right_active(RightSurface::Desktop(id), cx);
+    }
+
+    /// Dropping the view ends its session (the Tokio task is tied to it).
+    fn drop_desktop_surface(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.desktops.remove(&id);
+        let key = self.panel_key(cx);
+        if let Some(tabs) = self.right_tabs.get_mut(&key) {
+            tabs.retain(|s| *s != RightSurface::Desktop(id));
+        }
+        cx.notify();
     }
 
     /// Spawn-chip events from the primary transcript AND from subagent-tab
@@ -1964,6 +2043,7 @@ impl Shell {
                         .update(cx, |s, _| s.unwatch_subagent_doc(&tab.doc_id));
                 }
             }
+            RightSurface::Desktop(id) => self.drop_desktop_surface(id, cx),
             RightSurface::Conversations | RightSurface::Picker => {}
         }
         self.panels.update(&key, |p| {
@@ -5293,6 +5373,13 @@ impl Shell {
                         .into_any_element()
                 }
                 RightSurface::Conversations => self.render_peer_threads_surface(cx),
+                RightSurface::Desktop(id) if self.desktops.contains_key(&id) => self
+                    .desktops
+                    .get(&id)
+                    .expect("checked")
+                    .view
+                    .clone()
+                    .into_any_element(),
                 _ => self.render_surface_picker(cx),
             }
         } else {
@@ -5388,6 +5475,15 @@ impl Shell {
                             row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.add_terminal_surface(cx);
+                                }),
+                            ),
+                        )
+                    })
+                    .when(self.desktop_offered(), |el| {
+                        el.child(
+                            row("surface-card-desktop", icons::MONITOR, "Desktop").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.add_desktop_surface(cx);
                                 }),
                             ),
                         )
@@ -5503,6 +5599,7 @@ impl Shell {
                 RightSurface::Diff(_) => icons::GIT_BRANCH,
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::Conversations => icons::CHAT_ROUND_LINE,
+                RightSurface::Desktop(_) => icons::MONITOR,
                 _ => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working
@@ -5738,6 +5835,22 @@ impl Shell {
                                             .text_color(theme.text_muted),
                                     )
                                     .child(SharedString::from("Terminal")),
+                            )
+                        })
+                        .when(self.desktop_offered(), |menu| {
+                            menu.child(
+                                popover::menu_row(&theme, false, "right-plus-desktop")
+                                    .id("right-plus-desktop-row")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.add_desktop_surface(cx);
+                                        this.close_right_plus(cx);
+                                    }))
+                                    .child(
+                                        icon(icons::MONITOR)
+                                            .size(px(13.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Desktop")),
                             )
                         })
                         .when(self.space_git_detected(cx), |menu| {
