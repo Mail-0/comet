@@ -1059,47 +1059,20 @@ impl Client {
         }
     }
 
-    /// Whether the conversation has a sandbox a terminal could attach to.
-    pub async fn terminal_available(
-        &self,
-        access_token: &str,
-        locator: &ConversationLocator,
-    ) -> Result<bool, Error> {
-        #[derive(Deserialize)]
-        struct Availability {
-            available: bool,
-        }
-        let response: Availability = self
-            .send_json(
-                self.http
-                    .get(self.terminal_endpoint(locator, None)?)
-                    .bearer_auth(access_token),
-            )
-            .await?;
-        Ok(response.available)
-    }
-
-    /// A viewer for the conversation sandbox's desktop (Computer Use).
-    /// Offered exactly where [`Self::terminal_available`] is (same sandbox),
-    /// but that answer comes from the platform's records — `None` here is
-    /// the provider's word that the sandbox is gone.
+    /// A viewer for the conversation sandbox's desktop (Computer Use). The
+    /// platform creates or wakes the sandbox as needed, so this can take a
+    /// while on a conversation that has never run code.
     pub async fn open_desktop(
         &self,
         access_token: &str,
         locator: &ConversationLocator,
-    ) -> Result<Option<DesktopViewer>, Error> {
-        let request = self
-            .http
-            .post(self.conversation_endpoint(locator, Some(ConversationAction::Desktop))?)
-            .bearer_auth(access_token);
-        match self.send_json(request).await {
-            Ok(viewer) => Ok(Some(viewer)),
-            Err(Error::Api {
-                status: StatusCode::NOT_FOUND,
-                ..
-            }) => Ok(None),
-            Err(error) => Err(error),
-        }
+    ) -> Result<DesktopViewer, Error> {
+        self.send_json(
+            self.http
+                .post(self.conversation_endpoint(locator, Some(ConversationAction::Desktop))?)
+                .bearer_auth(access_token),
+        )
+        .await
     }
 
     /// Open a shell in the conversation's sandbox; returns the terminal id.
