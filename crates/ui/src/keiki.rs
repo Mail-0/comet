@@ -60,7 +60,6 @@ pub struct KeikiConversation {
     /// peer agent or a contact this desktop did not send. Reported by the
     /// conversation fetch, so it survives a refresh (unlike `pending`).
     pub remote_turn_started: Option<DateTime<Utc>>,
-    pub liveness: Option<keiki_model::ConversationLiveness>,
     pub tasks: Vec<keiki_model::SubagentTaskSummary>,
     pub error: Option<String>,
     pub steer_reply: Option<String>,
@@ -75,7 +74,6 @@ impl KeikiConversation {
             pending: None,
             pending_started: None,
             remote_turn_started: None,
-            liveness: None,
             tasks: Vec::new(),
             error: None,
             steer_reply: None,
@@ -1858,11 +1856,17 @@ pub(crate) async fn create_agent_from_template(
     .await
 }
 
-pub(crate) async fn cancel_subagent_task(
+async fn authorized_request<T, F, Fut>(
     entity: &WeakEntity<AppState>,
-    task_id: String,
+    operation: &'static str,
+    make_request: F,
     cx: &mut AsyncApp,
-) -> Result<keiki_api::CancelSubagentTaskResponse, keiki_api::Error> {
+) -> Result<T, keiki_api::Error>
+where
+    T: Send + 'static,
+    F: Fn(Client, String) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<T, keiki_api::Error>> + Send + 'static,
+{
     let context = entity
         .update(cx, |state, _| {
             Some((
@@ -1871,7 +1875,7 @@ pub(crate) async fn cancel_subagent_task(
                 state.keiki_credentials.clone()?,
             ))
         })
-        .map_err(|error| request_task_error("Keiki task cancellation state read", error))?
+        .map_err(|error| request_task_error(operation, error))?
         .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
     let (client, token, credentials) = context;
     authorized(
@@ -1879,6 +1883,20 @@ pub(crate) async fn cancel_subagent_task(
         client,
         token,
         credentials,
+        operation,
+        make_request,
+        cx,
+    )
+    .await
+}
+
+pub(crate) async fn cancel_subagent_task(
+    entity: &WeakEntity<AppState>,
+    task_id: String,
+    cx: &mut AsyncApp,
+) -> Result<keiki_api::CancelSubagentTaskResponse, keiki_api::Error> {
+    authorized_request(
+        entity,
         "Keiki task cancellation",
         move |client, access_token| {
             let task_id = task_id.clone();
@@ -1894,22 +1912,8 @@ pub(crate) async fn end_agent_group(
     group_id: String,
     cx: &mut AsyncApp,
 ) -> Result<keiki_api::EndAgentGroupResponse, keiki_api::Error> {
-    let context = entity
-        .update(cx, |state, _| {
-            Some((
-                state.keiki_client.clone()?,
-                state.keiki_token.clone()?,
-                state.keiki_credentials.clone()?,
-            ))
-        })
-        .map_err(|error| request_task_error("Keiki group end state read", error))?
-        .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
-    let (client, token, credentials) = context;
-    authorized(
+    authorized_request(
         entity,
-        client,
-        token,
-        credentials,
         "Keiki group end",
         move |client, access_token| {
             let group_id = group_id.clone();

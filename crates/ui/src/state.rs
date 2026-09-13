@@ -1262,7 +1262,6 @@ impl AppState {
         }
         conversation.blocked = detail.blocked;
         conversation.takeover = detail.takeover.clone();
-        conversation.liveness = detail.liveness;
         conversation.tasks = detail.tasks.clone();
         conversation.remote_turn_started = crate::keiki::remote_turn_started(detail);
         conversation.pending = None;
@@ -1294,7 +1293,6 @@ impl AppState {
             .filter(|conversation| conversation.chat_id == chat_id)
         {
             conversation.remote_turn_started = crate::keiki::remote_turn_started(detail);
-            conversation.liveness = detail.liveness;
             conversation.tasks = detail.tasks.clone();
         }
     }

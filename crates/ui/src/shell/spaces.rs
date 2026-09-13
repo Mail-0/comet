@@ -645,6 +645,28 @@ impl Shell {
                 .all(|key| self.settings.sidebar_collapsed_groups.contains(key))
     }
 
+    fn sync_keiki_expanded_groups(&mut self, cx: &mut Context<Self>) {
+        let expanded = if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            let collapsed = &self.settings.sidebar_collapsed_groups;
+            self.state
+                .read(cx)
+                .keiki_agent_groups
+                .iter()
+                .map(|group| group.id.clone())
+                .filter(|group_id| {
+                    !collapsed.contains(&format!("agent:{}", crate::keiki::group_id(group_id)))
+                })
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        if self.state.read(cx).keiki_expanded_groups != expanded {
+            self.state.update(cx, |state, _| {
+                state.keiki_expanded_groups = expanded;
+            });
+        }
+    }
+
     /// Fold every visible group, or unfold them all when already folded. Runs
     /// no disclosure tween: a whole-list snap reads cleaner than a dozen
     /// staggered accordions.
@@ -1360,6 +1382,7 @@ impl Shell {
             let local_device_id = self.state.read(cx).local_device_id.clone();
             promote_local_device_group(&mut groups, local_device_id.as_deref());
         }
+        self.sync_keiki_expanded_groups(cx);
 
         let selected = self.state.read(cx).selected_chat.clone();
         // Re-checked at render so the chips drop the FRAME a popover opens,
@@ -1675,15 +1698,36 @@ impl Shell {
                     roster.totals.cost_usd
                 )
             });
+            let roster_members = roster.as_ref().map(|roster| {
+                let mut members = roster.members.iter().collect::<Vec<_>>();
+                members.sort_by(|left, right| {
+                    let status_rank = |status| match status {
+                        keiki_model::AgentGroupMemberState::Running => 0,
+                        keiki_model::AgentGroupMemberState::Waiting => 1,
+                        keiki_model::AgentGroupMemberState::Idle => 2,
+                        keiki_model::AgentGroupMemberState::Ended => 3,
+                    };
+                    status_rank(left.status)
+                        .cmp(&status_rank(right.status))
+                        .then_with(|| left.name.cmp(&right.name))
+                });
+                let shown = members.into_iter().take(25).collect::<Vec<_>>();
+                let hidden = roster.members.len().saturating_sub(shown.len());
+                (shown, hidden)
+            });
+            let roster_row_count = roster_members
+                .as_ref()
+                .map(|(members, hidden)| members.len() + if *hidden > 0 { 1 } else { 0 })
+                .unwrap_or(0);
             let roster_rows = if !collapsed {
-                roster.as_ref().map(|roster| {
+                roster_members.as_ref().map(|(members, hidden)| {
                     div()
                         .w_full()
                         .px(px(Theme::SPACE_SM))
                         .flex()
                         .flex_col()
                         .gap(px(3.0))
-                        .children(roster.members.iter().map(|member| {
+                        .children(members.iter().map(|member| {
                             let (status, color) = match member.status {
                                 keiki_model::AgentGroupMemberState::Running => {
                                     ("running", theme.busy)
@@ -1721,17 +1765,24 @@ impl Shell {
                                     member.tokens_in, member.tokens_out, member.cost_usd
                                 )))
                         }))
+                        .when(*hidden > 0, |element| {
+                            element.child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from(format!("+{hidden} more"))),
+                            )
+                        })
                 })
             } else {
                 None
             };
             let body_height = body_height
                 + if !collapsed {
-                    roster
-                        .as_ref()
-                        .map(|roster| {
-                            4.0 + roster.members.len() as f32 * 18.0
-                                + SIDEBAR_LIST_GAP * roster.members.len().saturating_sub(1) as f32
+                    (roster_row_count > 0)
+                        .then(|| {
+                            4.0 + roster_row_count as f32 * 18.0
+                                + SIDEBAR_LIST_GAP * roster_row_count.saturating_sub(1) as f32
                         })
                         .unwrap_or(0.0)
                 } else {
@@ -1756,9 +1807,6 @@ impl Shell {
             let chevron = self.sidebar_disclosure_chevron(&motion_key, !collapsed, theme);
             let toggle_key = collapse_key.clone();
             let toggle_motion_key = motion_key.clone();
-            let toggle_group_id = key
-                .strip_prefix(crate::keiki::GROUP_PREFIX)
-                .map(str::to_string);
             let group_avatar = if self.settings.sidebar_organization == SidebarOrganization::ByAgent
             {
                 if !member_avatars.is_empty() {
@@ -1871,19 +1919,10 @@ impl Shell {
                             this.settings
                                 .sidebar_collapsed_groups
                                 .insert(toggle_key.clone());
-                            if let Some(group_id) = toggle_group_id.as_deref() {
-                                this.state.update(cx, |state, _| {
-                                    state.keiki_expanded_groups.remove(group_id);
-                                });
-                            }
                         } else {
                             this.settings.sidebar_collapsed_groups.remove(&toggle_key);
-                            if let Some(group_id) = toggle_group_id.as_deref() {
-                                this.state.update(cx, |state, _| {
-                                    state.keiki_expanded_groups.insert(group_id.to_string());
-                                });
-                            }
                         }
+                        this.sync_keiki_expanded_groups(cx);
                         this.schedule_save(cx);
                         cx.notify();
                     }));

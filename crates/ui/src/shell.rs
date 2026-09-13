@@ -1952,7 +1952,12 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|conversation| {
                     conversation.chat_id == self.active_chat
-                        && (!conversation.tasks.is_empty() || conversation.liveness.is_some())
+                        && (!conversation.tasks.is_empty()
+                            || state
+                                .keiki_liveness
+                                .get(&self.active_chat)
+                                .and_then(|liveness| *liveness)
+                                .is_some())
                 })
     }
 
