@@ -2,10 +2,11 @@ use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use keiki_model::{
-    AgentGroupSummary, AgentInput, AgentSummary, AgentTemplateSummary, AvatarState, AvatarTheme,
-    BlockConversationResponse, ClearConversationResponse, ConversationDetail, ConversationLocator,
-    ConversationSearchHit, ConversationSummary, ConversationTakeover, ConversationThreadPeer,
-    CreateAgentFromTemplate, CreateAgentResponse, EndConversationResponse, McpPreset,
+    AgentGroupRoster, AgentGroupSummary, AgentInput, AgentSummary, AgentTemplateSummary,
+    AvatarState, AvatarTheme, BlockConversationResponse, CancelSubagentTaskResponse,
+    ClearConversationResponse, ConversationDetail, ConversationLocator, ConversationSearchHit,
+    ConversationSummary, ConversationTakeover, ConversationThreadPeer, CreateAgentFromTemplate,
+    CreateAgentResponse, EndAgentGroupResponse, EndConversationResponse, McpPreset,
     OrganizationSummary, SendConversationMessageResponse, SessionResponse, SessionUser,
     SteerConversationResponse, SwitchOrgResponse, TakeoverResponse,
 };
@@ -599,6 +600,54 @@ impl Client {
             )
             .await?;
         Ok(response.groups)
+    }
+
+    pub async fn agent_group_roster(
+        &self,
+        access_token: &str,
+        group_id: &str,
+    ) -> Result<AgentGroupRoster, Error> {
+        self.send_json(
+            self.http
+                .get(self.endpoint(&format!(
+                    "/api/webapp/agent-groups/{}/roster",
+                    utf8_percent_encode(group_id, NON_ALPHANUMERIC)
+                )))
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    pub async fn end_agent_group(
+        &self,
+        access_token: &str,
+        group_id: &str,
+    ) -> Result<EndAgentGroupResponse, Error> {
+        self.send_json(
+            self.http
+                .post(self.endpoint(&format!(
+                    "/api/webapp/agent-groups/{}/end",
+                    utf8_percent_encode(group_id, NON_ALPHANUMERIC)
+                )))
+                .bearer_auth(access_token),
+        )
+        .await
+    }
+
+    pub async fn cancel_subagent_task(
+        &self,
+        access_token: &str,
+        task_id: &str,
+    ) -> Result<CancelSubagentTaskResponse, Error> {
+        self.send_json(
+            self.http
+                .post(self.endpoint(&format!(
+                    "/api/webapp/subagent-tasks/{}/cancel",
+                    utf8_percent_encode(task_id, NON_ALPHANUMERIC)
+                )))
+                .bearer_auth(access_token),
+        )
+        .await
     }
 
     /// Ask the daemon to (re)start a saved preset's authorization. The

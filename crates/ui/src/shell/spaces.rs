@@ -645,6 +645,28 @@ impl Shell {
                 .all(|key| self.settings.sidebar_collapsed_groups.contains(key))
     }
 
+    fn sync_keiki_expanded_groups(&mut self, cx: &mut Context<Self>) {
+        let expanded = if self.settings.sidebar_organization == SidebarOrganization::ByAgent {
+            let collapsed = &self.settings.sidebar_collapsed_groups;
+            self.state
+                .read(cx)
+                .keiki_agent_groups
+                .iter()
+                .map(|group| group.id.clone())
+                .filter(|group_id| {
+                    !collapsed.contains(&format!("agent:{}", crate::keiki::group_id(group_id)))
+                })
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        if self.state.read(cx).keiki_expanded_groups != expanded {
+            self.state.update(cx, |state, _| {
+                state.keiki_expanded_groups = expanded;
+            });
+        }
+    }
+
     /// Fold every visible group, or unfold them all when already folded. Runs
     /// no disclosure tween: a whole-list snap reads cleaner than a dozen
     /// staggered accordions.
@@ -1360,6 +1382,7 @@ impl Shell {
             let local_device_id = self.state.read(cx).local_device_id.clone();
             promote_local_device_group(&mut groups, local_device_id.as_deref());
         }
+        self.sync_keiki_expanded_groups(cx);
 
         let selected = self.state.read(cx).selected_chat.clone();
         // Re-checked at render so the chips drop the FRAME a popover opens,
@@ -1657,16 +1680,127 @@ impl Shell {
                 } else {
                     0.0
                 };
+            let roster = key
+                .strip_prefix(crate::keiki::GROUP_PREFIX)
+                .and_then(|group_id| {
+                    self.state
+                        .read(cx)
+                        .keiki_group_rosters
+                        .get(group_id)
+                        .cloned()
+                });
+            let roster_summary = roster.as_ref().map(|roster| {
+                format!(
+                    "{} members · {} running · {} waiting · ${:.2}",
+                    roster.totals.members,
+                    roster.totals.running,
+                    roster.totals.waiting,
+                    roster.totals.cost_usd
+                )
+            });
+            let roster_members = roster.as_ref().map(|roster| {
+                let mut members = roster.members.iter().collect::<Vec<_>>();
+                members.sort_by(|left, right| {
+                    let status_rank = |status| match status {
+                        keiki_model::AgentGroupMemberState::Running => 0,
+                        keiki_model::AgentGroupMemberState::Waiting => 1,
+                        keiki_model::AgentGroupMemberState::Idle => 2,
+                        keiki_model::AgentGroupMemberState::Ended => 3,
+                    };
+                    status_rank(left.status)
+                        .cmp(&status_rank(right.status))
+                        .then_with(|| left.name.cmp(&right.name))
+                });
+                let shown = members.into_iter().take(25).collect::<Vec<_>>();
+                let hidden = roster.members.len().saturating_sub(shown.len());
+                (shown, hidden)
+            });
+            let roster_row_count = roster_members
+                .as_ref()
+                .map(|(members, hidden)| members.len() + if *hidden > 0 { 1 } else { 0 })
+                .unwrap_or(0);
+            let roster_rows = if !collapsed {
+                roster_members.as_ref().map(|(members, hidden)| {
+                    div()
+                        .w_full()
+                        .px(px(Theme::SPACE_SM))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0))
+                        .children(members.iter().map(|member| {
+                            let (status, color) = match member.status {
+                                keiki_model::AgentGroupMemberState::Running => {
+                                    ("running", theme.busy)
+                                }
+                                keiki_model::AgentGroupMemberState::Waiting => {
+                                    ("waiting", theme.warning)
+                                }
+                                keiki_model::AgentGroupMemberState::Idle => {
+                                    ("idle", theme.text_faint)
+                                }
+                                keiki_model::AgentGroupMemberState::Ended => {
+                                    ("ended", theme.danger)
+                                }
+                            };
+                            let role = match member.role {
+                                keiki_model::AgentGroupMemberRole::Hub => "hub",
+                                keiki_model::AgentGroupMemberRole::Spoke => "spoke",
+                                keiki_model::AgentGroupMemberRole::Peer => "peer",
+                            };
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .text_size(crate::typography::ui_rems(10.0))
+                                .text_color(theme.text_muted)
+                                .child(div().size(px(5.0)).rounded(px(3.0)).bg(color))
+                                .child(div().flex_1().min_w_0().truncate().child(
+                                    SharedString::from(format!(
+                                        "{} · {} · {}",
+                                        member.name, role, status
+                                    )),
+                                ))
+                                .child(SharedString::from(format!(
+                                    "{} in / {} out · ${:.2}",
+                                    member.tokens_in, member.tokens_out, member.cost_usd
+                                )))
+                        }))
+                        .when(*hidden > 0, |element| {
+                            element.child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from(format!("+{hidden} more"))),
+                            )
+                        })
+                })
+            } else {
+                None
+            };
+            let body_height = body_height
+                + if !collapsed {
+                    (roster_row_count > 0)
+                        .then(|| {
+                            4.0 + roster_row_count as f32 * 18.0
+                                + SIDEBAR_LIST_GAP * roster_row_count.saturating_sub(1) as f32
+                        })
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
             let body = div()
                 .w_full()
                 .flex()
                 .flex_col()
                 .pt(px(SIDEBAR_DISCLOSURE_BODY_INSET))
                 .gap(px(SIDEBAR_LIST_GAP))
+                .children(roster_rows)
                 .children(rendered_rows.into_iter().map(|(_, _, row)| row))
                 .children(history_toggle);
             let visible_label: SharedString = if collapsed {
                 format!("{label} ({row_count})").into()
+            } else if let Some(summary) = roster_summary {
+                format!("{label} · {summary}").into()
             } else {
                 label.into()
             };
@@ -1723,31 +1857,75 @@ impl Shell {
                 .then(|| key.strip_prefix(crate::keiki::AGENT_PREFIX))
                 .flatten()
                 .map(|agent_id| self.render_new_conversation_button(agent_id, theme, cx));
-            let header = sidebar_disclosure_header(
-                theme,
-                visible_label,
-                chevron,
-                group_avatar,
-                new_conversation,
-            )
-            .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let was_open = !this.settings.sidebar_collapsed_groups.contains(&toggle_key);
-                this.begin_sidebar_disclosure_motion(
-                    &toggle_motion_key,
-                    if was_open { body_height } else { 0.0 },
-                    if was_open { 0.0 } else { body_height },
-                );
-                if was_open {
-                    this.settings
-                        .sidebar_collapsed_groups
-                        .insert(toggle_key.clone());
-                } else {
-                    this.settings.sidebar_collapsed_groups.remove(&toggle_key);
-                }
-                this.schedule_save(cx);
-                cx.notify();
-            }));
+            let end_all = roster
+                .as_ref()
+                .and_then(|roster| {
+                    let can_manage = self
+                        .state
+                        .read(cx)
+                        .keiki_session
+                        .as_ref()
+                        .is_some_and(KeikiSessionInfo::can_manage);
+                    let live = roster.totals.running + roster.totals.waiting;
+                    (can_manage && live > 0).then(|| {
+                        let group_id = key.strip_prefix(crate::keiki::GROUP_PREFIX)?.to_string();
+                        let tasks = roster.totals.background_tasks;
+                        Some(
+                            div()
+                                .id(SharedString::from(format!("keiki-end-all-{group_id}")))
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.0))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.element_hover))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.confirm_end_keiki_group(group_id.clone(), live, tasks, cx);
+                                }))
+                                .child(icon(icons::STOP).size(px(12.0)).text_color(theme.danger))
+                                .into_any_element(),
+                        )
+                    })
+                })
+                .flatten();
+            let trailing = match (new_conversation, end_all) {
+                (Some(new_conversation), Some(end_all)) => Some(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(end_all)
+                        .child(new_conversation)
+                        .into_any_element(),
+                ),
+                (Some(new_conversation), None) => Some(new_conversation),
+                (None, Some(end_all)) => Some(end_all),
+                (None, None) => None,
+            };
+            let header =
+                sidebar_disclosure_header(theme, visible_label, chevron, group_avatar, trailing)
+                    .id(SharedString::from(format!("sidebar-group-{collapse_key}")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let was_open =
+                            !this.settings.sidebar_collapsed_groups.contains(&toggle_key);
+                        this.begin_sidebar_disclosure_motion(
+                            &toggle_motion_key,
+                            if was_open { body_height } else { 0.0 },
+                            if was_open { 0.0 } else { body_height },
+                        );
+                        if was_open {
+                            this.settings
+                                .sidebar_collapsed_groups
+                                .insert(toggle_key.clone());
+                        } else {
+                            this.settings.sidebar_collapsed_groups.remove(&toggle_key);
+                        }
+                        this.sync_keiki_expanded_groups(cx);
+                        this.schedule_save(cx);
+                        cx.notify();
+                    }));
             let body = self.render_sidebar_disclosure_body(
                 &motion_key,
                 !collapsed,
