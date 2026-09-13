@@ -431,6 +431,8 @@ pub enum RightSurface {
     Subagent(u64),
     /// The selected agent's agent-to-agent threads (one per chat).
     Conversations,
+    /// The selected Keiki conversation's background tasks.
+    Tasks,
     /// The conversation sandbox's live desktop — the handle keys
     /// [`Shell::desktops`].
     Desktop(u64),
@@ -896,6 +898,8 @@ pub struct Shell {
     user_menu: popover::Popup<()>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
+    /// Confirmation state for ending all live threads in a Keiki group.
+    end_group_confirm: Option<(String, u32, u32)>,
     /// Access token last synchronized into the device-local Copilot holder.
     copilot_synced_token: Option<String>,
     mutate_task: Option<Task<()>>,
@@ -1027,6 +1031,48 @@ impl Shell {
 
     pub(crate) fn set_sidebar_notice(&mut self, notice: impl Into<SharedString>) {
         self.sidebar_notice = Some(notice.into());
+    }
+
+    fn confirm_end_keiki_group(
+        &mut self,
+        group_id: String,
+        threads: u32,
+        tasks: u32,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_group_confirm = Some((group_id, threads, tasks));
+        cx.notify();
+    }
+
+    fn submit_end_keiki_group(&mut self, group_id: String, cx: &mut Context<Self>) {
+        self.end_group_confirm = None;
+        let state = self.state.downgrade();
+        cx.spawn(async move |this, cx| {
+            let result = crate::keiki::end_agent_group(&state, group_id, cx).await;
+            match result {
+                Ok(response) => {
+                    let _ = crate::keiki::refresh_keiki_snapshot(state, cx).await;
+                    let _ = this.update(cx, |shell, cx| {
+                        shell.sidebar_notice = Some(
+                            format!(
+                                "Ended {} threads and cancelled {} tasks",
+                                response.threads_ended, response.tasks_cancelled
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    });
+                }
+                Err(error) => {
+                    crate::notify::post("Keiki group end failed", &error.to_string());
+                    let _ = this.update(cx, |shell, cx| {
+                        shell.sidebar_notice = Some(error.to_string().into());
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
     }
 
     /// "Check for Updates…": ignored while a download or install is already on
@@ -1192,6 +1238,7 @@ impl Shell {
             sound_prev: std::collections::HashMap::new(),
             user_menu: popover::Popup::default(),
             sidebar_notice: None,
+            end_group_confirm: None,
             copilot_synced_token: None,
             mutate_task: None,
             boot,
@@ -1770,6 +1817,7 @@ impl Shell {
                 RightSurface::Conversations => {
                     Some((*surface, SharedString::from("Conversations")))
                 }
+                RightSurface::Tasks => Some((*surface, SharedString::from("Tasks"))),
                 RightSurface::Desktop(id) => self
                     .desktops
                     .contains_key(id)
@@ -1856,6 +1904,7 @@ impl Shell {
             // activation needs no revalidation.
             RightSurface::Subagent(_) => {}
             RightSurface::Conversations
+            | RightSurface::Tasks
             | RightSurface::Desktop(_)
             | RightSurface::Browser
             | RightSurface::Picker => {}
@@ -1893,6 +1942,194 @@ impl Shell {
             tabs.push(RightSurface::Conversations);
         }
         self.set_right_active(RightSurface::Conversations, cx);
+    }
+
+    fn tasks_offered(&self, cx: &App) -> bool {
+        let state = self.state.read(cx);
+        crate::keiki::is_keiki_chat(&self.active_chat)
+            && state
+                .keiki_conversation
+                .as_ref()
+                .is_some_and(|conversation| {
+                    conversation.chat_id == self.active_chat
+                        && (!conversation.tasks.is_empty() || conversation.liveness.is_some())
+                })
+    }
+
+    fn ensure_tasks_surface(&mut self, cx: &mut Context<Self>) {
+        let key = self.panel_key(cx);
+        let offered = self.tasks_offered(cx);
+        let tabs = self.right_tabs.entry(key).or_default();
+        if offered {
+            if !tabs.contains(&RightSurface::Tasks) {
+                tabs.push(RightSurface::Tasks);
+            }
+        } else {
+            tabs.retain(|surface| *surface != RightSurface::Tasks);
+        }
+    }
+
+    fn add_tasks_surface(&mut self, cx: &mut Context<Self>) {
+        if self.tasks_offered(cx) {
+            self.ensure_tasks_surface(cx);
+            self.set_right_active(RightSurface::Tasks, cx);
+        }
+    }
+
+    fn cancel_keiki_task(&mut self, task_id: String, cx: &mut Context<Self>) {
+        let chat_id = self.active_chat.clone();
+        let state = self.state.downgrade();
+        cx.spawn(async move |this, cx| {
+            let result = crate::keiki::cancel_subagent_task(&state, task_id, cx).await;
+            match result {
+                Ok(_) => {
+                    let _ = state.update(cx, |state, cx| {
+                        state.transcript_task =
+                            Some(crate::keiki::spawn_transcript_watch(cx, chat_id));
+                        cx.notify();
+                    });
+                }
+                Err(error) => {
+                    crate::notify::post("Keiki task cancellation failed", &error.to_string());
+                    let _ = this.update(cx, |shell, cx| {
+                        shell.sidebar_notice = Some(error.to_string().into());
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn render_tasks_surface(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let (tasks, can_manage) = {
+            let state = self.state.read(cx);
+            (
+                state
+                    .keiki_conversation
+                    .as_ref()
+                    .filter(|conversation| conversation.chat_id == self.active_chat)
+                    .map(|conversation| conversation.tasks.clone())
+                    .unwrap_or_default(),
+                state
+                    .keiki_session
+                    .as_ref()
+                    .is_some_and(KeikiSessionInfo::can_manage),
+            )
+        };
+        let now = Utc::now();
+        let time_ago = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|value| format_time_ago(value.with_timezone(&Utc), now))
+                .unwrap_or_else(|| "—".into())
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(14.0))
+            .child(
+                div()
+                    .text_size(crate::typography::ui_rems(14.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
+                    .child("Background tasks"),
+            )
+            .children(tasks.into_iter().map(|task| {
+                let (status, status_color, cancellable) = match task.status {
+                    keiki_model::SubagentTaskStatus::Running => ("Running", theme.busy, true),
+                    keiki_model::SubagentTaskStatus::Suspended => {
+                        ("Suspended", theme.warning, true)
+                    }
+                    keiki_model::SubagentTaskStatus::Completed => {
+                        ("Completed", theme.text_muted, false)
+                    }
+                    keiki_model::SubagentTaskStatus::Error => ("Error", theme.danger, false),
+                    keiki_model::SubagentTaskStatus::Cancelled => {
+                        ("Cancelled", theme.text_faint, false)
+                    }
+                };
+                let task_id = task.id.clone();
+                let request = crate::transcript::single_line(&task.request);
+                let request = if request.chars().count() > 100 {
+                    format!("{}…", request.chars().take(100).collect::<String>())
+                } else {
+                    request
+                };
+                div()
+                    .w_full()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(task.subagent),
+                            )
+                            .child(
+                                div()
+                                    .px(px(6.0))
+                                    .py(px(2.0))
+                                    .rounded(px(5.0))
+                                    .bg(status_color.opacity(0.14))
+                                    .text_size(crate::typography::ui_rems(10.0))
+                                    .text_color(status_color)
+                                    .child(status),
+                            )
+                            .when(can_manage && cancellable, |el| {
+                                el.child(
+                                    div()
+                                        .id(SharedString::from(format!("cancel-task-{}", task.id)))
+                                        .ml_auto()
+                                        .px(px(7.0))
+                                        .py(px(3.0))
+                                        .rounded(px(5.0))
+                                        .bg(theme.element_hover)
+                                        .text_size(crate::typography::ui_rems(10.0))
+                                        .text_color(theme.text_muted)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.cancel_keiki_task(task_id.clone(), cx);
+                                        }))
+                                        .child("Cancel"),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child(request),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(format!(
+                                "Created {}{}",
+                                time_ago(&task.created_at),
+                                task.ended_at
+                                    .as_deref()
+                                    .map(|ended| format!(" · ended {}", time_ago(ended)))
+                                    .unwrap_or_default()
+                            ))),
+                    )
+            }))
+            .into_any_element()
     }
 
     /// The picker's Git card / the `+` menu's Diff row: every click opens a
@@ -2119,6 +2356,7 @@ impl Shell {
                 self.browsers.remove(&self.active_chat);
             }
             RightSurface::Conversations | RightSurface::Picker => {}
+            RightSurface::Tasks => {}
         }
         self.panels.update(&key, |p| {
             if p.right_active == surface {
@@ -4854,6 +5092,40 @@ impl Shell {
             overlays.push(popover::modal("delete-chat-dialog", viewport, card));
         }
 
+        if let Some((group_id, threads, tasks)) = self.end_group_confirm.clone() {
+            let card = popover::dialog_card(&theme)
+                .child(popover::dialog_title(&theme, "End all group work?"))
+                .child(div().mt(px(6.0)).child(popover::dialog_body(
+                    &theme,
+                    format!("Ends {threads} live threads and cancels {tasks} tasks."),
+                )))
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap(px(8.0))
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel", "end-group-cancel")
+                                .id("end-group-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.end_group_confirm = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            popover::btn_danger(&theme, "End all")
+                                .id("end-group-confirm")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.submit_end_keiki_group(group_id.clone(), cx);
+                                })),
+                        ),
+                )
+                .into_any_element();
+            overlays.push(popover::modal("end-group-dialog", viewport, card));
+        }
+
         overlays
     }
 
@@ -5447,6 +5719,7 @@ impl Shell {
                         .into_any_element()
                 }
                 RightSurface::Conversations => self.render_peer_threads_surface(cx),
+                RightSurface::Tasks => self.render_tasks_surface(cx),
                 RightSurface::Desktop(id) if self.desktops.contains_key(&id) => self
                     .desktops
                     .get(&id)
@@ -5510,6 +5783,7 @@ impl Shell {
             .read(cx)
             .selected_space_row()
             .is_some_and(|space| crate::keiki::is_keiki_space(&space.id));
+        let tasks_offered = self.tasks_offered(cx);
         let row = |id: &'static str, icon_path: &'static str, title: &'static str| {
             div()
                 .id(id)
@@ -5588,6 +5862,15 @@ impl Shell {
                             })),
                         )
                     })
+                    .when(tasks_offered, |el| {
+                        el.child(
+                            row("surface-card-tasks", icons::CHAT_ROUND_LINE, "Tasks").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.add_tasks_surface(cx);
+                                }),
+                            ),
+                        )
+                    })
                     // Git only where there IS git — the pane itself no
                     // longer gates on it (terminals work anywhere).
                     .when(self.space_git_detected(cx), |el| {
@@ -5618,6 +5901,7 @@ impl Shell {
         const CHIP_SLOT: f32 = CHIP_W + 4.0; // + the strip's own gap
 
         let theme = Theme::of(cx).clone();
+        self.ensure_tasks_surface(cx);
         // Heal drag state if the pointer was released outside the strip.
         if self.right_tab_drag.is_some() && !cx.has_active_drag() {
             self.right_tab_drag = None;
@@ -5686,6 +5970,7 @@ impl Shell {
                 RightSurface::Diff(_) => icons::GIT_BRANCH,
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::Conversations => icons::CHAT_ROUND_LINE,
+                RightSurface::Tasks => icons::CHAT_ROUND_LINE,
                 RightSurface::Desktop(_) => icons::LAPTOP,
                 RightSurface::Browser => icons::MONITOR,
                 _ => icons::TERMINAL,

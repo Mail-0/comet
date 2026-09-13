@@ -60,6 +60,8 @@ pub struct KeikiConversation {
     /// peer agent or a contact this desktop did not send. Reported by the
     /// conversation fetch, so it survives a refresh (unlike `pending`).
     pub remote_turn_started: Option<DateTime<Utc>>,
+    pub liveness: Option<keiki_model::ConversationLiveness>,
+    pub tasks: Vec<keiki_model::SubagentTaskSummary>,
     pub error: Option<String>,
     pub steer_reply: Option<String>,
 }
@@ -73,6 +75,8 @@ impl KeikiConversation {
             pending: None,
             pending_started: None,
             remote_turn_started: None,
+            liveness: None,
+            tasks: Vec::new(),
             error: None,
             steer_reply: None,
         }
@@ -1690,11 +1694,16 @@ pub(crate) async fn refresh_keiki_snapshot(
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>(),
+                state
+                    .keiki_expanded_groups
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
             ))
         })
         .map_err(|error| request_task_error("Keiki state read", error))?
         .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
-    let (client, token, credentials, expanded_agents) = context;
+    let (client, token, credentials, expanded_agents, expanded_groups) = context;
     let groups = authorized(
         &entity,
         client.clone(),
@@ -1705,6 +1714,28 @@ pub(crate) async fn refresh_keiki_snapshot(
         cx,
     )
     .await?;
+    let mut rosters = Vec::new();
+    for group_id in expanded_groups {
+        let roster = authorized(
+            &entity,
+            client.clone(),
+            token.clone(),
+            credentials.clone(),
+            "Keiki agent group roster",
+            {
+                let group_id = group_id.clone();
+                move |client, access_token| {
+                    let group_id = group_id.clone();
+                    async move { client.agent_group_roster(&access_token, &group_id).await }
+                }
+            },
+            cx,
+        )
+        .await;
+        if let Ok(roster) = roster {
+            rosters.push((group_id, roster));
+        }
+    }
     let mut conversations = authorized(
         &entity,
         client.clone(),
@@ -1741,15 +1772,24 @@ pub(crate) async fn refresh_keiki_snapshot(
     }
     let spaces = agents.iter().map(map_agent).collect();
     let mut seen = HashSet::new();
-    let chats = conversations
+    let mapped_conversations: Vec<_> = conversations
         .iter()
         .filter_map(map_conversation)
         .filter(|chat| seen.insert(chat.id.clone()))
         .collect();
+    let liveness = conversations
+        .iter()
+        .filter_map(|conversation| {
+            let chat = map_conversation(conversation)?;
+            Some((chat.id, conversation.liveness))
+        })
+        .collect();
     entity
         .update(cx, |state, cx| {
-            state.apply_keiki_snapshot(spaces, chats);
+            state.apply_keiki_snapshot(spaces, mapped_conversations);
             state.keiki_agent_groups = groups;
+            state.keiki_liveness = liveness;
+            state.keiki_group_rosters = rosters.into_iter().collect();
             state.keiki_expanding_agents.clear();
             cx.notify();
         })
@@ -1812,6 +1852,68 @@ pub(crate) async fn create_agent_from_template(
                     .create_agent_from_template(&access_token, &input)
                     .await
             }
+        },
+        cx,
+    )
+    .await
+}
+
+pub(crate) async fn cancel_subagent_task(
+    entity: &WeakEntity<AppState>,
+    task_id: String,
+    cx: &mut AsyncApp,
+) -> Result<keiki_api::CancelSubagentTaskResponse, keiki_api::Error> {
+    let context = entity
+        .update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        })
+        .map_err(|error| request_task_error("Keiki task cancellation state read", error))?
+        .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
+    let (client, token, credentials) = context;
+    authorized(
+        entity,
+        client,
+        token,
+        credentials,
+        "Keiki task cancellation",
+        move |client, access_token| {
+            let task_id = task_id.clone();
+            async move { client.cancel_subagent_task(&access_token, &task_id).await }
+        },
+        cx,
+    )
+    .await
+}
+
+pub(crate) async fn end_agent_group(
+    entity: &WeakEntity<AppState>,
+    group_id: String,
+    cx: &mut AsyncApp,
+) -> Result<keiki_api::EndAgentGroupResponse, keiki_api::Error> {
+    let context = entity
+        .update(cx, |state, _| {
+            Some((
+                state.keiki_client.clone()?,
+                state.keiki_token.clone()?,
+                state.keiki_credentials.clone()?,
+            ))
+        })
+        .map_err(|error| request_task_error("Keiki group end state read", error))?
+        .ok_or_else(|| keiki_api::Error::Local("Keiki credentials are unavailable".into()))?;
+    let (client, token, credentials) = context;
+    authorized(
+        entity,
+        client,
+        token,
+        credentials,
+        "Keiki group end",
+        move |client, access_token| {
+            let group_id = group_id.clone();
+            async move { client.end_agent_group(&access_token, &group_id).await }
         },
         cx,
     )
@@ -2402,6 +2504,8 @@ mod tests {
             blocked: false,
             takeover: None,
             active_turn_started_at: None,
+            liveness: None,
+            tasks: Vec::new(),
             peer: None,
         };
 
@@ -2478,6 +2582,8 @@ mod tests {
             blocked: false,
             takeover: None,
             active_turn_started_at: None,
+            liveness: None,
+            tasks: Vec::new(),
             peer: None,
         };
 

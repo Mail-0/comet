@@ -220,6 +220,14 @@ impl Shell {
                 None => (SharedString::from(""), None, None, true, None),
             }
         };
+        let liveness = self
+            .state
+            .read(cx)
+            .selected_chat
+            .as_deref()
+            .and_then(|chat_id| self.state.read(cx).keiki_liveness.get(chat_id))
+            .copied()
+            .flatten();
         let (source_orb, target_orb) = peer
             .map(|(peer, target_state)| {
                 (
@@ -532,6 +540,27 @@ impl Shell {
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_muted.opacity(0.5))
                                     .child(target),
+                            )
+                        })
+                        .when_some(liveness, |el, liveness| {
+                            let (label, color) = match liveness {
+                                keiki_model::ConversationLiveness::Working => {
+                                    ("Working", theme.busy)
+                                }
+                                keiki_model::ConversationLiveness::Waiting => {
+                                    ("Waiting on peer", theme.text_muted)
+                                }
+                            };
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .text_color(color)
+                                    .child(div().size(px(5.0)).rounded(px(3.0)).bg(color))
+                                    .child(SharedString::from(label)),
                             )
                         })
                         .when_some(conversation_status, |el, conversation| {
