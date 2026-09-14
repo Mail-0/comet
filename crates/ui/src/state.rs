@@ -58,6 +58,10 @@ impl KeikiSessionInfo {
     pub fn switchable_orgs(&self) -> &[keiki_api::OrganizationSummary] {
         if self.orgs.len() > 1 { &self.orgs } else { &[] }
     }
+
+    pub fn can_manage(&self) -> bool {
+        matches!(self.role.as_deref(), Some("owner" | "admin"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +391,7 @@ pub struct AppState {
     pub(crate) keiki_error: Option<String>,
     pub(crate) keiki_task: Option<Task<()>>,
     pub(crate) keiki_conversation: Option<KeikiConversation>,
+    pub(crate) keiki_liveness: HashMap<String, Option<keiki_model::ConversationLiveness>>,
     /// The in-flight steered turn's task on a keiki conversation. Held so a
     /// Stop can cancel it: dropping the task drops the response stream, which
     /// is the signal the platform reads as "stop this turn". Session-only.
@@ -397,6 +402,8 @@ pub struct AppState {
     /// The org's agent groups; an inter-agent thread whose two agents share
     /// one is listed under the group in the sidebar. Session-only.
     pub(crate) keiki_agent_groups: Vec<keiki_model::AgentGroupSummary>,
+    pub(crate) keiki_expanded_groups: HashSet<String>,
+    pub(crate) keiki_group_rosters: HashMap<String, keiki_model::AgentGroupRoster>,
     /// Peer threads this desktop ended (blocked) from the Conversations
     /// surface — only the selected conversation carries a fetched `blocked`.
     pub(crate) keiki_ended_threads: HashSet<String>,
@@ -459,9 +466,12 @@ impl AppState {
             keiki_error: None,
             keiki_task: None,
             keiki_conversation: None,
+            keiki_liveness: HashMap::new(),
             keiki_steer_task: None,
             keiki_expanded_agents: HashSet::new(),
             keiki_agent_groups: Vec::new(),
+            keiki_expanded_groups: HashSet::new(),
+            keiki_group_rosters: HashMap::new(),
             keiki_ended_threads: HashSet::new(),
             keiki_expanding_agents: HashSet::new(),
             keiki_draft_chats: HashSet::new(),
@@ -701,6 +711,9 @@ impl AppState {
         self.chats
             .retain(|chat| !crate::keiki::is_keiki_chat(&chat.id));
         self.keiki_draft_chats.clear();
+        self.keiki_liveness.clear();
+        self.keiki_expanded_groups.clear();
+        self.keiki_group_rosters.clear();
         self.keiki_conversation = None;
         if selected_keiki_chat {
             self.selected_chat = None;
@@ -1239,6 +1252,8 @@ impl AppState {
         if self.selected_chat.as_deref() != Some(chat_id) {
             return;
         }
+        self.keiki_liveness
+            .insert(chat_id.to_string(), detail.liveness);
         let conversation = self
             .keiki_conversation
             .get_or_insert_with(|| KeikiConversation::new(chat_id.to_string()));
@@ -1247,6 +1262,7 @@ impl AppState {
         }
         conversation.blocked = detail.blocked;
         conversation.takeover = detail.takeover.clone();
+        conversation.tasks = detail.tasks.clone();
         conversation.remote_turn_started = crate::keiki::remote_turn_started(detail);
         conversation.pending = None;
         conversation.pending_started = None;
@@ -1269,12 +1285,15 @@ impl AppState {
         chat_id: &str,
         detail: &keiki_model::ConversationDetail,
     ) {
+        self.keiki_liveness
+            .insert(chat_id.to_string(), detail.liveness);
         if let Some(conversation) = self
             .keiki_conversation
             .as_mut()
             .filter(|conversation| conversation.chat_id == chat_id)
         {
             conversation.remote_turn_started = crate::keiki::remote_turn_started(detail);
+            conversation.tasks = detail.tasks.clone();
         }
     }
 

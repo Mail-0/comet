@@ -112,6 +112,71 @@ pub struct AgentGroupsResponse {
     pub groups: Vec<AgentGroupSummary>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentGroupMemberRole {
+    Hub,
+    Spoke,
+    Peer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentGroupMemberState {
+    Running,
+    Waiting,
+    Idle,
+    Ended,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGroupMemberStatus {
+    pub agent_id: String,
+    pub name: String,
+    pub role: AgentGroupMemberRole,
+    pub status: AgentGroupMemberState,
+    pub running_turns: u32,
+    pub pending_asks: u32,
+    pub waiting_on_peer: u32,
+    pub background_tasks: u32,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+    pub last_activity_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGroupRosterTotals {
+    pub members: u32,
+    pub hubs: u32,
+    pub spokes: u32,
+    pub running: u32,
+    pub waiting: u32,
+    pub ended: u32,
+    pub background_tasks: u32,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentGroupRoster {
+    pub members: Vec<AgentGroupMemberStatus>,
+    pub totals: AgentGroupRosterTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndAgentGroupResponse {
+    pub threads_ended: u32,
+    pub tasks_cancelled: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelSubagentTaskResponse {
+    pub cancelled: bool,
+}
+
 /// One saved MCP/service preset on an agent, as the connect and status
 /// endpoints return it. `authorization_url` is the provider page to open when
 /// `status` is `needs_auth`.
@@ -322,6 +387,36 @@ pub enum MessageDirection {
     Outbound,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationLiveness {
+    Working,
+    Waiting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentTaskStatus {
+    Running,
+    Suspended,
+    Completed,
+    Error,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentTaskSummary {
+    pub id: String,
+    pub subagent: String,
+    pub status: SubagentTaskStatus,
+    pub request: String,
+    pub resumptions: u32,
+    pub trace_id: Option<String>,
+    pub created_at: String,
+    pub ended_at: Option<String>,
+}
+
 impl MessageDirection {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -345,6 +440,8 @@ pub struct ConversationSummary {
     pub message_count: u32,
     pub is_active: bool,
     pub has_errors: bool,
+    #[serde(default)]
+    pub liveness: Option<ConversationLiveness>,
     /// The asker behind the thread — set only for inter-agent (`agent:`)
     /// conversations, where another agent is the contact.
     #[serde(default)]
@@ -397,6 +494,7 @@ impl std::fmt::Debug for ConversationSummary {
             .field("message_count", &self.message_count)
             .field("is_active", &self.is_active)
             .field("has_errors", &self.has_errors)
+            .field("liveness", &self.liveness)
             .field("peer", &self.peer)
             .finish()
     }
@@ -447,6 +545,10 @@ pub struct ConversationDetail {
     /// while the agent is idle. Older backends omit it.
     #[serde(default)]
     pub active_turn_started_at: Option<String>,
+    #[serde(default)]
+    pub liveness: Option<ConversationLiveness>,
+    #[serde(default)]
+    pub tasks: Vec<SubagentTaskSummary>,
     /// The asker behind the thread when this is an inter-agent
     /// (`agent:`) conversation.
     #[serde(default)]
@@ -854,5 +956,131 @@ mod tests {
         assert_eq!(locator.api_key.as_deref(), Some("agentless-secret"));
         assert!(!format!("{agentless:?}").contains("agentless-secret"));
         assert!(!format!("{locator:?}").contains("agentless-secret"));
+    }
+
+    #[test]
+    fn swarm_observability_models_round_trip() {
+        let liveness = ConversationLiveness::Waiting;
+        assert_eq!(
+            serde_json::from_value::<ConversationLiveness>(serde_json::to_value(liveness).unwrap())
+                .unwrap(),
+            liveness
+        );
+
+        let task = SubagentTaskSummary {
+            id: "task-1".into(),
+            subagent: "worker".into(),
+            status: SubagentTaskStatus::Suspended,
+            request: "Inspect the deployment".into(),
+            resumptions: 2,
+            trace_id: Some("trace-1".into()),
+            created_at: "2026-08-28T12:00:00Z".into(),
+            ended_at: None,
+        };
+        assert_eq!(
+            serde_json::from_value::<SubagentTaskSummary>(serde_json::to_value(&task).unwrap())
+                .unwrap(),
+            task
+        );
+
+        let roster = AgentGroupRoster {
+            members: vec![AgentGroupMemberStatus {
+                agent_id: "agent-1".into(),
+                name: "Worker".into(),
+                role: AgentGroupMemberRole::Spoke,
+                status: AgentGroupMemberState::Running,
+                running_turns: 1,
+                pending_asks: 0,
+                waiting_on_peer: 0,
+                background_tasks: 2,
+                tokens_in: 10,
+                tokens_out: 20,
+                cost_usd: 0.42,
+                last_activity_at: Some("2026-08-28T12:00:00Z".into()),
+            }],
+            totals: AgentGroupRosterTotals {
+                members: 1,
+                hubs: 0,
+                spokes: 1,
+                running: 1,
+                waiting: 0,
+                ended: 0,
+                background_tasks: 2,
+                cost_usd: 0.42,
+            },
+        };
+        assert_eq!(
+            serde_json::from_value::<AgentGroupRoster>(serde_json::to_value(&roster).unwrap())
+                .unwrap(),
+            roster
+        );
+
+        for response in [
+            EndAgentGroupResponse {
+                threads_ended: 2,
+                tasks_cancelled: 1,
+            },
+            EndAgentGroupResponse {
+                threads_ended: 0,
+                tasks_cancelled: 0,
+            },
+        ] {
+            assert_eq!(
+                serde_json::from_value::<EndAgentGroupResponse>(
+                    serde_json::to_value(&response).unwrap()
+                )
+                .unwrap(),
+                response
+            );
+        }
+        let response = CancelSubagentTaskResponse { cancelled: true };
+        assert_eq!(
+            serde_json::from_value::<CancelSubagentTaskResponse>(
+                serde_json::to_value(&response).unwrap()
+            )
+            .unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn missing_swarm_observability_fields_default() {
+        let summary: ConversationSummary = serde_json::from_value(serde_json::json!({
+            "phone": "tg:123",
+            "contactName": null,
+            "agentName": "Orchid",
+            "agentId": "agent-1",
+            "apiKey": "secret",
+            "lastMessage": "Latest",
+            "lastMessageAt": "2026-08-28T12:00:00Z",
+            "lastDirection": "inbound",
+            "messageCount": 1,
+            "isActive": true,
+            "hasErrors": false
+        }))
+        .unwrap();
+        assert_eq!(summary.liveness, None);
+
+        let detail: ConversationDetail = serde_json::from_value(serde_json::json!({
+            "phone": "tg:123",
+            "meta": {
+                "contactName": null,
+                "contactEmail": null,
+                "agentName": "Orchid",
+                "agentId": "agent-1",
+                "apiKey": "secret",
+                "messageCount": 0,
+                "firstSeen": "2026-08-28T11:00:00Z",
+                "lastSeen": "2026-08-28T12:00:00Z"
+            },
+            "messages": [],
+            "spans": {},
+            "agent": null,
+            "blocked": false,
+            "takeover": null
+        }))
+        .unwrap();
+        assert_eq!(detail.liveness, None);
+        assert!(detail.tasks.is_empty());
     }
 }
