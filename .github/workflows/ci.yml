@@ -10,7 +10,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # On a push to main this group covers the release commit itself; cancelling it
+  # would leave the commit that ships unverified. Superseded runs are cancelled
+  # only for pull_request events.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux:
