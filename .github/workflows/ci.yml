@@ -9,8 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  # A push to main gets its own group (keyed by run id) so its verification run
+  # reaches a result: a shared group would still cancel a queued run whether or
+  # not cancel-in-progress is set. Superseded runs are cancelled only for
+  # pull_request events.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux:
