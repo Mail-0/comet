@@ -2218,6 +2218,7 @@ mod tests {
                 trace_error: None,
                 internal: false,
                 staff_name: None,
+                peer_ask_id: None,
             })
             .collect();
         let newest = newest_messages(messages);

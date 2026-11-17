@@ -7,14 +7,14 @@ use futures::StreamExt as _;
 use gpui::{App, AsyncApp, Context, Entity, Task, TaskExt, WeakEntity};
 use keiki_api::{AuthorizationFlow, Client, StoredCredentials, TokenSet};
 use keiki_model::{
-    AgentTemplateSummary, ConversationDetail, ConversationLocator, ConversationMessage,
-    ConversationTakeover, CreateAgentFromTemplate, CreateAgentResponse, MessageDirection,
-    SteerConversationResponse,
+    AgentTemplateSummary, ConversationAsk, ConversationAskStatus, ConversationDetail,
+    ConversationLocator, ConversationMessage, ConversationTakeover, CreateAgentFromTemplate,
+    CreateAgentResponse, MessageDirection, SteerConversationResponse,
 };
 use percent_encoding::{NON_ALPHANUMERIC, percent_encode};
-use zeron_doc::parts::{MessagePart, MessageStatus};
+use zeron_doc::parts::{MessagePart, MessageStatus, SubagentStatus};
 use zeron_doc::schema::{MessageRole, SessionMessageEntry};
-use zeron_proto::{AgentEvent, Chat, Device, DoneStatus, Space};
+use zeron_proto::{AgentEvent, Chat, Device, DoneStatus, Space, ToolCall};
 use zeron_rpc::methods;
 
 use crate::state::AppState;
@@ -1531,11 +1531,63 @@ pub fn map_transcript(detail: &ConversationDetail) -> Vec<SessionMessageEntry> {
     // there is no contact-facing thread to distinguish them from. Every
     // other conversation keeps the label so a staff steer stays marked.
     let label_internal = !detail.phone.starts_with(DESKTOP_IDENTITY_PREFIX);
-    detail
+    // A peer's reply comes back as a synthetic inbound; it is the agent's
+    // own plumbing, shown as the ask's card on the agent side instead.
+    let mut entries: Vec<SessionMessageEntry> = detail
         .messages
         .iter()
+        .filter(|message| message.peer_ask_id.is_none())
         .filter_map(|message| map_message_labelled(message, label_internal))
-        .collect()
+        .chain(detail.asks.iter().map(map_ask))
+        .collect();
+    entries.sort_by_key(|entry| entry.created_at);
+    entries
+}
+
+/// Whether any peer ask from this conversation is still unanswered.
+pub fn asks_pending(detail: &ConversationDetail) -> bool {
+    detail
+        .asks
+        .iter()
+        .any(|ask| ask.status == ConversationAskStatus::Pending)
+}
+
+/// An `ask_agent` request as a collapsed agent chip: a loader while the peer
+/// works, a check once it replied, the reply behind the chevron.
+fn map_ask(ask: &ConversationAsk) -> SessionMessageEntry {
+    let created_at = timestamp_or_now(&ask.created_at, "createdAt", "ask");
+    let peer = ask.to_agent_name.as_deref().unwrap_or("agent");
+    let status = match ask.status {
+        ConversationAskStatus::Pending => SubagentStatus::Running,
+        ConversationAskStatus::Replied => SubagentStatus::Done,
+        ConversationAskStatus::Error => SubagentStatus::Failed,
+    };
+    SessionMessageEntry {
+        id: format!("ask:{}", ask.id),
+        role: MessageRole::Assistant,
+        parts: vec![MessagePart::Tool {
+            id: format!("ask:{}:chip", ask.id),
+            call: ToolCall::Unknown {
+                name: format!("Agent: {peer} · {}", ask.request.trim()),
+                input: Some(serde_json::json!({ "description": ask.request })),
+            },
+            is_error: ask.status == ConversationAskStatus::Error,
+            resolved: ask.status != ConversationAskStatus::Pending,
+            output: ask.reply.clone(),
+            diff: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            diff_stats: None,
+            subagent_ref: None,
+            subagent_status: Some(status),
+            subagent_tail: None,
+        }],
+        created_at: created_at.timestamp_millis(),
+        device_id: DEVICE_ID.to_string(),
+        status: None,
+        continuation_of: None,
+    }
 }
 
 pub fn start(state: Entity<AppState>, api_url: String, cx: &mut App) {
@@ -2027,7 +2079,9 @@ pub fn spawn_transcript_watch(cx: &mut Context<AppState>, chat_id: String) -> Ta
             .await
             {
                 Ok(detail) => {
-                    let running = detail.active_turn_started_at.is_some();
+                    let running = detail.active_turn_started_at.is_some()
+                        || detail.liveness.is_some()
+                        || asks_pending(&detail);
                     this.update(cx, |state, cx| {
                         if state.selected_chat.as_deref() != Some(chat_id.as_str()) {
                             return;
@@ -2452,6 +2506,7 @@ mod tests {
             trace_error: None,
             internal: false,
             staff_name: None,
+            peer_ask_id: None,
         };
         assert_eq!(map_message(&message).unwrap().role, MessageRole::User);
     }
@@ -2474,6 +2529,7 @@ mod tests {
                 trace_error: None,
                 internal: false,
                 staff_name: None,
+                peer_ask_id: None,
             },
             ConversationMessage {
                 id: "second".into(),
@@ -2490,6 +2546,7 @@ mod tests {
                 trace_error: None,
                 internal: false,
                 staff_name: None,
+                peer_ask_id: None,
             },
         ];
         let detail = ConversationDetail {
@@ -2511,6 +2568,7 @@ mod tests {
             liveness: None,
             tasks: Vec::new(),
             peer: None,
+            asks: Vec::new(),
         };
 
         let transcript = map_transcript(&detail);
@@ -2537,6 +2595,7 @@ mod tests {
             trace_error: None,
             internal: true,
             staff_name: Some("Devin".into()),
+            peer_ask_id: None,
         };
         let entry = map_message(&message).expect("internal messages map");
         assert_eq!(entry.role, MessageRole::User);
@@ -2569,6 +2628,7 @@ mod tests {
             trace_error: None,
             internal: true,
             staff_name: Some("Devin".into()),
+            peer_ask_id: None,
         };
         let detail = ConversationDetail {
             phone: format!("{DESKTOP_IDENTITY_PREFIX}agent-1:conv-1"),
@@ -2589,6 +2649,7 @@ mod tests {
             liveness: None,
             tasks: Vec::new(),
             peer: None,
+            asks: Vec::new(),
         };
 
         let transcript = map_transcript(&detail);
@@ -2600,6 +2661,58 @@ mod tests {
                 text: "I can help with that.".into(),
             }]
         );
+    }
+
+    #[test]
+    fn peer_asks_render_as_agent_chips_instead_of_user_messages() {
+        let detail: ConversationDetail = serde_json::from_value(serde_json::json!({
+            "phone": format!("{DESKTOP_IDENTITY_PREFIX}agent-1:conv-1"),
+            "meta": { "agentName": "Fred", "agentId": "agent-1", "messageCount": 3 },
+            "messages": [
+                { "id": "ask-me", "direction": "inbound", "content": "make a PR",
+                  "createdAt": "2026-01-01T00:00:00Z" },
+                { "id": "hand-back", "direction": "inbound", "content": "[Agent replied]",
+                  "createdAt": "2026-01-01T00:03:00Z", "peerAskId": "ask-1" },
+                { "id": "relay", "direction": "outbound", "content": "PR opened",
+                  "createdAt": "2026-01-01T00:03:10Z" }
+            ],
+            "blocked": false,
+            "asks": [
+                { "id": "ask-1", "toAgentName": "Fred Low", "status": "replied",
+                  "request": "open the PR", "reply": "opened #1",
+                  "createdAt": "2026-01-01T00:00:05Z", "endedAt": "2026-01-01T00:03:00Z" },
+                { "id": "ask-2", "toAgentName": "Fred Low", "status": "pending",
+                  "request": "watch CI", "reply": null,
+                  "createdAt": "2026-01-01T00:03:20Z", "endedAt": null }
+            ]
+        }))
+        .expect("detail decodes");
+
+        let transcript = map_transcript(&detail);
+        let ids: Vec<&str> = transcript.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["ask-me", "ask:ask-1", "relay", "ask:ask-2"]);
+        assert!(asks_pending(&detail));
+        let chip = |ix: usize| match &transcript[ix].parts[..] {
+            [
+                MessagePart::Tool {
+                    call,
+                    resolved,
+                    output,
+                    subagent_status,
+                    ..
+                },
+            ] => {
+                assert_eq!(transcript[ix].role, MessageRole::Assistant);
+                assert!(call.is_subagent_spawn());
+                (*resolved, output.clone(), *subagent_status)
+            }
+            parts => panic!("expected one tool part, got {parts:?}"),
+        };
+        assert_eq!(
+            chip(1),
+            (true, Some("opened #1".into()), Some(SubagentStatus::Done))
+        );
+        assert_eq!(chip(3), (false, None, Some(SubagentStatus::Running)));
     }
 
     #[test]
