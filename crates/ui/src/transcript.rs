@@ -5174,11 +5174,13 @@ fn chip_header_row(
     } else {
         tool_chip_content(&tool.call)
     };
-    let running = tool.subagent_ref.is_some()
-        && matches!(tool.subagent_status, Some(SubagentStatus::Running));
-    let failed = tool.is_error
-        || (tool.subagent_ref.is_some()
-            && matches!(tool.subagent_status, Some(SubagentStatus::Failed)));
+    // A ref binds a spawn to its doc; an unbound agent call carrying a
+    // status is a peer ask, whose lifecycle is the status alone.
+    let tracked = tool.subagent_ref.is_some() || is_agent_tool(tool);
+    let running = tracked && matches!(tool.subagent_status, Some(SubagentStatus::Running));
+    let done = tracked && matches!(tool.subagent_status, Some(SubagentStatus::Done));
+    let failed =
+        tool.is_error || (tracked && matches!(tool.subagent_status, Some(SubagentStatus::Failed)));
     let tint = if failed {
         theme.danger
     } else {
@@ -5271,13 +5273,22 @@ fn chip_header_row(
             row.child(div().flex_none().child(crate::loaders::mini_glyph_spinner(
                 format!(
                     "subagent-chip-{}",
-                    tool.subagent_ref.as_deref().unwrap_or_default()
+                    tool.subagent_ref.as_deref().unwrap_or(label)
                 ),
                 2.0,
                 theme.glyph,
                 view,
                 cx,
             )))
+        })
+        .when(done && !failed, |row| {
+            row.child(
+                div().flex_none().child(
+                    crate::icons::icon(crate::icons::CHECK)
+                        .size(px(12.0))
+                        .text_color(theme.success),
+                ),
+            )
         })
         .when_some(trail, |row, trail| {
             // Trailing tile matching the group header's: a chevron for the

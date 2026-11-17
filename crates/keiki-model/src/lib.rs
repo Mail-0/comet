@@ -553,6 +553,31 @@ pub struct ConversationDetail {
     /// (`agent:`) conversation.
     #[serde(default)]
     pub peer: Option<ConversationThreadPeer>,
+    /// The `ask_agent` requests this conversation's agent sent, oldest first.
+    /// Older backends omit it.
+    #[serde(default)]
+    pub asks: Vec<ConversationAsk>,
+}
+
+/// One `ask_agent` request the conversation's agent sent to a peer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationAsk {
+    pub id: String,
+    pub to_agent_name: Option<String>,
+    pub status: ConversationAskStatus,
+    pub request: String,
+    pub reply: Option<String>,
+    pub created_at: String,
+    pub ended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationAskStatus {
+    Pending,
+    Replied,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -591,6 +616,10 @@ pub struct ConversationMessage {
     #[serde(default)]
     pub internal: bool,
     pub staff_name: Option<String>,
+    /// Set on the inbound that hands a peer's `ask_agent` reply back to the
+    /// agent: the ask's id. Older backends omit it.
+    #[serde(default)]
+    pub peer_ask_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
