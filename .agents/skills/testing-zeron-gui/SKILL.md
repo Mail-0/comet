@@ -20,7 +20,7 @@ Useful env vars (grep `std::env::var` in `crates/ui/src` if these drift):
   one process now covers signed-out → signed-in → signed-out without the two-stage dance below.
 - `ZERON_OPEN_ROUTE=settings/appearance` — deep-link into a settings section.
 - `RUST_LOG=info,zeron_ui=debug,keiki_api=debug` — logs OAuth discovery/registration bodies.
-- Delete `~/.zeron/ui-settings.json` to get true first-run defaults (needed for theme-default tests).
+- Delete `~/.keiki/ui-settings.json` to get true first-run defaults (needed for theme-default tests).
 
 Window management: `DISPLAY=:0 wmctrl -lG` (the zeron window shows as `N/A`),
 `wmctrl -i -a <id>` to focus, `wmctrl -r :ACTIVE: -b add,maximized_vert,maximized_horz` to maximize.
@@ -213,7 +213,7 @@ repeat clicks are inert by design (only one tab opens). Denying consent returns
   real name **and** the real active-org subline: a failed session fetch degrades to a plausible-looking
   bare `Keiki account` while still signed in, so "it says Keiki" is not evidence. It must never read
   `Local only` — that string, Settings → Devices, and the update strip are all gone with comet's cloud.
-- Local state now lives under `~/.zeron/profiles/local` (`docs.sqlite3` + `journals`); an
+- Local state now lives under `~/.keiki/profiles/local` (`docs.sqlite3` + `journals`); an
   `orgs/<org>/<user>` path appearing means account-scoped profiles came back.
 - **Only `run_approved_program`-class operations raise an approval card** (agent deletion, key
   rotation, role/ownership change — sms-kit `copilot/approved.ts` `needsApproval`). A rename or config
@@ -241,7 +241,7 @@ repeat clicks are inert by design (only one tab opens). Denying consent returns
 - The `Copilot` row is pinned above the agent groups (`shell/spaces.rs`
   `render_copilot_launcher_row`). Signed out it is drawn at `opacity(0.45)` and clicking it only sets
   the sidebar notice `Sign in to Keiki to use Copilot`. Signed in it reuses
-  `copilotChatId` from `~/.zeron/ui-settings.json` (persisted immediately) — check that file to prove
+  `copilotChatId` from `~/.keiki/ui-settings.json` (persisted immediately) — check that file to prove
   a relaunch reused the same chat rather than minting a new one.
 - **Multi-turn context is server-sourced, and that is the fragile part.** Newer builds post one user
   message with `appendToTranscript: true` and the server prepends the thread's stored transcript
@@ -318,9 +318,9 @@ repeat clicks are inert by design (only one tab opens). Denying consent returns
     keeps that project pick — so after ever opening the Copilot chat, `+` yields a *bare* canvas, not
     the card. This is expected, not a bug.
   - To get the genuine first-boot state without a full re-sign-in (credentials live in the system
-    keyring, the profile is `~/.zeron`): archive the remaining chats via the sidebar row's `Archive`
-    button, remove `copilotChatId` from `~/.zeron/ui-settings.json`, ensure `noProject: false` in
-    `~/.zeron/composer-defaults.json`, then relaunch so nothing auto-selects. Note a relaunch will
+    keyring, the profile is `~/.keiki`): archive the remaining chats via the sidebar row's `Archive`
+    button, remove `copilotChatId` from `~/.keiki/ui-settings.json`, ensure `noProject: false` in
+    `~/.keiki/composer-defaults.json`, then relaunch so nothing auto-selects. Note a relaunch will
     auto-select the most recent non-archived chat, which is why archiving is the necessary step.
 - Seeding an agent for the "normal Keiki case": `insert into agents (org_id, api_key, name) values
   ('<org>','<dev api key>','<name>');` — every other column has a default. The snapshot poll takes

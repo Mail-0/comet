@@ -4,7 +4,7 @@
 //! Repos are device-local (paths differ per machine), so the known set is a plain
 //! JSON list (`{data_dir}/repos.json`) — no sync. Existing repos can live anywhere
 //! the user points us; cloned/created ones land in `{data_dir}/repos`. Worktrees are
-//! created under `~/.zeron/worktrees/<repoName>/<worktreeName>` (NOT the data
+//! created under `~/.keiki/worktrees/<repoName>/<worktreeName>` (NOT the data
 //! dir — worktrees are user-facing working checkouts), with an auto-generated name +
 //! matching `zeron/<name>` branch. `ZERON_WORKTREES_DIR` overrides the root.
 //!
@@ -85,7 +85,7 @@ fn default_worktrees_root() -> PathBuf {
     std::env::var_os("ZERON_WORKTREES_DIR")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".zeron").join("worktrees"))
+        .unwrap_or_else(|| home_dir().join(".keiki").join("worktrees"))
 }
 
 struct ReposInner {
@@ -116,7 +116,7 @@ pub struct Repos {
 
 impl Repos {
     /// `data_dir` holds `repos.json` + cloned/created repos; the worktree root
-    /// comes from `$ZERON_WORKTREES_DIR` or `~/.zeron/worktrees`.
+    /// comes from `$ZERON_WORKTREES_DIR` or `~/.keiki/worktrees`.
     pub fn new(data_dir: &Path, device_id: &str) -> Self {
         Self::with_worktrees_root(data_dir, device_id, default_worktrees_root())
     }

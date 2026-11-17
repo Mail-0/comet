@@ -180,7 +180,7 @@ Direct ports of zeron behaviors (spec: feature-inventory §3):
   permissions/AskUserQuestion→requestInput, resume, steering); Codex via app-server JSON-RPC or
   `codex exec --json`; model/reasoning/option catalogs ported from `packages/harness`.
 - **Repos/diffs**: git2 or `git` subprocess (subprocess — matches zeron, avoids libgit2 edge
-  cases); worktrees under `~/.zeron/worktrees`; fs watchers (`notify`) + 2min repair; diff
+  cases); worktrees under `~/.keiki/worktrees`; fs watchers (`notify`) + 2min repair; diff
   capture (patch + numstat + untracked, 3MiB cap, sha256) → workspace registry summary.
 - **Agent accounts**: credential-slot swap (macOS Keychain via `security-framework`, files
   elsewhere), plan labels, usage probes, paste-code/browser-poll OAuth flows.
