@@ -168,7 +168,7 @@ fn data_dir_in(home: &std::path::Path) -> std::path::PathBuf {
             }
             if let Err(error) = std::fs::rename(&old, &dir) {
                 eprintln!("could not migrate data dir {}: {error}", old.display());
-                return old;
+                return if dir.exists() { dir } else { old };
             }
             #[cfg(unix)]
             if let Err(error) = std::os::unix::fs::symlink(&dir, &old) {
