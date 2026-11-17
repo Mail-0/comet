@@ -129,7 +129,7 @@
   and a cold `npx` could also stall a first chat for minutes while it
   downloaded the adapter's dependency tree (claude-agent-acp's is ~570MB).
 - Replaced by `adapter_install`: pinned packages install ONCE into
-  `~/.zeron/adapters/<pkg>/<version>` (`$ZERON_ADAPTERS_DIR` overrides) with
+  `~/.keiki/adapters/<pkg>/<version>` (`$ZERON_ADAPTERS_DIR` overrides) with
   a zeron-owned npm cache beside them, atomically (tmp dir + bin-entry
   verification + `.zeron-install-ok` marker + rename), then every launch is
   `node <entry>` directly. Discovery probes never block on npm (background

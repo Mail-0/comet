@@ -19,7 +19,7 @@ display EXCLUDED. File paths refer to the reference repo.
 ### 1.1 Window shell
 - 1320x880 (min 900x600), frameless-inset title bar, traffic lights {14,15}, opaque #0a0a0a bg.
 - External links open in OS browser; single-instance lock; dev vs packaged ports (26634/26654) and
-  data dirs (.zeron-dev/.zeron). Fullscreen hides traffic lights -> cluster reflows.
+  data dirs (.keiki-dev/.keiki). Fullscreen hides traffic lights -> cluster reflows.
 
 ### 1.2 App phases (App.tsx)
 - Three phases with crossfade: Gate (loading/reconnect/login card over bg-grid), OrgGate ("Create
@@ -75,7 +75,7 @@ display EXCLUDED. File paths refer to the reference repo.
 - Pickers: HarnessModelPicker (harness rail + models, harness locked once chat exists),
   TraitsPicker (reasoning + advertised model options; trigger shows non-defaults "High · 1M · Fast"),
   RepoPicker (search, Open folder… in-app browser w/ breadcrumbs + keys + skeletons, Clone from
-  URL…, Create new repo…), BranchPicker (search + isolated-worktree toggle ~/.zeron/worktrees/…).
+  URL…, Create new repo…), BranchPicker (search + isolated-worktree toggle ~/.keiki/worktrees/…).
 
 ### 1.8 Conversation / transcript
 - ONE transcript source = doc projection. Optimistic echoes until first doc frame.
@@ -174,7 +174,7 @@ display EXCLUDED. File paths refer to the reference repo.
   presence; warm-opens recent chats (14d, cap 30); cold via device-room nudge; L2 tail GET.
 - 3.4 Terminals: pty; bounded 1MB replay; owner re-checked; live shells survive detach; exited
   buffers 30min TTL; max 32; SubscribeTerminal replays then tails.
-- 3.5 Repos/diffs: list/add/clone/create; branches; worktrees ~/.zeron/worktrees/<repo>/<name>;
+- 3.5 Repos/diffs: list/add/clone/create; branches; worktrees ~/.keiki/worktrees/<repo>/<name>;
   checkoutIdentity; CheckoutDiffSync: fs watchers + 2min repair, git diff (name-status + numstat +
   patch incl untracked), 3MiB cap, sha256; publishes DiffSidecar to chat DOs; GitMetadataSync
   watches HEAD -> chat.branch; folder listing in disposable worker w/ 6s timeout.

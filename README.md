@@ -6,6 +6,13 @@ Control your Keiki coding agents locally, with Copilot available as a built-in l
 
 Every device runs a small engine that stores sessions on that device. A new installation starts in local-only mode without an account or a network connection.
 
+Local data is stored in `~/.keiki` by default, and new worktrees in
+`~/.keiki/worktrees`. `ZERON_DATA_DIR` and `ZERON_WORKTREES_DIR` still override
+these locations. On first launch, existing `~/.zeron` data (or the older
+`~/.comet-native` directory) is moved to `~/.keiki` if it does not already exist.
+On macOS and Linux, a compatibility symlink at the old location keeps existing
+repository, worktree, and saved absolute paths working; keep that link in place.
+
 ## Install and run locally (Linux)
 
 Linux releases are available as tarballs, `.deb` packages, and AppImages.
