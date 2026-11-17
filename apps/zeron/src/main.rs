@@ -188,6 +188,9 @@ fn data_dir_in(home: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[cfg(all(test, unix))]
+static SUBPROCESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(test, unix))]
 mod data_dir_tests {
     use super::data_dir_in;
 
@@ -262,6 +265,7 @@ mod data_dir_tests {
 
     #[test]
     fn migrated_git_worktrees_keep_working() {
+        let _guard = super::SUBPROCESS_LOCK.lock().unwrap();
         fn git(cwd: &std::path::Path, args: &[&str]) -> String {
             let output = std::process::Command::new("git")
                 .current_dir(cwd)
@@ -406,6 +410,7 @@ mod log_file_tests {
 
     #[test]
     fn second_launch_never_rotates_a_live_processes_log() {
+        let _guard = super::SUBPROCESS_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
         // First launch owns the canonical file and keeps writing.
