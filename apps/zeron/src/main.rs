@@ -110,7 +110,7 @@ fn main() -> anyhow::Result<()> {
         None => {
             // Headed: the UI probes ZERON_IPC_PORT and connects to a running
             // daemon, or embeds the engine in-process (ARCHITECTURE §1).
-            zeron_ui::run_app(zeron_ui::UiConfig {
+            zeron_desktop::run_app(zeron_desktop::UiConfig {
                 data_dir: std::env::var_os("ZERON_DATA_DIR")
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(dirs_data_dir),
@@ -118,14 +118,13 @@ fn main() -> anyhow::Result<()> {
                     .ok()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(27654),
-                default_harness: zeron_ui::HarnessId::Copilot,
+                default_harness: zeron_desktop::HarnessId::Copilot,
                 initial_url: cli.open_url,
                 keiki_api_url: std::env::var("KEIKI_API_URL")
                     .ok()
                     .filter(|url| !url.trim().is_empty())
                     .unwrap_or_else(|| "https://onkeiki.com".into()),
-            });
-            Ok(())
+            })
         }
     }
 }

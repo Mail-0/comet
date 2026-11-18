@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/desktop",
     "crates/theme",
     "crates/keiki-model",
     "crates/keiki-api",
@@ -23,6 +24,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+zeron-desktop = { path = "crates/desktop" }
 keiki-model = { path = "crates/keiki-model" }
 keiki-api = { path = "crates/keiki-api" }
 zeron-proto = { path = "crates/proto" }
@@ -36,6 +38,8 @@ zeron-syntax = { path = "crates/syntax" }
 zeron-theme = { path = "crates/theme" }
 zeron-updater = { path = "crates/updater" }
 
+zgx-desktop = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb", default-features = false }
+zgx-script = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb", default-features = false }
 # CRDT
 loro = "1.13"
 
@@ -134,3 +138,12 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }
+winit = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }
+accesskit_macos = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }
+accesskit_consumer = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }
+accesskit_atspi_common = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }
+accesskit_unix = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }
+accesskit_windows = { git = "https://github.com/zeronsh/zgx", rev = "b80a8af1c1f2079e373ec34a9194d26f2c998cbb" }

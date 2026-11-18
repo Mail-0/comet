@@ -1,5 +1,10 @@
 # zeron — Architecture
 
+> Desktop cutover: the shipping headed `zeron` now uses `crates/desktop`
+> (ZGX/Luau). `crates/ui` remains an unlinked GPUI parity reference; the GPUI
+> implementation details below describe that reference, not the shipping host.
+> See `crates/desktop/README.md` for the current bridge contract.
+
 A ground-up native rewrite of [zeron](../zeron) — a multi-device controller for coding agents
 (Claude Code / Codex) — in Rust, with a gpui UI. Fresh app; no backwards compatibility required.
 

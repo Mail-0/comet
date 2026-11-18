@@ -50,8 +50,7 @@ an account or cloud synchronization layer.
 
 On macOS: use the desktop release, or build `zeron` from source and run `zeron daemon install` to install the launchd service.
 
-Developers can try the [opt-in Keiki ZGX desktop preview](apps/keiki-zgx/README.md)
-without replacing the installed app.
+The desktop uses ZGX/Luau; see [desktop development](crates/desktop/README.md).
 
 ---
 

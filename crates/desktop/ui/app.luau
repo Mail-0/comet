@@ -1,20 +1,9 @@
 --!strict
 
-type Entry = { id: string, name: string? }
-type Account = {
-	signed_in: boolean,
-	busy: boolean,
-	orgs: { Entry }?,
-	active_org: string?,
-	agents: { Entry },
-	agent_id: string?,
-	reply: string,
-	error: string?,
-}
-type Workspace = { status: string?, names: { string }? }
-
-local account = ui.shared("keiki.account", { signed_in = false, busy = false, agents = {}, reply = "" } :: Account)
-local workspace = ui.shared("keiki.workspace", {} :: Workspace)
+local account = require("./account")
+local workspace = require("./workspace")
+local conversations = require("./conversations")
+local transcript = require("./transcript")
 local draft = ui.state("draft", "")
 local orgs = ui.computed(function()
 	return account:get().orgs or {}
@@ -68,7 +57,7 @@ return ui.row({
 			p = 20,
 			gap = 12,
 			ui.text({ "Keiki", text_size = 25, bold = true, color = accent }),
-			ui.text({ "Desktop preview", color = muted }),
+			ui.text({ "Desktop", color = muted }),
 			ui.text({ "Local workspace", bold = true }),
 			ui.text({
 				function()
@@ -82,7 +71,7 @@ return ui.row({
 			ui.text({ "Organizations", bold = true }),
 			ui.each(orgs, function(org)
 				return button(org.name or org.id, function()
-					invoke_and_clear("choose_org", org.id)
+					invoke_and_clear("account.choose_org", org.id)
 				end, function()
 					return busy() or account:get().active_org == org.id
 				end)
@@ -95,9 +84,9 @@ return ui.row({
 			ui.text({ "Keiki agents", bold = true }),
 			ui.each(agents, function(agent)
 				return button(agent.name or agent.id, function()
-					invoke_and_clear("choose_agent", agent.id)
+					invoke_and_clear("conversations.choose_agent", agent.id)
 				end, function()
-					return busy() or account:get().agent_id == agent.id
+					return busy() or conversations:get().agent_id == agent.id
 				end)
 			end, {
 				key = function(agent)
@@ -115,12 +104,12 @@ return ui.row({
 		ui.row({
 			gap = 8,
 			button("Sign in to Keiki", function()
-				ui.invoke("sign_in")
+				ui.invoke("account.sign_in")
 			end, function()
 				return busy() or account:get().signed_in
 			end),
 			button("Sign out", function()
-				invoke_and_clear("sign_out")
+				invoke_and_clear("account.sign_out")
 			end, function()
 				return busy() or not account:get().signed_in
 			end),
@@ -137,7 +126,7 @@ return ui.row({
 				if not state.signed_in then
 					return "Sign in to get started."
 				end
-				return state.agent_id and "Ready" or "Choose a Keiki agent"
+				return conversations:get().agent_id and "Ready" or "Choose a Keiki agent"
 			end,
 			color = muted,
 			wrap = true,
@@ -147,7 +136,7 @@ return ui.row({
 			min_h = 0,
 			ui.text({
 				function()
-					return account:get().reply
+					return transcript:get().reply
 				end,
 				id = "reply",
 				wrap = true,
@@ -163,9 +152,9 @@ return ui.row({
 			py = 10,
 		}),
 		button("Send", function()
-			invoke_and_clear("send", draft:get())
+			invoke_and_clear("conversations.send", draft:get())
 		end, function()
-			return busy() or account:get().agent_id == nil or draft:get() == ""
+			return busy() or conversations:get().agent_id == nil or draft:get() == ""
 		end, "send"),
 	}),
 })

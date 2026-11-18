@@ -28,14 +28,22 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-dev libxcb1-dev libx11-xcb-dev \
             libfontconfig1-dev libfreetype-dev libasound2-dev \
-            libvulkan-dev pkg-config cmake
+            libvulkan-dev libdbus-1-dev pkg-config cmake
       - name: rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
-      - run: cargo build -p zeron
+      - run: cargo clippy --workspace --all-targets --locked
+      - run: cargo clippy -p zeron-desktop --all-targets --locked -- -D warnings
+      - name: Install Luau strict checker
+        run: |
+          curl -fsSL https://github.com/JohnnyMorganz/luau-lsp/releases/download/1.70.1/luau-lsp-linux-x86_64.zip -o "$RUNNER_TEMP/luau-lsp.zip"
+          unzip "$RUNNER_TEMP/luau-lsp.zip" -d "$RUNNER_TEMP/luau-lsp"
+          chmod +x "$RUNNER_TEMP/luau-lsp/luau-lsp"
+          echo "$RUNNER_TEMP/luau-lsp" >> "$GITHUB_PATH"
+      - run: cargo run --locked -p zeron-desktop --example check-luau
+      - run: cargo test --workspace --locked
+      - run: cargo build --locked -p zeron
 
   linux-package:
     runs-on: ubuntu-24.04
@@ -48,7 +56,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-dev libxcb1-dev libx11-xcb-dev \
             libfontconfig1-dev libfreetype-dev libasound2-dev \
-            libvulkan-dev pkg-config cmake dpkg-dev \
+            libvulkan-dev libdbus-1-dev pkg-config cmake dpkg-dev \
             xvfb mesa-vulkan-drivers file
       - name: rust toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install

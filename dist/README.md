@@ -1,5 +1,8 @@
 # Packaging
 
+The shipping desktop uses ZGX/Luau. Font licenses are packaged from
+`dist/font-licenses`, independently of the retained GPUI reference crate.
+
 ## Linux (implemented)
 
 ```sh

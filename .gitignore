@@ -1,5 +1,4 @@
 /target
-/apps/keiki-zgx/target/
 **/*.rs.bk
 # Local-only scratch space — holds signing/notary credentials, never commit.
 /ignore/

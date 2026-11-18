@@ -58,7 +58,7 @@ if has_format tarball; then
   install -m 644 "$ROOT/dist/zeron.desktop" "$STAGE/zeron.desktop"
   install -m 644 "$ROOT/dist/zeron.png" "$STAGE/zeron.png"
   mkdir -p "$STAGE/licenses/fonts"
-  cp "$ROOT/crates/ui/assets/fonts/licenses/"* "$STAGE/licenses/fonts/"
+  cp "$ROOT/dist/font-licenses/"* "$STAGE/licenses/fonts/"
 
   cat >"$STAGE/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
@@ -96,7 +96,7 @@ if has_format deb; then
   install -m 644 "$ROOT/dist/zeron.desktop" "$DEB_ROOT/usr/share/applications/zeron.desktop"
   install -m 644 "$ROOT/dist/zeron.png" \
     "$DEB_ROOT/usr/share/icons/hicolor/1024x1024/apps/zeron.png"
-  cp "$ROOT/crates/ui/assets/fonts/licenses/"* \
+  cp "$ROOT/dist/font-licenses/"* \
     "$DEB_ROOT/usr/share/doc/zeron/licenses/fonts/"
 
   # dpkg-shlibdeps only runs from a source tree, and only reports what the
