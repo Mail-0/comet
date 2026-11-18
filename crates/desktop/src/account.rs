@@ -276,6 +276,13 @@ impl Account {
     }
 }
 
+pub fn register(registration: &crate::bridge::Registration<'_>) {
+    registration.watch("keiki.account", registration.account.clone());
+    registration.account_action("account.sign_in", Command::sign_in);
+    registration.account_action("account.sign_out", Command::sign_out);
+    registration.account_action("account.choose_org", Command::ChooseOrg);
+}
+
 pub fn initial() -> Value {
     Account::default().snapshot(false, None)
 }

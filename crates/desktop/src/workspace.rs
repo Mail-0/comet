@@ -91,6 +91,10 @@ async fn engine_info(client: &RpcClient) -> Result<EngineInfo, RpcError> {
     }
 }
 
+pub fn register(registration: &crate::bridge::Registration<'_>) {
+    registration.watch("keiki.workspace", registration.workspace.clone());
+}
+
 pub fn initial() -> Value {
     json!({"status": "Connecting to local workspace…", "names": []})
 }

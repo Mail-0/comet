@@ -1,6 +1,10 @@
 use serde_json::{Value, json};
 use url::Url;
 
+pub fn register(registration: &crate::bridge::Registration<'_>) {
+    registration.watch("keiki.settings", registration.settings.clone());
+}
+
 #[derive(Default)]
 pub struct Settings {
     route: String,

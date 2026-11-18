@@ -1,4 +1,7 @@
 mod account;
+mod bridge;
+mod changes;
+mod composer;
 mod conversations;
 mod copilot;
 mod sandbox;
@@ -82,63 +85,24 @@ pub fn run_app(config: UiConfig) -> Result<()> {
         })
         .run(move |cx| {
             let host = ScriptHost::bundled(&cx.ui.runtime, &UI, "app.luau").app_id("sh.zeron.app");
-            for (action, command) in [
-                (
-                    "account.sign_in",
-                    account::Command::sign_in as fn(String) -> _,
-                ),
-                ("account.sign_out", account::Command::sign_out),
-                ("account.choose_org", account::Command::ChooseOrg),
-                ("conversations.choose_agent", account::Command::ChooseAgent),
-                ("conversations.send", account::Command::Send),
-            ] {
-                let commands = commands.clone();
-                let account = account_rx.clone();
-                host.action(action, move |payload| {
-                    if account.borrow()["busy"] == true {
-                        return;
-                    }
-                    let text = match payload {
-                        Value::Str(text) => text.to_string(),
-                        _ => String::new(),
-                    };
-                    let _ = commands.try_send(command(text));
-                });
-            }
-            for (key, mut rx) in [
-                ("keiki.account", account_rx.clone()),
-                ("keiki.workspace", workspace_rx.clone()),
-                ("keiki.settings", settings_rx.clone()),
-            ] {
-                let value = host.shared(key, script_value(&rx.borrow_and_update()));
-                cx.tasks.spawn(async move {
-                    while rx.changed().await.is_ok() {
-                        value.set(script_value(&rx.borrow_and_update()));
-                    }
-                });
-            }
-            for (key, project) in [
-                (
-                    "keiki.conversations",
-                    conversations::snapshot as fn(&Json) -> Json,
-                ),
-                ("keiki.transcript", transcript::snapshot),
-            ] {
-                let mut rx = account_rx.clone();
-                let value = host.shared(key, script_value(&project(&rx.borrow_and_update())));
-                cx.tasks.spawn(async move {
-                    while rx.changed().await.is_ok() {
-                        value.set(script_value(&project(&rx.borrow_and_update())));
-                    }
-                });
-            }
-            for (key, initial) in [
-                ("keiki.copilot", copilot::initial()),
-                ("keiki.sandbox", sandbox::initial()),
-                ("keiki.updater", updater::initial()),
-            ] {
-                host.shared(key, script_value(&initial));
-            }
+            let registration = bridge::Registration {
+                host: &host,
+                tasks: &cx.tasks,
+                commands: &commands,
+                account: &account_rx,
+                workspace: &workspace_rx,
+                settings: &settings_rx,
+            };
+            account::register(&registration);
+            conversations::register(&registration);
+            transcript::register(&registration);
+            composer::register(&registration);
+            workspace::register(&registration);
+            copilot::register(&registration);
+            sandbox::register(&registration);
+            changes::register(&registration);
+            settings::register(&registration);
+            updater::register(&registration);
             if let Err(error) = host.reload() {
                 *window_failure.borrow_mut() = Some(error);
                 cx.window.close();
@@ -193,6 +157,7 @@ mod tests {
         let (mut conversations, mut transcript) = (None, None);
         let mut app = TestApp::new(|runtime| {
             let host = ScriptHost::bundled(runtime, &UI, "app.luau");
+            composer::register_host(&host);
             account = Some(host.shared("keiki.account", script_value(&account::initial())));
             workspace = Some(host.shared("keiki.workspace", script_value(&json!({}))));
             conversations = Some(host.shared("keiki.conversations", script_value(&json!({}))));
@@ -237,6 +202,15 @@ mod tests {
         );
         app.click("send");
         assert_eq!(sent.borrow().len(), 1);
+        assert!(app.host.error().get().is_none());
+
+        account.set(script_value(&json!({
+            "signed_in": false, "busy": false, "agents": [],
+            "error": "Session unavailable",
+        })));
+        let texts = app.texts();
+        assert!(texts.iter().any(|text| text == "Session unavailable"));
+        assert!(!texts.iter().any(|text| text == "Current org agent"));
         assert!(app.host.error().get().is_none());
     }
 }
