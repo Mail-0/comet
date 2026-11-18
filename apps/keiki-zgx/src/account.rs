@@ -48,18 +48,24 @@ impl Session {
     where
         F: Future<Output = Result<T, keiki_api::Error>>,
     {
-        if self.token.should_refresh() {
+        let mut refreshed = self.token.should_refresh();
+        if refreshed {
             self.refresh(client).await?;
         }
-        match request(self.token.access_token().to_owned()).await {
-            Err(keiki_api::Error::Api {
-                status: reqwest::StatusCode::UNAUTHORIZED,
-                ..
-            }) => {
-                self.refresh(client).await?;
-                Ok(request(self.token.access_token().to_owned()).await?)
+        loop {
+            match request(self.token.access_token().to_owned()).await {
+                Err(keiki_api::Error::Api {
+                    status: reqwest::StatusCode::UNAUTHORIZED,
+                    ..
+                }) => {
+                    if refreshed {
+                        return Err(SessionExpired.into());
+                    }
+                }
+                result => return Ok(result?),
             }
-            result => Ok(result?),
+            self.refresh(client).await?;
+            refreshed = true;
         }
     }
 
@@ -337,6 +343,15 @@ mod tests {
 
     #[tokio::test]
     async fn streaming_follow_up_keeps_its_conversation_when_keiki_rejects_an_expired_token() {
+        streaming_follow_up_after_refresh(false).await;
+    }
+
+    #[tokio::test]
+    async fn rejected_refreshed_token_requires_signing_in_again() {
+        streaming_follow_up_after_refresh(true).await;
+    }
+
+    async fn streaming_follow_up_after_refresh(reject_refresh: bool) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client = Client::new(format!("http://{}", listener.local_addr().unwrap()));
         const STEER: &str = "/steer?agentId=agent-1 HTTP/1.1";
@@ -375,7 +390,11 @@ mod tests {
                     JSON,
                     r#"{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600,"token_type":"bearer","scope":"manage"}"#,
                 ),
-                (STEER, "200 OK", STREAM, DELTAS),
+                if reject_refresh {
+                    (STEER, "401 Unauthorized", JSON, r#"{"error":"invalid_token"}"#)
+                } else {
+                    (STEER, "200 OK", STREAM, DELTAS)
+                },
             ].into_iter().enumerate() {
                 let (conn, _) = listener.accept().await.unwrap();
                 let mut io = BufReader::new(conn);
@@ -439,10 +458,14 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(account.reply, "Keiki reply");
-            account
+            let result = account
                 .apply(Command::Send("follow-up".into()), &client, &state)
-                .await
-                .unwrap();
+                .await;
+            if reject_refresh {
+                assert!(result.unwrap_err().is::<SessionExpired>());
+            } else {
+                result.unwrap();
+            }
             let session = account.session.unwrap();
             assert_eq!(
                 session
