@@ -19,7 +19,7 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FONT = os.path.join(ROOT, "crates/ui/assets/fonts/GeistMono.ttf")
+FONT = os.path.join(ROOT, "dist/macos/GeistMono.ttf")
 OUT = os.path.join(ROOT, "dist/macos")
 
 # Window geometry in points; must match the dmgbuild settings in
