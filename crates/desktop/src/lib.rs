@@ -22,27 +22,58 @@ pub struct UiConfig {
 use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 use tokio::sync::{mpsc, watch};
-use zgx_desktop::{Application, WindowOptions};
+use zgx_desktop::{Application, ApplicationEvent, WindowOptions};
 use zgx_script::{Bundle, ScriptHost, Value};
 
 static UI: Bundle = zgx_script::include_bundle!("keiki");
 
-pub fn run_app(_config: UiConfig) -> Result<()> {
-    let port = Some(_config.ipc_port);
-    let api_url = _config.keiki_api_url;
+pub fn run_app(config: UiConfig) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (commands, command_rx) = mpsc::channel(1);
     let (account_tx, account_rx) = watch::channel(account::initial());
-    runtime.spawn(account::run(api_url, command_rx, account_tx));
-    let (workspace_tx, workspace_rx) = watch::channel(json!({"status": "No workspace connected"}));
-    if let Some(port) = port {
-        runtime.spawn(workspace::watch_workspaces(port, workspace_tx.clone()));
-    }
+    let account_task = runtime.spawn(account::run(config.keiki_api_url, command_rx, account_tx));
+    let (workspace_tx, workspace_rx) = watch::channel(workspace::initial());
+    let (stop, stopped) = watch::channel(false);
+    let workspace_task = runtime.spawn(workspace::run(
+        zeron_engine::EngineConfig {
+            data_dir: config.data_dir,
+            ipc_port: config.ipc_port,
+            default_harness: config.default_harness,
+        },
+        workspace_tx,
+        stopped.clone(),
+    ));
+    let signal_stop = stop.clone();
+    let signal_task = runtime.spawn(async move {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "Could not install desktop shutdown signal");
+            return;
+        }
+        signal_stop.send_replace(true);
+    });
+    let route = std::env::var("ZERON_OPEN_ROUTE").ok();
+    let settings = Rc::new(RefCell::new(settings::Settings::new(
+        route.as_deref(),
+        config.initial_url.as_deref(),
+    )));
+    let (settings_tx, settings_rx) = watch::channel(settings.borrow().snapshot());
+    let event_settings = settings.clone();
     let failure = Rc::new(RefCell::new(None));
     let window_failure = failure.clone();
-    Application::new()
+    let application = Application::new()
+        .application_id("sh.zeron.app")?
+        .desktop_id("zeron")
+        .on_application_event(move |event, _| {
+            if let ApplicationEvent::OpenUrls(urls) = event {
+                for url in urls {
+                    if event_settings.borrow_mut().open_url(&url) {
+                        settings_tx.send_replace(event_settings.borrow().snapshot());
+                    }
+                }
+            }
+        })
         .window(WindowOptions {
             title: "Keiki".into(),
             width: 900.,
@@ -77,6 +108,7 @@ pub fn run_app(_config: UiConfig) -> Result<()> {
             for (key, mut rx) in [
                 ("keiki.account", account_rx.clone()),
                 ("keiki.workspace", workspace_rx.clone()),
+                ("keiki.settings", settings_rx.clone()),
             ] {
                 let value = host.shared(key, script_value(&rx.borrow_and_update()));
                 cx.tasks.spawn(async move {
@@ -103,7 +135,6 @@ pub fn run_app(_config: UiConfig) -> Result<()> {
             for (key, initial) in [
                 ("keiki.copilot", copilot::initial()),
                 ("keiki.sandbox", sandbox::initial()),
-                ("keiki.settings", settings::initial()),
                 ("keiki.updater", updater::initial()),
             ] {
                 host.shared(key, script_value(&initial));
@@ -114,8 +145,21 @@ pub fn run_app(_config: UiConfig) -> Result<()> {
                 return;
             }
             cx.render(host.view());
+            tracing::info!("main window opened");
+            let window = cx.window.clone();
+            let mut stopped = stopped.clone();
+            cx.tasks.spawn(async move {
+                if stopped.changed().await.is_ok() {
+                    window.close();
+                }
+            });
         })
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        .map_err(|error| anyhow::anyhow!("{error}"));
+    stop.send_replace(true);
+    runtime.block_on(workspace_task)?;
+    account_task.abort();
+    signal_task.abort();
+    application?;
     if let Some(error) = failure.borrow_mut().take() {
         anyhow::bail!("{error}");
     }
@@ -129,6 +173,7 @@ fn script_value(json: &Json) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use zgx_script::testing::TestApp;
 
     #[test]

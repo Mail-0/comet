@@ -1,4 +1,9 @@
+mod credentials;
+
+use std::sync::Arc;
+
 use anyhow::{Context, Result, ensure};
+use credentials::{CredentialStore, SecureStore};
 use keiki_api::{AuthorizationFlow, Client, TokenSet};
 use keiki_model::{AgentSummary, ConversationLocator, SessionUser, SteerConversationResponse};
 use serde_json::{Value, json};
@@ -26,6 +31,7 @@ impl Command {
 struct Session {
     client_id: String,
     token: TokenSet,
+    store: Option<Arc<dyn CredentialStore>>,
 }
 
 #[derive(Debug)]
@@ -72,11 +78,23 @@ impl Session {
     async fn refresh(&mut self, client: &Client) -> Result<()> {
         let credentials = self.token.stored_credentials(self.client_id.clone());
         match client.refresh_token(&credentials).await {
-            Ok(token) => self.token = token,
+            Ok(token) => {
+                self.token = token;
+                self.persist().await?;
+            }
             Err(error) if error.is_invalid_refresh_token() || error.is_authentication_failure() => {
                 return Err(SessionExpired.into());
             }
             Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    async fn persist(&self) -> Result<()> {
+        if let Some(store) = &self.store {
+            store
+                .save(&self.token.stored_credentials(self.client_id.clone()))
+                .await?;
         }
         Ok(())
     }
@@ -92,6 +110,36 @@ struct Account {
 }
 
 impl Account {
+    async fn restore(
+        &mut self,
+        client: &Client,
+        state: &watch::Sender<Value>,
+        store: Arc<dyn CredentialStore>,
+    ) -> Result<()> {
+        let Some(credentials) = store.load().await? else {
+            return Ok(());
+        };
+        let token = match client.refresh_token(&credentials).await {
+            Ok(token) => token,
+            Err(error) if error.is_invalid_refresh_token() || error.is_authentication_failure() => {
+                store.delete().await?;
+                return Err(SessionExpired.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.session = Some(Session {
+            client_id: credentials.client_id,
+            token,
+            store: Some(store),
+        });
+        self.session
+            .as_ref()
+            .context("Missing restored session")?
+            .persist()
+            .await?;
+        self.load(client, state).await
+    }
+
     fn snapshot(&self, busy: bool, error: Option<String>) -> Value {
         json!({
             "signed_in": self.session.is_some(),
@@ -137,13 +185,23 @@ impl Account {
             Command::SignIn => {
                 ensure!(self.session.is_none(), "Already signed in");
                 self.session = Some(sign_in(client).await?);
+                self.session
+                    .as_ref()
+                    .context("Missing session")?
+                    .persist()
+                    .await?;
                 self.load(client, state).await?;
             }
             Command::SignOut => {
                 let session = std::mem::take(self).session;
                 state.send_replace(self.snapshot(true, None));
                 if let Some(session) = session {
+                    if let Some(store) = &session.store {
+                        store.delete().await?;
+                    }
                     client.revoke_token(session.token.access_token()).await?;
+                } else {
+                    SecureStore.delete().await?;
                 }
             }
             Command::ChooseOrg(org_id) => {
@@ -229,6 +287,25 @@ pub async fn run(
 ) {
     let client = Client::new(api_url);
     let mut account = Account::default();
+    state.send_replace(account.snapshot(true, None));
+    let restored = account
+        .restore(&client, &state, Arc::new(SecureStore))
+        .await;
+    if restored
+        .as_ref()
+        .is_err_and(|error| error.is::<SessionExpired>())
+    {
+        if let Some(store) = account
+            .session
+            .as_ref()
+            .and_then(|session| session.store.as_ref())
+            && let Err(error) = store.delete().await
+        {
+            tracing::warn!(%error, "Could not clear rejected Keiki credentials");
+        }
+        account = Account::default();
+    }
+    state.send_replace(account.snapshot(false, restored.err().map(|error| error.to_string())));
     while let Some(command) = commands.recv().await {
         state.send_replace(account.snapshot(true, None));
         let result = account.apply(command, &client, &state).await;
@@ -236,6 +313,14 @@ pub async fn run(
             .as_ref()
             .is_err_and(|error| error.is::<SessionExpired>())
         {
+            if let Some(store) = account
+                .session
+                .as_ref()
+                .and_then(|session| session.store.as_ref())
+                && let Err(error) = store.delete().await
+            {
+                tracing::warn!(%error, "Could not clear rejected Keiki credentials");
+            }
             account = Account::default();
         }
         state.send_replace(account.snapshot(false, result.err().map(|error| error.to_string())));
@@ -253,7 +338,11 @@ async fn sign_in(client: &Client) -> Result<Session> {
     let callback = keiki_api::wait_for_loopback_callback(listener, redirect_uri).await?;
     let code = flow.authorization_code(&callback)?;
     let token = client.exchange_code(&flow, &code).await?;
-    Ok(Session { client_id, token })
+    Ok(Session {
+        client_id,
+        token,
+        store: Some(Arc::new(SecureStore)),
+    })
 }
 
 async fn stream_reply(
@@ -340,6 +429,154 @@ mod tests {
         net::TcpListener,
         time::{Duration, timeout},
     };
+
+    #[derive(Default)]
+    struct MemoryStore {
+        credentials: std::sync::Mutex<Option<keiki_api::StoredCredentials>>,
+        fail_load: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialStore for MemoryStore {
+        async fn load(&self) -> Result<Option<keiki_api::StoredCredentials>> {
+            ensure!(!self.fail_load, "credential storage unavailable");
+            Ok(self.credentials.lock().unwrap().clone())
+        }
+
+        async fn save(&self, credentials: &keiki_api::StoredCredentials) -> Result<()> {
+            *self.credentials.lock().unwrap() = Some(credentials.clone());
+            Ok(())
+        }
+
+        async fn delete(&self) -> Result<()> {
+            *self.credentials.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_or_unavailable_credentials_do_not_create_a_session() {
+        let mut account = Account::default();
+        let client = Client::new("http://127.0.0.1:1");
+        let (state, _) = watch::channel(initial());
+        account
+            .restore(&client, &state, Arc::new(MemoryStore::default()))
+            .await
+            .unwrap();
+        assert!(account.session.is_none());
+        let error = account
+            .restore(
+                &client,
+                &state,
+                Arc::new(MemoryStore {
+                    fail_load: true,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("storage unavailable"));
+        assert!(account.session.is_none());
+    }
+
+    #[tokio::test]
+    async fn restored_credentials_rotate_and_sign_out_deletes_them() {
+        restore_credentials(false).await;
+    }
+
+    #[tokio::test]
+    async fn rejected_restored_credentials_are_deleted() {
+        restore_credentials(true).await;
+    }
+
+    async fn restore_credentials(reject: bool) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(format!("http://{}", listener.local_addr().unwrap()));
+        let store = Arc::new(MemoryStore::default());
+        store
+            .save(&keiki_api::StoredCredentials {
+                client_id: "fixture-client".into(),
+                refresh_token: "fixture-refresh".into(),
+            })
+            .await
+            .unwrap();
+        let server = async {
+            let responses = if reject {
+                vec![(
+                    "POST /oauth/token",
+                    "400 Bad Request",
+                    r#"{"error":"invalid_grant"}"#,
+                )]
+            } else {
+                vec![
+                    (
+                        "POST /oauth/token",
+                        "200 OK",
+                        r#"{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600,"token_type":"bearer","scope":"manage"}"#,
+                    ),
+                    (
+                        "GET /api/webapp/auth/session",
+                        "200 OK",
+                        r#"{"user":{"orgs":[{"id":"org-1"}],"activeOrgId":"org-1"}}"#,
+                    ),
+                    ("GET /api/webapp/agents", "200 OK", r#"{"agents":[]}"#),
+                    ("POST /oauth/revoke", "200 OK", "{}"),
+                ]
+            };
+            for (expected, status, body) in responses {
+                let (connection, _) = listener.accept().await.unwrap();
+                let mut io = BufReader::new(connection);
+                let mut request = String::new();
+                while !request.ends_with("\r\n\r\n") {
+                    assert_ne!(io.read_line(&mut request).await.unwrap(), 0);
+                }
+                assert!(request.starts_with(expected), "{request}");
+                let length: usize = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap();
+                let mut payload = vec![0; length];
+                io.read_exact(&mut payload).await.unwrap();
+                if expected == "POST /oauth/token" {
+                    assert_eq!(payload, b"grant_type=refresh_token&refresh_token=fixture-refresh&client_id=fixture-client");
+                }
+                io.write_all(format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                ).as_bytes()).await.unwrap();
+            }
+        };
+        let app = async {
+            let mut account = Account::default();
+            let (state, _) = watch::channel(initial());
+            let result = account.restore(&client, &state, store.clone()).await;
+            if reject {
+                assert!(result.unwrap_err().is::<SessionExpired>());
+                assert!(account.session.is_none());
+            } else {
+                result.unwrap();
+                assert!(
+                    account.snapshot(false, None)["signed_in"]
+                        .as_bool()
+                        .unwrap()
+                );
+                assert_eq!(
+                    store.load().await.unwrap().unwrap().refresh_token,
+                    "rotated-refresh"
+                );
+                account
+                    .apply(Command::SignOut, &client, &state)
+                    .await
+                    .unwrap();
+                assert!(account.session.is_none());
+            }
+            assert!(store.load().await.unwrap().is_none());
+        };
+        timeout(Duration::from_secs(5), async { tokio::join!(server, app) })
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn streaming_follow_up_keeps_its_conversation_when_keiki_rejects_an_expired_token() {
@@ -444,6 +681,7 @@ mod tests {
                 session: Some(Session {
                     client_id: "fixture-client".into(),
                     token: client.exchange_code(&flow, "fixture-code").await.unwrap(),
+                    store: None,
                 }),
                 ..Default::default()
             };

@@ -26,3 +26,22 @@ The build embeds the Luau bundle. Tests lint the scripts and exercise the
 bundled view through ZGX TestApp. Run strict Luau analysis with
 `cargo run --locked -p zeron-desktop --example check-luau` (requires luau-lsp).
 GPUI remains in `crates/ui` as an unlinked reference during the parity cutover.
+
+## Lifecycle
+
+The host probes localhost IPC, attaches to an existing daemon, or embeds the
+same Engine runtime and exposes its IPC service. A lost workspace subscription
+reconnects, falling back to embedding if the daemon has stopped. Closing the
+window or interrupting the process drains an embedded runtime; an attached
+daemon remains running.
+
+OAuth credentials use the existing `keiki://oauth` internet-password entry on
+macOS (account `OAuth`) and the existing Secret Service URL/label on Linux.
+Startup refreshes a saved session and stores rotated refresh tokens. Sign-out
+and rejected refresh credentials delete the entry. Storage errors surface as
+account errors; credentials never fall back to plaintext files.
+
+`ZERON_OPEN_ROUTE` populates `keiki.settings.route`. Launch URLs and macOS
+`keiki://` open events populate `keiki.settings.deep_link`; navigation is deferred
+to later stages. OAuth callbacks remain on the loopback listener and are never
+published. URL queries/fragments are stripped from state.

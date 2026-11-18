@@ -7,13 +7,18 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 keiki-api.workspace = true
 keiki-model.workspace = true
 open = "5"
 reqwest.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
 uuid.workspace = true
+zeron-engine.workspace = true
 zeron-copilot.workspace = true
 zeron-proto.workspace = true
 zeron-rpc.workspace = true
@@ -22,3 +27,12 @@ zgx-script.workspace = true
 
 [build-dependencies]
 zgx-script.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+oo7 = { version = "0.6", default-features = false, features = ["tokio", "native_crypto"] }
+
+[dev-dependencies]
+tempfile.workspace = true

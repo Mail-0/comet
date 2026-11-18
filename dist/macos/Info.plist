@@ -32,6 +32,7 @@
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>zeron</string>
+                <string>keiki</string>
             </array>
         </dict>
     </array>
@@ -41,7 +42,7 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>© 2026</string>
-    <!-- gpui renders via Metal. -->
+    <!-- ZGX renders via Metal. -->
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>
