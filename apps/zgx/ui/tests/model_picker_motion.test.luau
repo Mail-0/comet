@@ -93,7 +93,7 @@ test("Escape folds the opened-out picker back from the slider and the tabs", fun
 	local app = mount("picker_fixture.luau")
 	opened(app)
 	local folded_h = height(app)
-	for _, target in { 'role:group "REASONING"', 'role:tab "Codex"' } do
+	for _, target in { 'role:group "REASONING"', 'role:tab "Mock"' } do
 		app:click(".folded")
 		settle(app)
 		app:click(target)

@@ -174,9 +174,9 @@ test("moving between tabs keeps the panel's size, its list changing in place", f
 	expect(id).never.to_be_nil()
 	-- The reasoning (its title and its slider), once.
 	local reasoning = app:count('"REASONING"')
-	-- Claude's two models, Codex's two, the starred (none), Devin's two:
+	-- Claude's two models, Mock's two, the starred (none), Devin's two:
 	-- frame by frame through each switch, the same panel at the same size.
-	for _, tab in { "Codex", "Starred", "Devin", "Claude" } do
+	for _, tab in { "Mock", "Starred", "Devin", "Copilot" } do
 		app:click(`role:tab "{tab}"`)
 		for _ = 1, 20 do
 			app:frames(1)

@@ -11,7 +11,7 @@ local function row(device: string, name: string, harness: string, action: string
 		kind = "agent",
 		harness = harness,
 		name = name,
-		mark = "claude",
+		mark = "copilot",
 		phase = "available",
 		installed = "1.0",
 		latest = "1.1",
@@ -35,11 +35,11 @@ end)
 
 test("the button wears three marks at most and says how many", function()
 	local app = open({
-		row("here", "Claude Code", "claude-code", "update"),
-		row("here", "Codex", "codex", "update"),
-		row("metal", "Claude Code", "claude-code", "update"),
-		row("metal", "Grok", "grok", "update"),
-		row("metal", "Pi", "pi", "update"),
+		row("here", "Copilot", "copilot", "update"),
+		row("here", "Mock", "mock", "update"),
+		row("metal", "Copilot", "copilot", "update"),
+		row("metal", "Mock B", "mock-b", "update"),
+		row("metal", "Mock C", "mock-c", "update"),
 	})
 	expect(app:has('role:button "5 updates"')).to_be(true)
 	expect(app:has("#updates-mark-3")).to_be(true)
@@ -54,9 +54,9 @@ end
 
 test("each mark sits in the middle of its own circle", function()
 	local app = open({
-		row("here", "Claude Code", "claude-code", "update"),
-		row("here", "Codex", "codex", "update"),
-		row("metal", "Grok", "grok", "update"),
+		row("here", "Copilot", "copilot", "update"),
+		row("here", "Mock", "mock", "update"),
+		row("metal", "Mock B", "mock-b", "update"),
 	})
 	for at = 1, 3 do
 		local circle, glyph = box(app, `#updates-mark-{at}`), box(app, `#updates-mark-{at}-glyph`)
@@ -66,8 +66,8 @@ end)
 
 test("the same thing on two devices is one mark", function()
 	local app = open({
-		row("here", "Claude Code", "claude-code", "update"),
-		row("metal", "Claude Code", "claude-code", "update"),
+		row("here", "Copilot", "copilot", "update"),
+		row("metal", "Copilot", "copilot", "update"),
 	})
 	expect(app:has("#updates-mark-1")).to_be(true)
 	expect(app:has("#updates-mark-2")).to_be(false)
@@ -75,15 +75,15 @@ end)
 
 test("the list goes by device, and offers what each row can do", function()
 	local app = open({
-		row("here", "Claude Code", "claude-code", "update"),
-		row("metal", "Codex", "codex", "steps"),
-		row("metal", "Grok", "grok", "update", false),
+		row("here", "Copilot", "copilot", "update"),
+		row("metal", "Mock", "mock", "steps"),
+		row("metal", "Mock B", "mock-b", "update", false),
 	})
 	app:click("#updates-button")
 	app:frames(10)
 	expect(app:has('"metal"')).to_be(true)
-	expect(app:has('role:button "Update · Claude Code"')).to_be(true)
-	expect(app:has('role:button "View steps · Codex"')).to_be(true)
+	expect(app:has('role:button "Update · Copilot"')).to_be(true)
+	expect(app:has('role:button "View steps · Mock"')).to_be(true)
 	-- A device out of reach says so, and its action waits.
 	expect(app:has('"Offline"')).to_be(true)
 end)
@@ -124,10 +124,10 @@ end)
 
 test("Update all says what it will do first, and what it can't reach", function()
 	local app = open({
-		row("here", "Claude Code", "claude-code", "update"),
-		row("metal", "Grok", "grok", "update"),
-		row("metal", "Codex", "codex", "steps"),
-		row("away", "Pi", "pi", "update", false),
+		row("here", "Copilot", "copilot", "update"),
+		row("metal", "Mock B", "mock-b", "update"),
+		row("metal", "Mock", "mock", "steps"),
+		row("away", "Mock C", "mock-c", "update", false),
 	})
 	app:click("#updates-button")
 	app:frames(10)
@@ -173,11 +173,11 @@ test("a device that says it can't update from here says why, and offers what to 
 end)
 
 test("an update waiting says why in the engine's words, or its own", function()
-	local waiting = row("metal", "Codex", "codex", "cancel")
+	local waiting = row("metal", "Mock", "mock", "cancel")
 	waiting.phase = "waiting"
 	waiting.active = true
 	waiting.message = "Waiting for running chats to finish."
-	local plain = row("metal", "Claude Code", "claude-code", "cancel")
+	local plain = row("metal", "Copilot", "copilot", "cancel")
 	plain.phase = "waiting"
 	plain.active = true
 	local app = open({ waiting, plain })
@@ -273,13 +273,13 @@ test("skipping them all from the dialog puts the button away", function()
 end)
 
 test("what's under way can't be skipped", function()
-	local going = row("here", "Codex", "codex", "cancel")
+	local going = row("here", "Mock", "mock", "cancel")
 	going.phase = "downloading"
 	going.active = true
 	local app = open({ going })
 	app:click("#updates-button")
 	app:frames(10)
-	expect(app:has("#update-skip-here:codex")).to_be(false)
+	expect(app:has("#update-skip-here:mock")).to_be(false)
 end)
 
 test("a long line fades at its end, beside Skip and its action", function()
@@ -300,21 +300,21 @@ test("Skip sits before a row's action, and actions keep the row's end", function
 	local long = row("here", "Muse Code", "muse", "retry")
 	long.phase = "failed"
 	long.message = "it failed"
-	local going = row("here", "Grok", "grok", "cancel")
+	local going = row("here", "Mock B", "mock-b", "cancel")
 	going.phase = "downloading"
 	going.active = true
-	local app = open({ row("here", "Codex", "codex", "update"), long, going })
+	local app = open({ row("here", "Mock", "mock", "update"), long, going })
 	app:click("#updates-button")
 	app:frames(10)
 	local function span(sel: string): (number, number)
 		local x, w = string.match(string.match(app:tree(sel), "[^\n]+") or "", " (%-?%d+),%-?%d+ (%d+)x")
 		return tonumber(x) or 0, (tonumber(x) or 0) + (tonumber(w) or 0)
 	end
-	local _, skip_end = span("#update-skip-here:codex")
-	local action_start, action_end = span("#update-action-here:codex")
+	local _, skip_end = span("#update-skip-here:mock")
+	local action_start, action_end = span("#update-action-here:mock")
 	expect(skip_end <= action_start).to_be(true)
 	local _, muse_end = span("#update-action-here:muse")
-	local _, grok_end = span("#update-action-here:grok")
+	local _, grok_end = span("#update-action-here:mock-b")
 	expect(muse_end).to_be(action_end)
 	expect(grok_end).to_be(action_end)
 	-- Nothing to skip mid-update.
@@ -322,7 +322,7 @@ test("Skip sits before a row's action, and actions keep the row's end", function
 end)
 
 test("no title: Update all alone over the list, and with nothing to run together, no room for it", function()
-	local app = open({ row("here", "Codex", "codex", "update"), row("here", "Grok", "grok", "update") })
+	local app = open({ row("here", "Mock", "mock", "update"), row("here", "Mock B", "mock-b", "update") })
 	app:click("#updates-button")
 	app:frames(10)
 	-- (Its name's there for what reads it aloud, not as words on show.)
@@ -331,11 +331,11 @@ test("no title: Update all alone over the list, and with nothing to run together
 	local function top(sel: string): number
 		return tonumber(string.match(string.match(app:tree(sel), "[^\n]+") or "", " %-?%d+,(%-?%d+) ")) or 0
 	end
-	local with_head = top("#update-row-here:codex")
-	app:set_state("updates", { rows = { row("here", "Codex", "codex", "update") } })
+	local with_head = top("#update-row-here:mock")
+	app:set_state("updates", { rows = { row("here", "Mock", "mock", "update") } })
 	app:frames(20)
 	expect(app:has("#updates-all")).to_be(false)
-	expect(top("#update-row-here:codex") < with_head).to_be(true)
+	expect(top("#update-row-here:mock") < with_head).to_be(true)
 end)
 
 test("the panel is as tall as its rows, up to its most", function()
@@ -370,7 +370,7 @@ test("the panel is as tall as its rows, up to its most", function()
 end)
 
 test("with nothing over them, the rows sit in the middle of the panel", function()
-	local app = open({ row("here", "Codex", "codex", "update") })
+	local app = open({ row("here", "Mock", "mock", "update") })
 	app:click("#updates-button")
 	app:frames(10)
 	local function box(sel: string): (number, number)
@@ -378,6 +378,6 @@ test("with nothing over them, the rows sit in the middle of the panel", function
 		return tonumber(y) or 0, tonumber(h) or 0
 	end
 	local panel_y, panel_h = box(".updates-panel")
-	local row_y, row_h = box("#update-row-here:codex")
+	local row_y, row_h = box("#update-row-here:mock")
 	expect(row_y - panel_y).to_be((panel_y + panel_h) - (row_y + row_h))
 end)

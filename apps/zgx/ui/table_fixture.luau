@@ -50,8 +50,8 @@ local TABLES: { [string]: string } = {
 	many = [[
 | Harness | Model | Region | Turns | Input tokens | Output tokens | Cached share | Median first token |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| claude-code | opus-5-5 | us-west-2 | 128 | 1,482,190 | 96,204 | 81% | 1.24 s |
-| codex | gpt-5.5-codex | us-east-1 | 94 | 902,441 | 71,880 | 66% | 1.61 s |
+| copilot | opus-5-5 | us-west-2 | 128 | 1,482,190 | 96,204 | 81% | 1.24 s |
+| mock | gpt-5.5-mock | us-east-1 | 94 | 902,441 | 71,880 | 66% | 1.61 s |
 | opencode | sonnet-5-5 | eu-central-1 | 41 | 318,007 | 28,512 | 42% | 1.08 s |
 | muse | muse-spark | us-west-2 | 12 | 77,300 | 9,014 | 0% | 2.47 s |
 ]],

@@ -818,7 +818,7 @@ return ui.component(function(props: Props): Node
 				return chosen_mark() ~= nil
 			end, Mark {
 				name = function(): Mark.Name
-					return chosen_mark() or "claude"
+					return chosen_mark() or "copilot"
 				end,
 				size = glyph,
 				bare = true,

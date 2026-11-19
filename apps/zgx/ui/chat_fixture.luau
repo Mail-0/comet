@@ -23,16 +23,16 @@ local EFFORT = {
 }
 store.catalog:set {
 	state = "ready",
-	harnesses = { { id = "claude-code", label = "Claude", mark = "claude" } },
+	harnesses = { { id = "copilot", label = "Copilot", mark = "copilot" } },
 	models = {
-		{ value = "opus", label = "Opus", harness = "claude-code", efforts = EFFORT, effort = "high" },
-		{ value = "sonnet", label = "Sonnet", harness = "claude-code", efforts = EFFORT, effort = "medium" },
+		{ value = "opus", label = "Opus", harness = "copilot", efforts = EFFORT, effort = "high" },
+		{ value = "sonnet", label = "Sonnet", harness = "copilot", efforts = EFFORT, effort = "medium" },
 		-- A model configured in place (Devin Fusion's shape): its lead and
 		-- sidekick are options.
 		{
 			value = "fusion",
 			label = "Fusion",
-			harness = "claude-code",
+			harness = "copilot",
 			efforts = EFFORT,
 			effort = "high",
 			fast = true,
@@ -1211,13 +1211,13 @@ ui.command {
 		seed()
 	end,
 }
--- A Codex session on its agent's default model (none set, so none the
+-- A Mock session on its agent's default model (none set, so none the
 -- catalog names): its agent only the one its config records.
 ui.command {
-	id = "codex_model_less",
-	title = "A Codex session with no model",
+	id = "mock_model_less",
+	title = "A Mock session with no model",
 	run = function()
-		META.s3 = { title = "Codex chat", project = "atlas", agent = "codex", harness = "codex", access = "full", plan = false }
+		META.s3 = { title = "Mock chat", project = "atlas", agent = "mock", harness = "mock", access = "full", plan = false }
 		TRANSCRIPTS.s3 = { { id = "z1", role = "user", text = "Hi" } }
 		seed()
 	end,
@@ -1296,7 +1296,7 @@ TRANSCRIPTS.s6 = {
 			{ id = "ft", kind = "text", text = "Layout is 61% of the frame and paint 22%. The rest is present and input." },
 		},
 	}),
-	{ id = "switch:1", role = "switch", text = "", from = "Claude Code", to = "Codex", from_mark = "claude", to_mark = "openai" },
+	{ id = "switch:1", role = "switch", text = "", from = "Copilot", to = "Mock", from_mark = "copilot", to_mark = "copilot" },
 	line("f2", "user", 2, "Carry on from here and draft the summary table."),
 	line("f3", "assistant", 3, "Here is the summary. Layout dominates on both machines, so that is where the work should go first.\n\nPaint is second, and present is small everywhere."),
 	line("f4", "user", 4, "Thanks, ship it."),
@@ -1919,7 +1919,7 @@ ui.command {
 	run = function()
 		local s = table.clone(store.session:peek() or {})
 		s.cwd = "/work/atlas"
-		s.harness = "claude-code"
+		s.harness = "copilot"
 		store.session:set(s)
 		local skill, command = invoke("skill", "frontend-design"), invoke("command", "review")
 		store.messages:push {
@@ -2202,8 +2202,8 @@ ui.command {
 		local c = store.catalog:peek()
 		local harnesses: { any } = table.clone(c.harnesses)
 		local models: { any } = table.clone(c.models)
-		table.insert(harnesses, { id = "codex", label = "Codex", mark = "openai" })
-		table.insert(models, { value = "gpt", label = "GPT-5.5", harness = "codex", efforts = EFFORT, effort = "medium" })
+		table.insert(harnesses, { id = "mock", label = "Mock", mark = "copilot" })
+		table.insert(models, { value = "gpt", label = "GPT-5.5", harness = "mock", efforts = EFFORT, effort = "medium" })
 		store.catalog:set { state = "ready", harnesses = harnesses, models = models }
 	end,
 }
@@ -2266,7 +2266,7 @@ ui.command {
 			local next = table.clone(META[s.id] or {}) :: any
 			next.id = s.id
 			next.state = "ready"
-			next.harness = "claude-code"
+			next.harness = "copilot"
 			next.model = nil
 			next.effort = nil
 			next.model_label = "Its own model"

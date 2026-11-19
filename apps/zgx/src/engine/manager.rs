@@ -389,13 +389,7 @@ fn spawn(config: &Config, bin: &Path) -> std::io::Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     if let Some(home) = &config.home {
-        let (claude, codex) = (home.join(".claude"), home.join(".codex"));
-        std::fs::create_dir_all(&claude)?;
-        std::fs::create_dir_all(&codex)?;
-        command
-            .env("HOME", home)
-            .env("CLAUDE_CONFIG_DIR", claude)
-            .env("CODEX_HOME", codex);
+        command.env("HOME", home);
     }
     #[cfg(unix)]
     {

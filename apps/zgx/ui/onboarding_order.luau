@@ -109,14 +109,14 @@ end
 
 test("a new account opens on the look and goes through every step", function()
 	expect(run { path = "signed_in" }).to_be("appearance")
-	expect(forward("appearance")).to_equal({ "appearance", "username", "card", "org", "invite", "github", "providers", "done" })
+	expect(forward("appearance")).to_equal({ "appearance", "username", "card", "org", "invite", "github", "done" })
 end)
 
 test("a new account goes back past its username and organization, never to Sign in", function()
 	run { path = "signed_in" }
 	-- (Made in the run: what naming it leaves.)
 	actions.org_made("org_test", "Halcyon Labs")
-	expect(backward("done")).to_equal({ "done", "providers", "github", "invite", "card", "appearance" })
+	expect(backward("done")).to_equal({ "done", "github", "invite", "card", "appearance" })
 end)
 
 test("claiming a username goes to the card, making an organization to inviting", function()
@@ -133,13 +133,13 @@ end)
 
 test("an account with a username and its own organization still invites", function()
 	expect(run { path = "signed_in", name_done = true, org_done = true, org_admin = true }).to_be("appearance")
-	expect(forward("appearance")).to_equal({ "appearance", "card", "invite", "github", "providers", "done" })
-	expect(backward("done")).to_equal({ "done", "providers", "github", "invite", "card", "appearance" })
+	expect(forward("appearance")).to_equal({ "appearance", "card", "invite", "github", "done" })
+	expect(backward("done")).to_equal({ "done", "github", "invite", "card", "appearance" })
 end)
 
 test("a member of someone else's organization passes over inviting", function()
 	run { path = "signed_in", name_done = true, org_done = true, org_admin = false }
-	expect(forward("card")).to_equal({ "card", "github", "providers", "done" })
+	expect(forward("card")).to_equal({ "card", "github", "done" })
 	expect(backward("github")).to_equal({ "github", "card", "appearance" })
 end)
 
@@ -154,7 +154,7 @@ test("a returning account opens on its first page left, and Continue goes throug
 	}
 	expect(first).to_be("github")
 	expect(backward("github")).to_equal({ "github", "invite", "card", "appearance" })
-	expect(forward("appearance")).to_equal({ "appearance", "card", "invite", "github", "providers", "done" })
+	expect(forward("appearance")).to_equal({ "appearance", "card", "invite", "github", "done" })
 end)
 
 test("a page finished on this computer counts at the start too", function()
@@ -191,8 +191,8 @@ end)
 
 test("without an account: the look, the agents, done, and back to Sign in", function()
 	expect(run { path = "skipped" }).to_be("appearance")
-	expect(forward("appearance")).to_equal({ "appearance", "providers", "done" })
-	expect(backward("done")).to_equal({ "done", "providers", "appearance", "signin" })
+	expect(forward("appearance")).to_equal({ "appearance", "done" })
+	expect(backward("done")).to_equal({ "done", "appearance", "signin" })
 end)
 
 test("an account that finished every page opens on done, and Back still works", function()
@@ -201,31 +201,31 @@ test("an account that finished every page opens on done, and Back still works", 
 		name_done = true,
 		org_done = true,
 		org_admin = true,
-		passed = { "appearance", "card", "invite", "github", "providers" },
+		passed = { "appearance", "card", "invite", "github" },
 	}
 	expect(first).to_be("done")
-	expect(backward("done")).to_equal({ "done", "providers", "github", "invite", "card", "appearance" })
+	expect(backward("done")).to_equal({ "done", "github", "invite", "card", "appearance" })
 end)
 
 test("the dots count every step and never move", function()
 	run { path = "signed_in" }
 	local _, all = state.position("appearance")
-	expect(all).to_be(8)
+	expect(all).to_be(7)
 	run { path = "signed_in", name_done = true, org_done = true, org_admin = false, passed = { "appearance", "card" } }
 	local n, count = state.position("github")
-	expect(count).to_be(8)
+	expect(count).to_be(7)
 	expect(n).to_be(6)
 	run { path = "skipped" }
-	local _, few = state.position("providers")
-	expect(few).to_be(3)
+	local _, few = state.position("appearance")
+	expect(few).to_be(2)
 	local last = state.position("done")
-	expect(last).to_be(3)
+	expect(last).to_be(2)
 end)
 
 test("someone who already had Keiki is welcomed with only their username and card", function()
 	state.welcome = true
 	-- No username yet, whatever else their account had finished.
-	expect(run { path = "signed_in", passed = { "appearance", "org", "invite", "github", "providers" } }).to_be("username")
+	expect(run { path = "signed_in", passed = { "appearance", "org", "invite", "github" } }).to_be("username")
 	expect(forward("username")).to_equal({ "username", "card", "done" })
 	-- (Back doesn't return to claiming a username, as in every run, nor to Sign in.)
 	expect(backward("card")).to_equal({ "card" })

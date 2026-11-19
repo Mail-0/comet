@@ -77,7 +77,6 @@ pub const BLOCKED: &[&str] = &[
     "chat.remove_held",
     // (Only one that says what an agent may do unasked: `chat.configure`.)
     "chat.configure",
-    "agents.install",
     "agents.set_key",
     // (An API key, and what an agent's keys are called.)
     "agents.add_key",
@@ -87,9 +86,6 @@ pub const BLOCKED: &[&str] = &[
     "agents.sign_in",
     "agents.sign_out",
     "agents.remove",
-    "acp_registry.add",
-    "acp_registry.add_own",
-    "acp_registry.env_set",
     "home.run_action",
     "home.save_action",
     "sessions.delete",
@@ -813,8 +809,8 @@ return ui.column {{
         for (action, arg) in [
             ("sessions.delete", r#""s1""#),
             ("projects.delete", r#""p1""#),
-            ("agents.remove", r#"{ id = "claude", account = "a1" }"#),
-            ("agents.sign_out", r#""acp.tool""#),
+            ("agents.remove", r#"{ id = "copilot", account = "a1" }"#),
+            ("agents.sign_out", r#""copilot""#),
             ("plugins.set_off", r#"{ id = "focus", off = true }"#),
         ] {
             let body = format!(r#"ui.call("{action}", {arg}):after(function() say("ok") end, function(e) say(`rejected {{e}}`) end)"#);

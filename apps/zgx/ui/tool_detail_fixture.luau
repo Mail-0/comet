@@ -2,7 +2,7 @@
 -- (ds/tool_detail), for tests/tool_detail.test.luau: an edit (its files'
 -- counts, its whole diff in the sidecar), a command (a 30-line summary, its
 -- whole output in the sidecar), a read, and an older doc's edit carrying
--- its diff; then commands with a short output, a failed one (Claude Code's
+-- its diff; then commands with a short output, a failed one (Copilot's
 -- "Exit code 2" leading it, colours and a progress line's carriage
 -- returns in it), a huge one, one still running whose output is
 -- `test_tool_stream`, and one whose output the chat cut to its last ten

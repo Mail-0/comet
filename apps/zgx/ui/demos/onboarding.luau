@@ -10,7 +10,7 @@ local kit = require("@demos/kit")
 
 local step = ui.state("ob_step", 2)
 local look = ui.state("ob_look", "system")
-local agents = ui.state("ob_agents", { "claude", "codex" })
+local agents = ui.state("ob_agents", { "copilot" })
 local where = ui.state("ob_where", "worktree")
 
 return {
@@ -77,14 +77,7 @@ return {
 						multiple = true,
 						columns = 3,
 						label = "Agents",
-						options = {
-							{ value = "claude", title = "Claude Code", description = "Installed", mark = "claude" },
-							{ value = "codex", title = "Codex", description = "Installed", mark = "openai" },
-							{ value = "grok", title = "Grok", description = "Not found", mark = "grok" },
-							{ value = "cursor", title = "Cursor", description = "Installed", mark = "cursor" },
-							{ value = "opencode", title = "OpenCode", description = "Not found", mark = "opencode" },
-							{ value = "devin", title = "Devin", description = "Needs a team plan", mark = "devin", disabled = true },
-						},
+						options = { { value = "copilot", title = "Copilot", description = "Keiki", mark = "copilot" } },
 					},
 				}
 			),

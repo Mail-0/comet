@@ -66,8 +66,8 @@ ui.effect(function()
 	}
 end)
 
-local HARNESSES: { ds.Harness } = { { id = "claude", label = "Claude", mark = "claude" } }
-local MODELS: { ds.Model } = { { value = "opus", label = "Opus 5.5", harness = "claude" } }
+local HARNESSES: { ds.Harness } = { { id = "copilot", label = "Copilot", mark = "copilot" } }
+local MODELS: { ds.Model } = { { value = "opus", label = "Opus 5.5", harness = "copilot" } }
 local PROJECTS: { Composer.Project } = {
 	{ value = "zeron", label = "zeron", hue = "violet" },
 	{ value = "atlas", label = "Atlas Platform Monorepo", hue = "teal" },

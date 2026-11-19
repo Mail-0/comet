@@ -130,9 +130,6 @@ return {
 			page("ex_github", "Connect GitHub", function()
 				return require("@demos/example_github")
 			end),
-			page("ex_setup_agents", "Your agents", function()
-				return require("@demos/example_setup_agents")
-			end),
 			page("ex_setup_done", "You're all set", function()
 				return require("@demos/example_setup_done")
 			end),
@@ -144,15 +141,6 @@ return {
 			end),
 			page("ex_profile", "Profile", function()
 				return require("@demos/example_profile")
-			end),
-			page("ex_providers", "Providers", function()
-				return require("@demos/example_providers")
-			end),
-			page("ex_add_agent", "Add an agent", function()
-				return require("@demos/example_add_agent")
-			end),
-			page("ex_resets", "Codex resets", function()
-				return require("@demos/example_resets")
 			end),
 			page("ex_git_commit", "Commit", function()
 				return require("@demos/example_git_commit")

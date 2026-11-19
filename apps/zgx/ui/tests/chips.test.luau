@@ -85,7 +85,7 @@ test("a reply's link to one of the agent's skills (its SKILL.md, wherever it's k
 	local app = chat()
 	-- (The chat's skills read once, as the link shows.)
 	expect(app:wait('~"code-review is one"', { timeout_ms = 2000 })).to_be(true)
-	expect(app:state("calls")).to_contain("invocations:claude-code:s2")
+	expect(app:state("calls")).to_contain("invocations:copilot:s2")
 	expect(app:has('role:link "the review skill"')).to_be(false)
 	expect(app:tree("#transcript")).never.to_contain("$code-review")
 	expect(chip(app, "that skill", 1)).to_be("that skill #1: link")

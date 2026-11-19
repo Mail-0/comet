@@ -237,8 +237,8 @@ chat_store.send = function(req: any): any
 end
 store.catalog:set({
 	state = "ready",
-	harnesses = { { id = "claude-code", label = "Claude", mark = "claude" } },
-	models = { { value = "opus", label = "Opus", harness = "claude-code" } },
+	harnesses = { { id = "copilot", label = "Copilot", mark = "copilot" } },
+	models = { { value = "opus", label = "Opus", harness = "copilot" } },
 } :: any)
 
 local HOUR = 3600
@@ -261,14 +261,14 @@ local model = {
 		{ id = "borealis", name = "Borealis", device = "box", path = "/srv/borealis", git = true },
 	},
 	chats = {
-		{ id = "a1", title = "Fix the build", project = "atlas", device = "mac", branch = "fix/build", status = "working", updated = NOW - 60, created = NOW - 2 * HOUR, agent = "claude" },
-		{ id = "a2", title = "Write the docs", project = "atlas", device = "mac", branch = "docs", updated = NOW - HOUR, created = NOW - 3 * HOUR, agent = "openai", harness = "codex", harness_session = "th 7/a" },
-		{ id = "a3", title = "Tidy the tests", project = "atlas", device = "mac", updated = NOW - 2 * HOUR, created = NOW - 5 * HOUR, agent = "claude" },
-		{ id = "b1", title = "Ship the release", project = "borealis", device = "box", status = "input", updated = NOW - 3 * HOUR, created = NOW - 6 * HOUR, agent = "claude" },
+		{ id = "a1", title = "Fix the build", project = "atlas", device = "mac", branch = "fix/build", status = "working", updated = NOW - 60, created = NOW - 2 * HOUR, agent = "copilot" },
+		{ id = "a2", title = "Write the docs", project = "atlas", device = "mac", branch = "docs", updated = NOW - HOUR, created = NOW - 3 * HOUR, agent = "copilot", harness = "mock", harness_session = "th 7/a" },
+		{ id = "a3", title = "Tidy the tests", project = "atlas", device = "mac", updated = NOW - 2 * HOUR, created = NOW - 5 * HOUR, agent = "copilot" },
+		{ id = "b1", title = "Ship the release", project = "borealis", device = "box", status = "input", updated = NOW - 3 * HOUR, created = NOW - 6 * HOUR, agent = "copilot" },
 		{ id = "b2", title = "Answer the review", project = "borealis", device = "box", updated = NOW - 24 * HOUR, created = NOW - 30 * HOUR, agent = "cursor" },
 	} :: { any },
 	archived = {
-		{ id = "z1", title = "Old experiment", project = "atlas", device = "mac", updated = NOW - 48 * HOUR, created = NOW - 50 * HOUR, agent = "claude" },
+		{ id = "z1", title = "Old experiment", project = "atlas", device = "mac", updated = NOW - 48 * HOUR, created = NOW - 50 * HOUR, agent = "copilot" },
 	} :: { any },
 	places = { pinned = {}, sections = {} } :: any,
 }
@@ -550,9 +550,9 @@ ui.command {
 		end
 		table.insert(model.projects, { id = "app1", name = "app", device = "cloud-m4", path = "/home/user/app", git = true, github = "acme/app", repository = "github.com/acme/app", created = 150 })
 		table.insert(model.projects, { id = "zmac", name = "zeron", device = "mac", path = "/work/zeron", git = true, github = "zeronsh/zeron", repository = "github.com/zeronsh/zeron", created = 50 })
-		table.insert(model.chats, { id = "zc1a", title = "Cloud fix", project = "zc1", device = "cloud-m1", status = "working", updated = NOW - 120, created = NOW - HOUR, agent = "claude" })
-		table.insert(model.chats, { id = "zc2a", title = "Cloud docs", project = "zc2", device = "cloud-m2", updated = NOW - 2 * HOUR, created = NOW - 3 * HOUR, agent = "claude" })
-		table.insert(model.archived, { id = "zc3a", title = "Cloud old", project = "zc3", device = "cloud-m3", updated = NOW - 30 * HOUR, created = NOW - 31 * HOUR, agent = "claude" })
+		table.insert(model.chats, { id = "zc1a", title = "Cloud fix", project = "zc1", device = "cloud-m1", status = "working", updated = NOW - 120, created = NOW - HOUR, agent = "copilot" })
+		table.insert(model.chats, { id = "zc2a", title = "Cloud docs", project = "zc2", device = "cloud-m2", updated = NOW - 2 * HOUR, created = NOW - 3 * HOUR, agent = "copilot" })
+		table.insert(model.archived, { id = "zc3a", title = "Cloud old", project = "zc3", device = "cloud-m3", updated = NOW - 30 * HOUR, created = NOW - 31 * HOUR, agent = "copilot" })
 		publish()
 	end,
 }
@@ -807,7 +807,7 @@ ui.command {
 			c.status = "working"
 		end
 		table.insert(model.projects, { id = "solo", name = "Solo", device = "mac", path = "/work/solo", git = true })
-		table.insert(model.chats, { id = "s1", title = "Only one", project = "solo", device = "mac", status = "working", updated = NOW - 60, created = NOW - HOUR, agent = "claude" })
+		table.insert(model.chats, { id = "s1", title = "Only one", project = "solo", device = "mac", status = "working", updated = NOW - 60, created = NOW - HOUR, agent = "copilot" })
 		publish()
 	end,
 }
@@ -1006,8 +1006,8 @@ ui.command {
 				device = if cloud then `cloud-ar{i}` elseif p == "borealis" then "box" else "mac",
 				updated = at(i),
 				created = at(i) - 3 * HOUR,
-				agent = if i % 4 == 1 then "openai" else "claude",
-				harness = if i % 4 == 1 then "codex" else nil,
+				agent = if i % 4 == 1 then "copilot" else "copilot",
+				harness = if i % 4 == 1 then "mock" else nil,
 			})
 		end
 		publish()
@@ -1018,7 +1018,7 @@ ui.command {
 	id = "archived_one_cloud",
 	title = "Archived: one session, on Cloud",
 	run = function()
-		model.archived = { { id = "solo", title = "On a machine of its own", project = "atlas", device = "cloud-solo", updated = os.time() - 60, created = os.time() - HOUR, agent = "claude" } }
+		model.archived = { { id = "solo", title = "On a machine of its own", project = "atlas", device = "cloud-solo", updated = os.time() - 60, created = os.time() - HOUR, agent = "copilot" } }
 		publish()
 	end,
 }
@@ -1062,7 +1062,7 @@ ui.command {
 	title = "Thirty sessions archived elsewhere",
 	run = function()
 		for i = 1, 30 do
-			table.insert(model.archived, { id = `old{i}`, title = `Old {i}`, project = "atlas", device = "mac", updated = NOW - (100 + i) * HOUR, created = NOW - (200 + i) * HOUR, agent = "claude" })
+			table.insert(model.archived, { id = `old{i}`, title = `Old {i}`, project = "atlas", device = "mac", updated = NOW - (100 + i) * HOUR, created = NOW - (200 + i) * HOUR, agent = "copilot" })
 		end
 		publish()
 	end,
@@ -1081,7 +1081,7 @@ local function archive_thousands()
 			device = if plain then "gone" else "mac",
 			updated = NOW - (200 + i) * HOUR,
 			created = NOW - (300 + i) * HOUR,
-			agent = "claude",
+			agent = "copilot",
 		})
 	end
 	publish()
@@ -1171,7 +1171,7 @@ ui.command {
 	id = "arrive",
 	title = "A new session arrives",
 	run = function()
-		table.insert(model.chats, 1, { id = "a4", title = "Brand new", project = "atlas", device = "mac", updated = os.time(), created = os.time(), agent = "claude" })
+		table.insert(model.chats, 1, { id = "a4", title = "Brand new", project = "atlas", device = "mac", updated = os.time(), created = os.time(), agent = "copilot" })
 		publish()
 	end,
 }
@@ -1180,7 +1180,7 @@ ui.command {
 	title = "Four hundred sessions",
 	run = function()
 		for i = 1, 400 do
-			table.insert(model.chats, { id = `m{i}`, title = `Many {i}`, project = "borealis", device = "box", updated = NOW - 100 * HOUR - i, created = NOW - 100 * HOUR - i, agent = "claude" })
+			table.insert(model.chats, { id = `m{i}`, title = `Many {i}`, project = "borealis", device = "box", updated = NOW - 100 * HOUR - i, created = NOW - 100 * HOUR - i, agent = "copilot" })
 		end
 		publish()
 	end,
@@ -1199,7 +1199,7 @@ ui.command {
 			for k = 1, 3 do
 				local n = (i - 1) * 3 + k
 				local age = if n <= 50 then n * 60 elseif n <= 500 then DAY + n * 600 else 30 * DAY + n * 60
-				table.insert(model.chats, { id = `s{n}`, title = `Session {n}`, project = `r{i}`, device = "mac", branch = `r{i}-{k}`, updated = os.time() - age, created = os.time() - age - HOUR, agent = "claude" })
+				table.insert(model.chats, { id = `s{n}`, title = `Session {n}`, project = `r{i}`, device = "mac", branch = `r{i}-{k}`, updated = os.time() - age, created = os.time() - age - HOUR, agent = "copilot" })
 			end
 		end
 		publish()
@@ -1235,7 +1235,7 @@ ui.command {
 	run = function()
 		for i = 1, 6 do
 			table.insert(model.projects, { id = `p{i}`, name = `Proj {i}`, device = "mac", path = `/work/p{i}`, git = true })
-			table.insert(model.chats, { id = `q{i}`, title = `Work in Proj {i}`, project = `p{i}`, device = "mac", updated = NOW - (10 + i) * HOUR, created = NOW - (20 + i) * HOUR, agent = "claude" })
+			table.insert(model.chats, { id = `q{i}`, title = `Work in Proj {i}`, project = `p{i}`, device = "mac", updated = NOW - (10 + i) * HOUR, created = NOW - (20 + i) * HOUR, agent = "copilot" })
 		end
 		publish()
 	end,
@@ -1251,8 +1251,8 @@ ui.command {
 		table.insert(model.projects, { id = "cobalt", name = "Cobalt", device = "mac", path = "/work/cobalt", git = true })
 		table.insert(model.projects, { id = "dune", name = "Dune", device = "box", path = "/srv/dune", git = true })
 		table.insert(model.projects, { id = "ember", name = "Ember", device = "mac", path = "/work/ember", git = true })
-		table.insert(model.archived, { id = "c1", title = "Old Cobalt work", project = "cobalt", device = "mac", updated = NOW - 72 * HOUR, created = NOW - 80 * HOUR, agent = "claude" })
-		table.insert(model.archived, { id = "d1", title = "Old Dune work", project = "dune", device = "box", updated = NOW - 96 * HOUR, created = NOW - 100 * HOUR, agent = "claude" })
+		table.insert(model.archived, { id = "c1", title = "Old Cobalt work", project = "cobalt", device = "mac", updated = NOW - 72 * HOUR, created = NOW - 80 * HOUR, agent = "copilot" })
+		table.insert(model.archived, { id = "d1", title = "Old Dune work", project = "dune", device = "box", updated = NOW - 96 * HOUR, created = NOW - 100 * HOUR, agent = "copilot" })
 		publish()
 	end,
 }
@@ -1264,7 +1264,7 @@ ui.command {
 	run = function()
 		for i = 1, 60 do
 			table.insert(model.projects, { id = `g{i}`, name = `Gone {i}`, device = "mac", path = `/work/g{i}`, git = true })
-			table.insert(model.archived, { id = `ga{i}`, title = `Gone work {i}`, project = `g{i}`, device = "mac", updated = NOW - (200 + i) * HOUR, created = NOW - (210 + i) * HOUR, agent = "claude" })
+			table.insert(model.archived, { id = `ga{i}`, title = `Gone work {i}`, project = `g{i}`, device = "mac", updated = NOW - (200 + i) * HOUR, created = NOW - (210 + i) * HOUR, agent = "copilot" })
 		end
 		publish()
 	end,
@@ -1326,7 +1326,7 @@ ui.command {
 	id = "cobalt_arrives",
 	title = "A session starts in Cobalt",
 	run = function()
-		table.insert(model.chats, 1, { id = "c2", title = "Back in Cobalt", project = "cobalt", device = "mac", status = "working", updated = os.time(), created = os.time(), agent = "claude" })
+		table.insert(model.chats, 1, { id = "c2", title = "Back in Cobalt", project = "cobalt", device = "mac", status = "working", updated = os.time(), created = os.time(), agent = "copilot" })
 		publish()
 	end,
 }
@@ -1346,7 +1346,7 @@ ui.command {
 	id = "atlas_on_box",
 	title = "Atlas has a session on devbox",
 	run = function()
-		table.insert(model.chats, { id = "a5", title = "Profile on the box", project = "atlas", device = "box", updated = NOW - 30 * 60, created = NOW - 40 * 60, agent = "claude" })
+		table.insert(model.chats, { id = "a5", title = "Profile on the box", project = "atlas", device = "box", updated = NOW - 30 * 60, created = NOW - 40 * 60, agent = "copilot" })
 		publish()
 	end,
 }
@@ -1370,8 +1370,8 @@ ui.command {
 	run = function()
 		(model :: any).children = {
 			a1 = {
-				{ id = "s1", parent = "a1", title = "Look into the flake", device = "mac", updated = NOW - 30, created = NOW - 5 * HOUR, agent = "claude" },
-				{ id = "s2", parent = "a1", title = "Write the changelog", device = "mac", updated = NOW - 2 * HOUR, created = NOW - HOUR, agent = "openai" },
+				{ id = "s1", parent = "a1", title = "Look into the flake", device = "mac", updated = NOW - 30, created = NOW - 5 * HOUR, agent = "copilot" },
+				{ id = "s2", parent = "a1", title = "Write the changelog", device = "mac", updated = NOW - 2 * HOUR, created = NOW - HOUR, agent = "copilot" },
 			},
 		}
 		publish()
@@ -1388,12 +1388,12 @@ ui.command {
 		(model :: any).deleted_with = { a3 = { subagents = 0, sides = 3 } };
 		(model :: any).children = {
 			a3 = {
-				{ id = "t1", parent = "a3", title = "Split the slow suite", device = "mac", updated = NOW - 40, created = NOW - HOUR, agent = "claude" },
-				{ id = "t2", parent = "a3", title = "Drop the dead fixtures", device = "mac", updated = NOW - 50, created = NOW - HOUR, agent = "claude", child_kind = "side" },
-				{ id = "t3", parent = "a3", title = "Run it on Cloud", device = "cloud-t3", updated = NOW - 60, created = NOW - HOUR, agent = "claude", child_kind = "subagent" },
+				{ id = "t1", parent = "a3", title = "Split the slow suite", device = "mac", updated = NOW - 40, created = NOW - HOUR, agent = "copilot" },
+				{ id = "t2", parent = "a3", title = "Drop the dead fixtures", device = "mac", updated = NOW - 50, created = NOW - HOUR, agent = "copilot", child_kind = "side" },
+				{ id = "t3", parent = "a3", title = "Run it on Cloud", device = "cloud-t3", updated = NOW - 60, created = NOW - HOUR, agent = "copilot", child_kind = "subagent" },
 			},
 			t1 = {
-				{ id = "t4", parent = "t1", title = "Time each test", device = "mac", updated = NOW - 70, created = NOW - HOUR, agent = "claude" },
+				{ id = "t4", parent = "t1", title = "Time each test", device = "mac", updated = NOW - 70, created = NOW - HOUR, agent = "copilot" },
 			},
 		}
 		publish()
@@ -1406,7 +1406,7 @@ ui.command {
 	run = function()
 		local kids = (model :: any).children or {}
 		kids.a3 = kids.a3 or {}
-		table.insert(kids.a3, { id = "t5", parent = "a3", title = "Find the flaky one", device = "mac", updated = NOW - 80, created = NOW - HOUR, agent = "claude", child_kind = "subagent" })
+		table.insert(kids.a3, { id = "t5", parent = "a3", title = "Find the flaky one", device = "mac", updated = NOW - 80, created = NOW - HOUR, agent = "copilot", child_kind = "subagent" })
 		;(model :: any).children = kids
 		local with = (model :: any).deleted_with or {}
 		with.a3 = { subagents = 1, sides = if with.a3 then with.a3.sides else 0 };
@@ -1421,7 +1421,7 @@ ui.command {
 	title = "Six more sessions in Atlas",
 	run = function()
 		for i = 1, 6 do
-			table.insert(model.chats, { id = `x{i}`, title = `Atlas {i}`, project = "atlas", device = "mac", updated = NOW - (3 + i) * HOUR, created = NOW - (10 + i) * HOUR, agent = "claude" })
+			table.insert(model.chats, { id = `x{i}`, title = `Atlas {i}`, project = "atlas", device = "mac", updated = NOW - (3 + i) * HOUR, created = NOW - (10 + i) * HOUR, agent = "copilot" })
 		end
 		publish()
 	end,
@@ -1569,7 +1569,7 @@ ui.command {
 	title = "A project arrives",
 	run = function()
 		table.insert(model.projects, { id = "cosmos", name = "Cosmos", device = "mac", path = "/work/cosmos", git = false })
-		table.insert(model.chats, { id = "c1", title = "First in Cosmos", project = "cosmos", device = "mac", updated = os.time(), created = os.time(), agent = "claude" })
+		table.insert(model.chats, { id = "c1", title = "First in Cosmos", project = "cosmos", device = "mac", updated = os.time(), created = os.time(), agent = "copilot" })
 		publish()
 	end,
 }

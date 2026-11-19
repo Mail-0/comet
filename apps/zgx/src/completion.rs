@@ -286,7 +286,7 @@ mod tests {
     /// user may start, `disable-model-invocation`, runs), for a plugin's
     /// skill and a plain one, and a command, alike.
     #[test]
-    fn a_picked_skill_reaches_claude_code_as_its_slash_command() {
+    fn a_picked_skill_reaches_copilot_as_its_slash_command() {
         use zeron_proto::{
             HarnessId,
             invocation::{harness_prompt, invocation_links},
@@ -294,22 +294,19 @@ mod tests {
         let rows = candidates(
             &[json!({ "name": "review" }), json!({ "name": "pstack:poteto-mode" }), json!({ "name": "tidy" })],
             &[
-                json!({ "name": "pstack:poteto-mode", "path": "/p/pstack/skills/poteto-mode/SKILL.md", "description": "Poteto", "enabled": true, "command": { "name": "pstack:poteto-mode", "harness": "claude-code" } }),
-                json!({ "name": "tidy", "path": "/h/.claude/skills/tidy/SKILL.md", "description": "Tidy", "enabled": true, "command": { "name": "tidy", "harness": "claude-code" } }),
+                json!({ "name": "pstack:poteto-mode", "path": "/p/pstack/skills/poteto-mode/SKILL.md", "description": "Poteto", "enabled": true, "command": { "name": "pstack:poteto-mode", "harness": "copilot" } }),
+                json!({ "name": "tidy", "path": "/h/.keiki/skills/tidy/SKILL.md", "description": "Tidy", "enabled": true, "command": { "name": "tidy", "harness": "copilot" } }),
             ],
         );
         let sent = |label: &str| {
             let row = rows.iter().find(|r| r.label == label).unwrap();
             let prompt = format!("{} focus on tests", row.link);
             assert_eq!(invocation_links(&prompt).len(), 1, "the engine doesn't read {}", row.link);
-            harness_prompt(&prompt, HarnessId::ClaudeCode)
+            harness_prompt(&prompt, HarnessId::Copilot)
         };
         assert_eq!(sent("Poteto Mode"), "/pstack:poteto-mode focus on tests");
         assert_eq!(sent("Tidy"), "/tidy focus on tests");
         assert_eq!(sent("/review"), "/review focus on tests");
-        // Codex keeps the reference: it builds its own skill input from it.
-        let poteto = &rows.iter().find(|r| r.label == "Poteto Mode").unwrap().link;
-        assert_eq!(invocation_links(&harness_prompt(poteto, HarnessId::Codex)).len(), 1);
     }
 
     /// Real lists from a live engine, when `ZGX_LIVE_INVOCATIONS` names a
@@ -322,7 +319,7 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
-        for harness in ["claude-code", "codex"] {
+        for harness in ["copilot"] {
             let read = |m: &str| -> Json {
                 serde_json::from_slice(&std::fs::read(dir.join(format!("{m}-{harness}.json"))).unwrap()).unwrap()
             };

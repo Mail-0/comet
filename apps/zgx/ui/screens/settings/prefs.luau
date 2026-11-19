@@ -113,11 +113,8 @@ M.skill_completion = ui.persist("settings_skill_completion", {} :: { [string]: {
 
 export type Completion = { dollar: boolean, separate: boolean }
 
--- "Separate / commands" unless changed: on, but off for Codex, whose skills
--- aren't among its commands (Claude Code's are), so `/` lists its skills
--- beside `/compact` and `/review` as Claude Code's lists its own.
-local function separate_default(harness: string?): boolean
-	return harness ~= "codex"
+local function separate_default(_harness: string?): boolean
+	return true
 end
 
 -- An agent's completion settings (`get`: followed as they change).

@@ -1101,15 +1101,7 @@ local function menu(id: string): { any }?
 			end)
 		end,
 	})
-	if c.harness == "codex" and c.harness_session then
-		table.insert(copies, {
-			label = locale.s("shell.sidebar.menu.codex_link"),
-			icon = "arrow-up-right",
-			on_select = function()
-				copy(`codex://threads/{encoded(c.harness_session :: string)}`, locale.s("shell.sidebar.menu.codex_link"))
-			end,
-		})
-	end
+
 	if c.harness_session then
 		table.insert(copies, {
 			label = locale.s("shell.sidebar.menu.harness_session_id"),

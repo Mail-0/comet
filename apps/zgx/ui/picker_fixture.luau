@@ -26,10 +26,10 @@ local FIVE: { EffortSlider.Level } = {
 }
 
 local MODELS: { ModelPicker.Model } = {
-	{ value = "sonnet", label = "Sonnet", harness = "claude", efforts = THREE, effort = "medium" },
-	{ value = "opus", label = "Opus", harness = "claude", efforts = THREE, effort = "high", fast = true },
-	{ value = "gpt", label = "GPT", harness = "codex", efforts = FIVE, effort = "medium" },
-	{ value = "mini", label = "Mini", harness = "codex" },
+	{ value = "sonnet", label = "Sonnet", harness = "copilot", efforts = THREE, effort = "medium" },
+	{ value = "opus", label = "Opus", harness = "copilot", efforts = THREE, effort = "high", fast = true },
+	{ value = "gpt", label = "GPT", harness = "mock", efforts = FIVE, effort = "medium" },
+	{ value = "mini", label = "Mini", harness = "mock" },
 	{ value = "adaptive", label = "Adaptive", harness = "devin" },
 	{
 		value = "fusion",
@@ -91,8 +91,8 @@ return ui.column {
 		options = ui.state("test_picker_options", {} :: { [string]: string }),
 		favorites = ui.state("test_picker_favorites", {} :: { [string]: boolean }),
 		harnesses = {
-			{ id = "claude", label = "Claude", mark = "claude" },
-			{ id = "codex", label = "Codex", mark = "openai" },
+			{ id = "copilot", label = "Copilot", mark = "copilot" },
+			{ id = "mock", label = "Mock", mark = "copilot" },
 			{ id = "devin", label = "Devin", mark = "devin" },
 		},
 		models = MODELS,

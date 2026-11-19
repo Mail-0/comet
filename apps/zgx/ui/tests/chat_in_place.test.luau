@@ -239,7 +239,7 @@ test("the catalog changing keeps the composer, its draft and the keys", function
 	-- The new agent's model is there to pick.
 	app:click('role:button "Model"')
 	settle(app)
-	expect(app:has('role:tab "Codex"')).to_be(true)
+	expect(app:has('role:tab "Mock"')).to_be(true)
 end)
 
 test("a catalog with no agents shows the picker without failing", function()
@@ -254,7 +254,7 @@ test("a catalog with no agents shows the picker without failing", function()
 	app:command("catalog_grows")
 	settle(app)
 	expect(app:error()).to_be_nil()
-	expect(app:has('role:tab "Codex"')).to_be(true)
+	expect(app:has('role:tab "Mock"')).to_be(true)
 end)
 
 -- A node's box, by a pattern on its line: x, y, w, h.
@@ -699,13 +699,13 @@ test("a move to another agent shows its seam over the prompt that moved it", fun
 	open(app, "s6")
 	app:scroll("#transcript", -3000)
 	settle(app)
-	expect(app:has('"Switched from Claude Code to Codex"')).to_be(true)
+	expect(app:has('"Switched from Copilot to Mock"')).to_be(true)
 	local tree = app:tree("#transcript")
-	local seam = y_in(tree, '"Claude Code"')
+	local seam = y_in(tree, '"Copilot"')
 	local prompt = y_in(tree, '"Carry on from here')
 	expect(seam ~= nil and prompt ~= nil and seam < prompt).to_be(true)
 	-- Only once: the replies themselves carry no mark.
-	expect(app:count('"Codex"')).to_be(1)
+	expect(app:count('"Mock"')).to_be(1)
 end)
 
 test("a settled reply with no time still shows Copy under the pointer", function()

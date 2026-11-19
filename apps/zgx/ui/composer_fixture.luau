@@ -10,8 +10,8 @@ local Cargo = require("@ds/composer_cargo")
 local Ask = require("@ds/composer_ask")
 ds.setup()
 
-local HARNESSES: { ds.Harness } = { { id = "claude", label = "Claude", mark = "claude" } }
-local MODELS: { ds.Model } = { { value = "sonnet", label = "Sonnet", harness = "claude" } }
+local HARNESSES: { ds.Harness } = { { id = "copilot", label = "Copilot", mark = "copilot" } }
+local MODELS: { ds.Model } = { { value = "sonnet", label = "Sonnet", harness = "copilot" } }
 local PROJECTS: { Composer.Project } = {
 	{ value = "atlas", label = "Atlas", hue = "violet" },
 	{ value = "borealis", label = "Borealis", hue = "blue" },

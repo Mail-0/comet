@@ -37,8 +37,8 @@ end
 
 store.catalog:set {
 	state = "ready",
-	harnesses = { { id = "claude-code", label = "Claude", mark = "claude" } },
-	models = { { value = "claude-code/opus", label = "Opus", harness = "claude-code" } },
+	harnesses = { { id = "copilot", label = "Copilot", mark = "copilot" } },
+	models = { { value = "copilot/opus", label = "Opus", harness = "copilot" } },
 }
 sessions.now:set({
 	state = "ready",
@@ -52,7 +52,7 @@ sessions.now:set({
 	places_ready = true,
 } :: any)
 
-local RECORD = { state = "ready", harness = "claude-code", model = "claude-code/opus", effort = "high", access = "full", project = "p1", device = "d", branch = "main", cwd = "/proj", running = false }
+local RECORD = { state = "ready", harness = "copilot", model = "copilot/opus", effort = "high", access = "full", project = "p1", device = "d", branch = "main", cwd = "/proj", running = false }
 local function record(id: string): any
 	local r = table.clone(RECORD)
 	r.id = id

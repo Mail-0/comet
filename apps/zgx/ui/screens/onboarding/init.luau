@@ -21,7 +21,6 @@ local appearance = require("@self/appearance")
 local org = require("@self/org")
 local invite = require("@self/invite")
 local github = require("@self/github")
-local providers = require("@self/providers")
 local done = require("@self/done")
 
 -- The ways back and on. (The dots are the frame's, drawn once over every
@@ -101,9 +100,6 @@ local STEPS: { [state.Step]: () -> Node } = {
 	end,
 	github = function()
 		return github(nav("github") :: any)
-	end,
-	providers = function()
-		return providers(nav("providers") :: any)
 	end,
 	done = function()
 		return done(nav("done") :: any)

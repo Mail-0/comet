@@ -2156,7 +2156,7 @@ fn effort_label(level: &str) -> &str {
 /// ds.Mark's name for a harness. The mock agent (development only) borrows
 /// Pi's.
 fn mark(id: &str) -> String {
-    crate::agents::glyph(id).unwrap_or_else(|| "pi".into())
+    crate::agents::glyph(id).unwrap_or_else(|| "copilot".into())
 }
 
 // -- a window's open chat -----------------------------------------------------
@@ -4297,7 +4297,7 @@ enum Change {
 /// when it isn't this one).
 fn build_context(open: &mut Open, chats: &Chats) -> Rc<RowContext> {
     let chat = chats.chat(&open.id).unwrap_or(Json::Null);
-    let harness = chat["config"]["harness"].as_str().unwrap_or("claude-code").to_owned();
+    let harness = chat["config"]["harness"].as_str().unwrap_or("copilot").to_owned();
     let model = chat["config"]["model"].as_str().map(|m| chats.label_of(&harness, Some(m)).unwrap_or_else(|| m.to_owned()));
     if open.built_model.as_ref() != Some(&model) {
         // (Settled entries are the engine's now: the rows show the last name
@@ -6273,7 +6273,7 @@ fn session_value(chats: &Chats, open: &Open, offline: bool) -> Value {
     let chat = chat.unwrap_or(Json::Null);
     let config = &chat["config"];
     let s = |j: &Json| j.as_str().map(Value::from).unwrap_or(Value::Nil);
-    let harness = config["harness"].as_str().unwrap_or("claude-code");
+    let harness = config["harness"].as_str().unwrap_or("copilot");
     let model = config["model"]
         .as_str()
         .map(|m| Value::from(format!("{harness}/{m}").as_str()))

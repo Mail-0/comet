@@ -51,6 +51,13 @@ local function open(page: string?): any
 	return app
 end
 
+test("Providers offers Copilot without retired agents or installers", function()
+	local app = open("Providers")
+	expect(shows(app, PAGE, "Copilot")).to_be(true)
+	expect(shows(app, PAGE, "Mock")).to_be(false)
+	expect(shows(app, PAGE, "Add an agent")).to_be(false)
+end)
+
 test("the pages list under Personal, Devices and Organization", function()
 	local app = open()
 	for _, label in { "Personal", "Devices", "Organization", "General", "Appearance", "Notifications", "Account", "Providers", "Members" } do
@@ -239,24 +246,24 @@ test("each heading shows once, its pages under it, ahead of Archived", function(
 	expect(at("Members") < at("Archived")).to_be(true)
 end)
 
-test("Providers shows another device's agents when it's chosen", function()
+test("Providers shows Copilot on the selected device", function()
 	local app = open("Providers")
 	expect(asked(app, "agents.load")).to_be(true)
-	expect(shows(app, PAGE, "Claude Code")).to_be(true)
+	expect(shows(app, PAGE, "Copilot")).to_be(true)
 	app:click(`{PAGE} >> role:button "Device"`)
 	app:frames(10)
 	app:click('role:menuitem "devbox"')
 	app:frames(20)
 	expect(asked(app, "agents.target:box")).to_be(true)
-	expect(shows(app, PAGE, "Codex")).to_be(true)
-	expect(shows(app, PAGE, "Claude Code")).to_be(false)
+	expect(shows(app, PAGE, "Mock")).to_be(false)
+	expect(shows(app, PAGE, "Copilot")).to_be(true)
 	-- Back to this computer: no device named, the engine's own.
 	app:click(`{PAGE} >> role:button "Device"`)
 	app:frames(10)
 	app:click('role:menuitem "MacBook Pro"')
 	app:frames(20)
 	expect(asked(app, "agents.target:")).to_be(true)
-	expect(shows(app, PAGE, "Claude Code")).to_be(true)
+	expect(shows(app, PAGE, "Copilot")).to_be(true)
 end)
 
 -- A node's box under `scope`: x, y, w, h.
@@ -569,68 +576,8 @@ test("updating the engine says so, then that it runs the new version; the app's 
 	expect(shows(app, PAGE, "The engine couldn't reach the release feed")).to_be(true)
 end)
 
-test("an agent's settings turn its $ skills and / commands on and off, kept for the composer by agent", function()
-	local app = open("Providers")
-	app:click(`{PAGE} >> role:button "Claude Code settings"`)
-	app:frames(10)
-	expect(app:has('role:switch "Use $ for skills"')).to_be(true)
-	expect(app:tree('role:switch "Use $ for skills"')).never.to_contain("unchecked")
-	app:click('role:switch "Use $ for skills"')
-	app:frames(6)
-	expect(app:tree('role:switch "Use $ for skills"')).to_contain("unchecked")
-	app:click('role:switch "Separate / commands"')
-	app:frames(6)
-	-- Kept by agent, only what's off.
-	local kept = (app:state("settings_skill_completion") :: any)["claude-code"]
-	expect(kept.dollar).to_be(false)
-	expect(kept.separate).to_be(false)
-	-- Back on: nothing kept for it.
-	app:click('role:switch "Use $ for skills"')
-	app:click('role:switch "Separate / commands"')
-	app:frames(6)
-	expect((app:state("settings_skill_completion") :: any)["claude-code"]).to_be_nil()
-end)
 
-test("a sign-in that asks for a code takes it pasted back, and the account arrives; Cancel gives it up", function()
-	local app = open("Providers")
-	app:click(`{PAGE} >> role:button "Connect a Claude Code account"`)
-	app:frames(10)
-	expect(shows(app, PAGE, "Paste the authorization code")).to_be(true)
-	expect(app:tree(`{PAGE} >> role:button "Finish"`)).to_contain("disabled")
-	app:type('role:textbox "Authorization code"', "  abc123#state  ")
-	app:frames(4)
-	app:click(`{PAGE} >> role:button "Finish"`)
-	app:frames(10)
-	-- Trimmed; the account in the code's place.
-	expect(asked(app, "agents.complete:claude-code:abc123#state")).to_be(true)
-	expect(shows(app, PAGE, "Paste the authorization code")).to_be(false)
-	expect(shows(app, PAGE, "Max")).to_be(true)
-	-- Another, given up.
-	app:click(`{PAGE} >> role:button "Add account"`)
-	app:frames(10)
-	app:click(`{PAGE} >> role:button "Cancel"`)
-	app:frames(10)
-	expect(asked(app, "agents.cancel:claude-code")).to_be(true)
-	expect(shows(app, PAGE, "Paste the authorization code")).to_be(false)
-end)
 
-test("an account whose window is used up says when it starts over, in this computer's time", function()
-	local app = open("Providers")
-	local now = os.time()
-	local at = now + 2 * 3600
-	local t = os.date("*t", at) :: any
-	local h = t.hour % 12
-	local clock = string.format("%d:%02d %s", if h == 0 then 12 else h, t.min, if t.hour < 12 then "AM" else "PM")
-	local list = table.clone((app:state("agents") :: any).list)
-	local one = table.clone(list[1])
-	one.accounts = {
-		{ id = "acc_1", email = "ada@example.net", plan = "Max", session = 1, week = 0.5, active = true, session_resets = at, week_resets = now + 3 * 86400 },
-	}
-	list[1] = one
-	app:set_state("agents", { state = "ready", list = list })
-	app:frames(10)
-	expect(shows(app, PAGE, `Max · Limit reached, resets {clock}`)).to_be(true)
-end)
 
 test("Reduce motion in Appearance is the one setting every move asks", function()
 	local app = open("Appearance")

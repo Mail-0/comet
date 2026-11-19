@@ -34,7 +34,7 @@ for _, side in { false, true } do
 		expect(cargo[2].kind).to_be("chat")
 		expect(cargo[2].chat).to_be("s1")
 		expect(cargo[2].name).to_be("Look into the flake")
-		expect(cargo[2].mark).to_be("claude")
+		expect(cargo[2].mark).to_be("copilot")
 		expect(#after.source).to_be(0)
 		expect(#(if side then after.main else after.side)).to_be(0)
 		expect(after.tabs.active).to_be(before.tabs.active)

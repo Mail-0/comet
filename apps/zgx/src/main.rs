@@ -30,7 +30,6 @@
 mod about;
 #[cfg(all(windows, feature = "beta"))]
 mod windows_install;
-mod acp_registry;
 mod agents;
 mod appshots;
 mod auth;
@@ -829,7 +828,6 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
     if entry != "intro.luau" {
         auth::install(cx, &host);
         agents::install(&host);
-        acp_registry::install(cx, &host);
         github::install(cx, &host);
         // Cloud and Billing (src/cloud.rs): Settings' pages, the new chat's
         // Cloud choice.

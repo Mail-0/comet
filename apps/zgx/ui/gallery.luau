@@ -54,7 +54,7 @@ local turn = ui.state("turn", "idle")
 local running = ui.computed(function(): boolean
 	return turn:get() == "running"
 end)
-local model = ui.state("model", "opus" :: string?)
+local model = ui.state("model", "copilot" :: string?)
 local access = ui.state("access", "full" :: string?)
 local plan = ui.state("plan", false)
 local checkout = ui.state("checkout", "worktree" :: string?)
@@ -69,16 +69,7 @@ local branch = ui.state("branch", "zeron/zgx-onboarding-design-system" :: string
 -- The agents, and their models with the reasoning each offers (low to
 -- high) and the level it starts on.
 local HARNESSES: { ds.Harness } = {
-	{ id = "claude", label = "Claude", mark = "claude" },
-	{ id = "codex", label = "Codex", mark = "openai" },
-	{ id = "grok", label = "Grok", mark = "grok" },
-	{ id = "cursor", label = "Cursor", mark = "cursor" },
-	{ id = "opencode", label = "OpenCode", mark = "opencode" },
-	{ id = "devin", label = "Devin", mark = "devin" },
-	{ id = "antigravity", label = "Antigravity", mark = "antigravity" },
-	{ id = "pi", label = "Pi", mark = "pi" },
-	{ id = "hermes", label = "Hermes", mark = "hermes" },
-	{ id = "muse", label = "Muse", mark = "muse" },
+    { id = "copilot", label = "Copilot", mark = "copilot" },
 }
 local CLAUDE_EFFORT = {
 	{ value = "low", label = "Low" },
@@ -95,49 +86,7 @@ local GPT_EFFORT = {
 	{ value = "xhigh", label = "Extra high" },
 }
 local MODELS: { ds.Model } = {
-	{ value = "opus", label = "Opus 5.5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "high", fast = true },
-	{ value = "sonnet", label = "Sonnet 5.5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "medium" },
-	{ value = "fable", label = "Fable 5.1", harness = "claude", efforts = CLAUDE_EFFORT, effort = "high" },
-	{ value = "haiku", label = "Haiku 5.5", harness = "claude" },
-	{ value = "opus-5", label = "Opus 5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "high" },
-	{ value = "sonnet-5", label = "Sonnet 5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "medium" },
-	{ value = "haiku-5", label = "Haiku 5", harness = "claude" },
-	{ value = "opus-4-5", label = "Opus 4.5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "high" },
-	{ value = "sonnet-4-5", label = "Sonnet 4.5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "medium" },
-	{ value = "haiku-4-5", label = "Haiku 4.5", harness = "claude" },
-	{ value = "gpt", label = "GPT-5.5", harness = "codex", efforts = GPT_EFFORT, effort = "medium", fast = true },
-	{ value = "gpt-codex", label = "GPT-5.5 Codex", harness = "codex", efforts = GPT_EFFORT, effort = "high" },
-	{ value = "gpt-mini", label = "GPT-5.5 Mini", harness = "codex", efforts = GPT_EFFORT, effort = "low" },
-	{
-		value = "grok",
-		label = "Grok 5",
-		harness = "grok",
-		efforts = { { value = "low", label = "Low" }, { value = "high", label = "High" } },
-		effort = "high",
-	},
-	{ value = "grok-fast", label = "Grok 5 Fast", harness = "grok" },
-	{ value = "composer", label = "Composer 2", harness = "cursor" },
-	{ value = "auto", label = "Auto", harness = "cursor" },
-	{ value = "big-pickle", label = "Big Pickle", harness = "opencode" },
-	{ value = "devin-2", label = "Devin 2", harness = "devin" },
-	-- Configured in place: its lead and sidekick are options (a card beside
-	-- its row; its rows under it once chosen).
-	{
-		value = "fusion",
-		label = "Fusion",
-		harness = "devin",
-		efforts = { { value = "low", label = "Low" }, { value = "medium", label = "Medium" }, { value = "high", label = "High" }, { value = "xhigh", label = "Extra high" } },
-		effort = "high",
-		fast = true,
-		options = {
-			{ id = "lead", label = "Lead", default = "fable", choices = { { id = "fable", label = "Claude Fable 5.1" }, { id = "sol", label = "GPT-6 Sol" } } },
-			{ id = "sidekick", label = "Sidekick", default = "swe-medium", choices = { { id = "swe-medium", label = "SWE-2 Medium" }, { id = "swe-high", label = "SWE-2 High" } } },
-		},
-	},
-	{ value = "gemini", label = "Gemini 3 Pro", harness = "antigravity", efforts = GPT_EFFORT, effort = "medium" },
-	{ value = "pi-default", label = "Pi", harness = "pi" },
-	{ value = "hermes-4", label = "Hermes 4", harness = "hermes" },
-	{ value = "muse-1", label = "Muse 1", harness = "muse" },
+    { value = "copilot", label = "Copilot", harness = "copilot" },
 }
 local effort = ui.state("effort", "high" :: string?)
 local fast = ui.state("fast", false)

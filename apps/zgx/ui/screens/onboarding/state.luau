@@ -4,7 +4,7 @@
 
 local api = require("@account/api")
 
-export type Step = "signin" | "appearance" | "username" | "card" | "org" | "invite" | "github" | "providers" | "done"
+export type Step = "signin" | "appearance" | "username" | "card" | "org" | "invite" | "github" | "done"
 export type Path = "signed_in" | "skipped"
 export type Appearance = "system" | "dark" | "light"
 -- What sign-in was started for: a new account, or one already had.
@@ -19,8 +19,8 @@ local M = {}
 -- agents. Without an account: the look and the agents. Both open on sign-in
 -- and end on done.
 M.PATHS = {
-	signed_in = { "signin", "appearance", "username", "card", "org", "invite", "github", "providers", "done" },
-	skipped = { "signin", "appearance", "providers", "done" },
+	signed_in = { "signin", "appearance", "username", "card", "org", "invite", "github", "done" },
+	skipped = { "signin", "appearance", "done" },
 } :: { [Path]: { Step } }
 
 -- Someone who already had Zeron, first in this interface: the intro, then only
@@ -42,7 +42,6 @@ M.PAGES = {
 	org = "account",
 	invite = "account",
 	github = "account",
-	providers = "device",
 } :: { [string]: Scope }
 -- Pages that announce something (a release's what's new): finishing setup
 -- marks them all done, so a new account never meets news of what it's

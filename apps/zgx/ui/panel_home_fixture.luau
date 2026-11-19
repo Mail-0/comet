@@ -55,8 +55,8 @@ end
 
 local NOW = os.time()
 local children = {
-	{ id = "side-a", parent = "chat-1", title = "Why does the sync test flake?", device = "d", status = "working", updated = NOW - 60, created = NOW - 120, agent = "claude" },
-	{ id = "side-b", parent = "chat-1", title = "Draft the release notes", device = "d", updated = NOW - 1800, created = NOW - 1900, agent = "openai" },
+	{ id = "side-a", parent = "chat-1", title = "Why does the sync test flake?", device = "d", status = "working", updated = NOW - 60, created = NOW - 120, agent = "copilot" },
+	{ id = "side-b", parent = "chat-1", title = "Draft the release notes", device = "d", updated = NOW - 1800, created = NOW - 1900, agent = "copilot" },
 }
 local online = true
 -- (`box_project`: the project checked out on the devbox too.)
@@ -249,7 +249,7 @@ ui.command { id = "side_done", title = "Draft the release notes finishes", run =
 end }
 -- A side chat on the devbox (a worktree there): its own device's group.
 ui.command { id = "side_elsewhere", title = "A side chat on the devbox", run = function()
-	table.insert(children, { id = "side-box", parent = "chat-1", title = "Try it on the devbox", device = "box", updated = NOW - 10, created = NOW - 20, agent = "claude" })
+	table.insert(children, { id = "side-box", parent = "chat-1", title = "Try it on the devbox", device = "box", updated = NOW - 10, created = NOW - 20, agent = "copilot" })
 	publish()
 end }
 ui.command { id = "box_project", title = "The project on the devbox too", run = function()
@@ -260,7 +260,7 @@ end }
 -- the idle one, by when they moved), and a subagent running after the
 -- finished one (spawned in the same turn).
 ui.command { id = "lanes_at_work", title = "Lanes at work further down", run = function()
-	table.insert(children, { id = "side-old", parent = "chat-1", title = "Long-running refactor", device = "d", status = "working", updated = NOW - 7200, created = NOW - 7300, agent = "claude" })
+	table.insert(children, { id = "side-old", parent = "chat-1", title = "Long-running refactor", device = "d", status = "working", updated = NOW - 7200, created = NOW - 7300, agent = "copilot" })
 	publish()
 	table.insert(subs, { id = "t3", kind = "agent", verb = "Ran a subagent", subagent = { ref = "chat-1--sub--3", title = "watch the build", status = "running" } })
 	publish_messages()

@@ -39,7 +39,7 @@ test("idle, a side chat's message joins its transcript as ever", function()
 	app:key("Enter")
 	app:frames(10)
 	expect(app:has('.side-chat-tab >> "one more thing"')).to_be(true)
-	expect(calls(app)).to_contain("pick:side-a:codex/gpt-6.1")
+	expect(calls(app)).to_contain("pick:side-a:mock/gpt-6.1")
 end)
 
 test("a queued message that doesn't go comes back to its composer", function()

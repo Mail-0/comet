@@ -51,7 +51,7 @@ end
 
 local NOW = os.time()
 local children = {
-	{ id = "side-a", parent = "chat-1", title = "Looking at the tests", device = "d", status = "working", updated = NOW - 60, created = NOW - 120, agent = "openai" },
+	{ id = "side-a", parent = "chat-1", title = "Looking at the tests", device = "d", status = "working", updated = NOW - 60, created = NOW - 120, agent = "copilot" },
 	{ id = "side-b", parent = "chat-1", title = "New side chat", device = "d", updated = NOW - 600, created = NOW - 700 },
 }
 local function publish()
@@ -74,20 +74,20 @@ local function publish()
 end
 publish()
 
--- The open chat: the parent, on Claude Code's Opus 5.5 at high effort (a
+-- The open chat: the parent, on Copilot's Opus 5.5 at high effort (a
 -- new side chat starts as it runs); the agents and models to pick from.
-store.session:set({ id = "chat-1", state = "ready", title = "Parent", harness = "claude-code", model = "claude-code/opus-5.5", effort = "high", access = "supervised", project = "p1", device = "d", branch = "main", cwd = "/proj" } :: any)
+store.session:set({ id = "chat-1", state = "ready", title = "Parent", harness = "copilot", model = "copilot/opus-5.5", effort = "high", access = "supervised", project = "p1", device = "d", branch = "main", cwd = "/proj" } :: any)
 store.catalog:set({
 	state = "ready",
 	harnesses = {
-		{ id = "claude-code", label = "Claude Code", mark = "claude" },
-		{ id = "codex", label = "Codex", mark = "openai" },
+		{ id = "copilot", label = "Copilot", mark = "copilot" },
+		{ id = "mock", label = "Mock", mark = "copilot" },
 	},
 	models = {
-		{ value = "claude-code/opus-5.5", label = "Opus 5.5", harness = "claude-code" },
-		{ value = "claude-code/sonnet-5", label = "Sonnet 5", harness = "claude-code" },
-		{ value = "codex/gpt-6.1", label = "GPT-6.1", harness = "codex" },
-		{ value = "codex/gpt-6.1-mini", label = "GPT-6.1 mini", harness = "codex" },
+		{ value = "copilot/opus-5.5", label = "Opus 5.5", harness = "copilot" },
+		{ value = "copilot/sonnet-5", label = "Sonnet 5", harness = "copilot" },
+		{ value = "mock/gpt-6.1", label = "GPT-6.1", harness = "mock" },
+		{ value = "mock/gpt-6.1-mini", label = "GPT-6.1 mini", harness = "mock" },
 	},
 } :: any)
 store.messages:set({
@@ -210,9 +210,9 @@ stub_lanes.watch = function(slot: string, id: string?, frozen: boolean?, _chat: 
 	note(`watch:{id or "none"}{if frozen then ":frozen" else ""}`)
 	if id then
 		lanes.view(slot).messages:set({ { id = `{id}-m`, role = "assistant", text = `This is {id}` } })
-		-- (A side chat as the host publishes it: side-a runs Codex's GPT-6.1.)
+		-- (A side chat as the host publishes it: side-a runs Mock's GPT-6.1.)
 		if id == "side-a" then
-			lanes.view(slot).session:set({ id = id, state = "ready", harness = "codex", model = "codex/gpt-6.1", effort = "medium", access = "edits", project = "p1", device = "d", branch = "feature", cwd = "/proj/.zeron/worktrees/feature", running = false, context_tokens = 52000, context_window = 200000 })
+			lanes.view(slot).session:set({ id = id, state = "ready", harness = "mock", model = "mock/gpt-6.1", effort = "medium", access = "edits", project = "p1", device = "d", branch = "feature", cwd = "/proj/.zeron/worktrees/feature", running = false, context_tokens = 52000, context_window = 200000 })
 		end
 	end
 end

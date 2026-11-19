@@ -29,7 +29,7 @@ local running = ui.computed(function(): boolean
 end)
 local access = ui.state("cx_access", "full" :: string?)
 local plan = ui.state("cx_plan", false)
-local model = ui.state("cx_model", "opus" :: string?)
+local model = ui.state("cx_model", "copilot" :: string?)
 local effort = ui.state("cx_effort", "high" :: string?)
 local fast = ui.state("cx_fast", false)
 local checkout = ui.state("cx_checkout", "worktree" :: string?)
@@ -61,9 +61,7 @@ local current = ui.state("cx_state", "idle")
 local aside = ui.state("cx_aside", "")
 
 local HARNESSES: { ds.Harness } = {
-	{ id = "claude", label = "Claude", mark = "claude" },
-	{ id = "codex", label = "Codex", mark = "openai" },
-	{ id = "grok", label = "Grok", mark = "grok" },
+    { id = "copilot", label = "Copilot", mark = "copilot" },
 }
 local CLAUDE_EFFORT: { EffortSlider.Level } = {
 	{ value = "low", label = "Low" },
@@ -80,13 +78,7 @@ local GPT_EFFORT: { EffortSlider.Level } = {
 	{ value = "xhigh", label = "Extra high" },
 }
 local MODELS: { ds.Model } = {
-	{ value = "opus", label = "Opus 5.5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "high", fast = true },
-	{ value = "sonnet", label = "Sonnet 5.5", harness = "claude", efforts = CLAUDE_EFFORT, effort = "medium" },
-	{ value = "fable", label = "Fable 5.1", harness = "claude", efforts = CLAUDE_EFFORT, effort = "high" },
-	{ value = "haiku", label = "Haiku 5.5", harness = "claude" },
-	{ value = "gpt", label = "GPT-5.5", harness = "codex", efforts = GPT_EFFORT, effort = "medium", fast = true },
-	{ value = "gpt-codex", label = "GPT-5.5 Codex", harness = "codex", efforts = GPT_EFFORT, effort = "high" },
-	{ value = "grok", label = "Grok 5", harness = "grok", efforts = { { value = "low", label = "Low" }, { value = "high", label = "High" } }, effort = "high" },
+    { value = "copilot", label = "Copilot", harness = "copilot" },
 }
 local DEVICES: { ds.ComposerDevice } = {
 	{ value = "mac", label = "MacBook Pro", you = true },
