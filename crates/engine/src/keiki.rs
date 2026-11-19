@@ -16,6 +16,13 @@ use zeron_rpc::{RpcError, RpcReply};
 use crate::keiki_store::{BOUND_PREFIX, Binding, Owner, Store};
 use crate::{Auth, CopilotCredentialHolder, DocHost, SessionsEngine, WorkspaceHost};
 
+#[path = "keiki_actions.rs"]
+mod actions;
+#[path = "keiki_terminal.rs"]
+mod terminal;
+
+type BrowserOpener = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 #[derive(Clone)]
 pub(crate) struct KeikiConversations(Arc<Inner>);
 
@@ -25,10 +32,14 @@ struct Inner {
     workspace: WorkspaceHost,
     docs: DocHost,
     sessions: SessionsEngine,
+    avatars: std::sync::Mutex<Vec<(String, String)>>,
+    opener: std::sync::Mutex<BrowserOpener>,
+    terminals: terminal::Terminals,
+    terminal_slots: Arc<tokio::sync::Semaphore>,
 }
 
 pub(crate) fn handles(method: &str) -> bool {
-    matches!(
+    actions::handles(method) || matches!(
         method,
         "ListKeikiAgents"
             | "ListKeikiAgentGroups"
@@ -135,6 +146,10 @@ impl KeikiConversations {
             workspace,
             docs,
             sessions,
+            avatars: Default::default(),
+            opener: std::sync::Mutex::new(Box::new(actions::open_browser)),
+            terminals: Default::default(),
+            terminal_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         });
         let source: Arc<dyn BoundConversationSource> = inner.clone();
         holder.set_bound_source(Arc::downgrade(&source));
@@ -225,11 +240,26 @@ impl KeikiConversations {
         .boxed()
     }
 
+    pub(crate) fn terminal_handles(method: &str, params: &Value) -> bool {
+        terminal::handles(method, params)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_opener(&self, opener: BrowserOpener) {
+        *self.0.opener.lock().unwrap() = opener;
+    }
+
     pub async fn handle(&self, method: &str, params: Value) -> Result<RpcReply, RpcError> {
         // Refresh/restoration precedes scope capture, never follows a client-supplied account.
         self.0.auth.access_token().await.map_err(failed)?;
         let scope = owner(&self.0.auth).map_err(failed)?;
+        if terminal::handles(method, &params) { return self.terminal(scope, method, params).await; }
         let client = keiki_api::Client::new(self.0.auth.api_url());
+        if actions::handles(method) {
+            let answer = self.0.action(&scope, method, &params).await?;
+            self.0.check(&scope)?;
+            return Ok(RpcReply::Value(public_value(answer)));
+        }
         let answer = match method {
             "ListKeikiAgents" => {
                 self.0
@@ -273,6 +303,7 @@ impl KeikiConversations {
                 } else {
                     Value::Null
                 };
+                self.0.decorate_page(&scope, agent, &mut page)?;
                 page
             }
             "OpenKeikiConversation" | "NewKeikiConversation" => {
@@ -480,7 +511,7 @@ impl KeikiConversations {
                 let id = agent
                     .as_str()
                     .ok_or_else(|| RpcError::BadParams("Invalid expanded agent".into()))?;
-                let page = self
+                let mut page = self
                     .0
                     .request(scope, |token| {
                         client
@@ -488,6 +519,7 @@ impl KeikiConversations {
                             .map_err(failed)
                     })
                     .await?;
+                self.0.decorate_page(scope, id, &mut page)?;
                 pages.push(json!({"agentId":id,"page":page}));
             }
         }

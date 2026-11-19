@@ -55,7 +55,9 @@ impl Store {
                     chat TEXT NOT NULL REFERENCES bindings(chat), message TEXT NOT NULL,
                     created INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(chat, message));
                 CREATE TABLE IF NOT EXISTS questions (
-                    chat TEXT PRIMARY KEY REFERENCES bindings(chat), body TEXT NOT NULL);",
+                    chat TEXT PRIMARY KEY REFERENCES bindings(chat), body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS preferences (
+                    chat TEXT PRIMARY KEY REFERENCES bindings(chat), pinned INTEGER NOT NULL);",
             )
             .map_err(|e| e.to_string())?;
             *slot = Some(conn);
@@ -115,6 +117,36 @@ impl Store {
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
             })
             .collect()
+        })
+    }
+
+    pub fn lookup(&self, owner: &Owner, agent: &str, conversation: &str) -> Result<Option<Binding>, String> {
+        self.with(|conn| conn.query_row(
+            "SELECT chat,agent,conversation,draft FROM bindings WHERE account=?1 AND org=?2 AND agent=?3 AND conversation=?4",
+            params![owner.account, owner.org, agent, conversation], binding,
+        ).optional())
+    }
+
+    pub fn pinned(&self, owner: &Owner, chat: &str) -> Result<bool, String> {
+        self.get(owner, chat)?;
+        self.with(|conn| conn.query_row("SELECT pinned FROM preferences WHERE chat=?1", [chat], |row| row.get(0)).optional())
+            .map(|value| value.unwrap_or(false))
+    }
+
+    pub fn pin(&self, owner: &Owner, chat: &str, pinned: bool) -> Result<(), String> {
+        self.get(owner, chat)?;
+        self.with(|conn| conn.execute("INSERT INTO preferences(chat,pinned) VALUES(?1,?2) ON CONFLICT(chat) DO UPDATE SET pinned=excluded.pinned", params![chat, pinned]).map(|_| ()))
+    }
+
+    pub fn forget(&self, owner: &Owner, chat: &str) -> Result<(), String> {
+        self.get(owner, chat)?;
+        self.with(|conn| {
+            let tx = conn.transaction()?;
+            for table in ["preferences", "questions", "history"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE chat=?1"), [chat])?;
+            }
+            tx.execute("DELETE FROM bindings WHERE account=?1 AND org=?2 AND chat=?3", params![owner.account, owner.org, chat])?;
+            tx.commit()
         })
     }
 
@@ -185,4 +217,31 @@ fn binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<Binding> {
         conversation_id: row.get(2)?,
         draft: row.get(3)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase4_binding_preferences_are_scoped_and_survive_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = Owner { account: "one@example.test".into(), org: "one".into(), revision: 0 };
+        let store = Store::new(dir.path());
+        let binding = store.bind(&owner, "agent", "conversation", false).unwrap();
+        assert!(!store.pinned(&owner, &binding.chat_id).unwrap());
+        store.pin(&owner, &binding.chat_id, true).unwrap();
+        for other in [Owner { account: "other@example.test".into(), ..owner.clone() }, Owner { org: "other".into(), ..owner.clone() }] {
+            assert!(store.lookup(&other, "agent", "conversation").unwrap().is_none());
+            assert!(store.pin(&other, &binding.chat_id, false).is_err());
+            assert!(store.forget(&other, &binding.chat_id).is_err());
+        }
+        drop(store);
+        let store = Store::new(dir.path());
+        assert!(store.pinned(&owner, &binding.chat_id).unwrap());
+        store.forget(&owner, &binding.chat_id).unwrap();
+        assert!(store.get(&owner, &binding.chat_id).is_err());
+        assert!(store.lookup(&owner, "agent", "conversation").unwrap().is_none());
+        assert_ne!(store.bind(&owner, "agent", "conversation", false).unwrap().chat_id, binding.chat_id);
+    }
 }

@@ -2858,7 +2858,11 @@ impl crate::remote_terminals::Relay for EngineRpc {
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         let chat = params.get("chatId").and_then(serde_json::Value::as_str).map(str::to_owned);
+        let removes_binding = method == "KeikiConversationAction" && params["action"] == "deleteLocal";
         let reply = self.handle_inner(method, params).await?;
+        if removes_binding && matches!(&reply, RpcReply::Value(value) if value["deletedLocal"] == true) {
+            return Ok(reply);
+        }
         if let (Some(keiki), Some(chat)) = (&self.keiki, chat) {
             keiki.authorize_chat(&chat)?;
             if let RpcReply::Stream(stream) = reply { return Ok(RpcReply::Stream(keiki.guard_stream(chat, stream))); }
@@ -2885,7 +2889,7 @@ impl EngineRpc {
         if method == methods::DEVICE_STATS {
             return self.device_stats(params).await;
         }
-        if crate::keiki::handles(method) {
+        if crate::keiki::handles(method) || crate::keiki::KeikiConversations::terminal_handles(method, &params) {
             return self.keiki.as_ref().ok_or_else(|| RpcError::Failed("Keiki conversations are unavailable".into()))?.handle(method, params).await;
         }
         if matches!(

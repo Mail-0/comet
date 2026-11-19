@@ -4,6 +4,9 @@ use zeron_harness::{CancellationToken, CopilotHarness, Harness, RunControls, Ste
 use zeron_proto::{AgentEvent, DoneStatus, RunRequest};
 use zeron_rpc::{RpcReply, RpcService};
 
+#[path = "keiki_actions_tests.rs"]
+mod actions;
+
 const DETAIL: &str = "/api/webapp/conversations/api:agent-a:c?agentId=agent-a&limit=50&offset=0";
 const REFRESH: &str = "/api/webapp/conversations/api:agent-a:c?agentId=agent-a&limit=100&offset=0";
 const STEER: &str = "/api/webapp/conversations/api:agent-a:c/steer?agentId=agent-a";
