@@ -8,12 +8,33 @@ import argparse
 import base64
 import hashlib
 import json
+import queue
+import struct
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
+
+
+def avatar_gif(agent):
+    palette = bytes(channel for i in range(32) for channel in
+                    ((70 + i * 3, 105 + i * 4, 65 + i * 2) if agent == "nova" else
+                     (90 + i * 3, 65 + i * 2, 135 + i * 3)))
+    bits, count, packed = 0, 0, bytearray()
+    for code in [value for y in range(64) for x in range(64)
+                 for value in (32, (x // 4 + y // 4) % 32)] + [33]:
+        bits |= code << count
+        count += 6
+        while count >= 8:
+            packed.append(bits & 255)
+            bits >>= 8
+            count -= 8
+    if count:
+        packed.append(bits & 255)
+    blocks = b"".join(bytes([len(packed[i:i+255])]) + packed[i:i+255] for i in range(0, len(packed), 255))
+    return b"GIF89a" + struct.pack("<HHBBB", 64, 64, 244, 0, 0) + palette + b"," + struct.pack("<HHHHB", 0, 0, 64, 64, 0) + b"\x05" + blocks + b"\x00;"
 
 
 def message(identity, text, direction):
@@ -35,13 +56,21 @@ class Fixture:
             "api:nova:design": [message("design-1", "Let’s explore the visual direction together.", "outbound")]}
         self.live = set()
         self.replies = 0
+        self.blocked = set()
+        self.takeovers = {}
+        self.connected = False
+        self.terminals = {}
+        self.tasks = [{"id": "task-layout", "subagent": "Fern", "status": "running", "request": "Review the launch checklist and prepare a concise design summary.",
+                       "resumptions": 0, "traceId": None, "createdAt": "2026-01-01T00:00:00Z", "endedAt": None}]
+        self.messages["contact:nova:operator"] = [message("handoff-1", "The operator can take over this conversation, then hand it back to Nova.", "outbound")]
+        self.messages["agent:nova:fern"] = [message("peer-1", "Fern is reviewing the launch checklist with Nova.", "outbound")]
 
     def conversations(self, agent):
-        return [{"phone": phone, "contactName": "Launch notes" if phone.endswith("release") else "Design explorations",
+        return [{"phone": phone, "contactName": "Launch notes" if phone.endswith("release") else "Operator handoff" if phone.startswith("contact:") else "Peer review" if phone.startswith("agent:") else "Design explorations",
                  "agentId": agent, "agentName": "Nova", "lastMessage": rows[-1]["content"] if rows else "",
                  "messageCount": len(rows), "lastMessageAt": rows[-1]["createdAt"] if rows else "",
                  "lastDirection": "outbound", "isActive": phone in self.live, "hasErrors": False}
-                for phone, rows in self.messages.items() if phone.startswith(f"api:{agent}:")]
+                for phone, rows in self.messages.items() if phone.split(":")[1:2] == [agent]]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -115,6 +144,17 @@ class Handler(BaseHTTPRequestHandler):
                                "expires_in": 3600, "scope": "manage offline_access"})
         if path == "/oauth/revoke":
             return self.reply({})
+        if path.startswith("/api/public/agent-avatars/"):
+            data = avatar_gif(path.rsplit("/", 1)[1].removesuffix(".gif"))
+            self.send_response(200)
+            self.send_header("Content-Type", "image/gif")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/fixture/consent":
+            self.fixture.connected = True
+            return self.reply({"message": "Connection authorized. Return to Keiki and check authorization."})
         if self.headers.get("Authorization") != "Bearer fixture-access":
             return self.reply({"error": "unauthorized"}, 401)
         if path == "/api/webapp/auth/session":
@@ -127,27 +167,109 @@ class Handler(BaseHTTPRequestHandler):
             self.fixture.org = body["orgId"]
             return self.reply({"ok": True, "activeOrgId": self.fixture.org})
         if path == "/api/webapp/agents":
+            if self.command == "POST":
+                agent = {"id": "created-" + str(len(self.fixture.agents)), "name": body.get("name") or "Research partner", "model": "copilot", "active": True}
+                self.fixture.agents.append(agent)
+                return self.reply({"ok": True, "id": agent["id"], "missing_secrets": []})
             return self.reply({"agents": self.fixture.agents if self.fixture.org == "studio" else []})
+        if path == "/api/webapp/agent-templates":
+            return self.reply({"templates": [{"id": "research", "name": "Research partner", "emoji": "✦", "blurb": "A thoughtful collaborator for research and planning.", "description": "Helps your team investigate, summarize and plan.", "model": "copilot", "secrets": [], "connections": [], "capabilities": []}]})
         if path == "/api/webapp/agent-groups":
             return self.reply({"groups": [{"id": "design", "name": "Design studio", "members": [{"agentId": "nova", "name": "Nova"}]}] if self.fixture.org == "studio" else []})
         if path == "/api/webapp/agent-groups/design/roster":
-            return self.reply({"members": [{"agentId": "nova", "name": "Nova", "status": "running" if self.fixture.live else "idle"}], "totals": {"members": 1}})
+            running = sum(task["status"] == "running" for task in self.fixture.tasks)
+            return self.reply({"members": [{"agentId": "nova", "name": "Nova", "role": "hub", "status": "running" if running else "idle", "runningTurns": running, "pendingAsks": 1 if running else 0, "waitingOnPeer": 0, "backgroundTasks": running, "tokensIn": 1240, "tokensOut": 320, "costUsd": 0.042, "lastActivityAt": None}],
+                               "totals": {"members": 1, "hubs": 1, "spokes": 0, "running": running, "waiting": 0, "ended": 0, "backgroundTasks": running, "costUsd": 0.042}})
+        if path == "/api/webapp/agent-groups/design/end":
+            count = sum(task["status"] == "running" for task in self.fixture.tasks)
+            for task in self.fixture.tasks:
+                task["status"] = "cancelled"
+            self.fixture.live.clear()
+            return self.reply({"threadsEnded": 1, "tasksCancelled": count})
+        if path == "/api/webapp/subagent-tasks/task-layout/cancel":
+            self.fixture.tasks[0]["status"] = "cancelled"
+            return self.reply({"cancelled": True})
+        if "/mcp-presets/docs/" in path:
+            return self.reply({"preset": {"id": "docs", "name": "Team docs", "status": "connected" if self.fixture.connected else "needs_auth", "authorizationUrl": base + "/fixture/consent?token=fixture-private-capability"}})
         if path == "/api/webapp/conversations" or path.startswith("/api/webapp/agents/"):
             agent = path.split("/")[4] if path.startswith("/api/webapp/agents/") else "nova"
             offset, limit = int(query.get("offset", [0])[0]), int(query.get("limit", [50])[0])
             return self.reply({"conversations": self.fixture.conversations(agent)[offset:offset + limit]})
         if path.startswith("/api/webapp/conversations/"):
             identity = path.removeprefix("/api/webapp/conversations/")
+            if "/terminal" in identity:
+                parts = identity.split("/terminal", 1)[1].strip("/").split("/")
+                if parts == [""]:
+                    terminal = "shell-" + uuid.uuid4().hex
+                    self.fixture.terminals[terminal] = {"events": queue.Queue(), "seq": 0, "input": ""}
+                    self.terminal_event(terminal, "data", data=base64.b64encode(b"\x1b[32mnova@keiki\x1b[0m ~/workspace\r\n$ ").decode())
+                    return self.reply({"terminalId": terminal})
+                terminal = parts[0]
+                if terminal not in self.fixture.terminals:
+                    return self.reply({"error": "not_found"}, 404)
+                if self.command == "DELETE":
+                    self.terminal_event(terminal, "exit", exitCode=0)
+                    return self.reply({})
+                if parts[-1] == "stream":
+                    return self.terminal_stream(terminal)
+                if parts[-1] == "input":
+                    text = base64.b64decode(body.get("data", "")).decode(errors="replace")
+                    state = self.fixture.terminals[terminal]
+                    output = text.replace("\r", "\r\n")
+                    state["input"] += text
+                    if "\r" in state["input"] or "\n" in state["input"]:
+                        command = state["input"].strip()
+                        output += {"pwd": "/home/keiki/workspace\r\n", "ls": "README.md  launch-notes.md  src\r\n", "whoami": "keiki\r\n"}.get(command, "Fixture sandbox ready\r\n") + "$ "
+                        state["input"] = ""
+                    self.terminal_event(terminal, "data", data=base64.b64encode(output.encode()).decode())
+                return self.reply({})
             if identity.endswith("/steer"):
                 return self.steer(identity.removesuffix("/steer"), body)
             if identity.endswith("/takeover"):
-                return self.reply({"takeover": None})
+                target = identity.removesuffix("/takeover")
+                self.fixture.takeovers[target] = None if self.command == "DELETE" else {"startedAt": "2026-01-01T00:00:00Z", "expiresAt": "2099-01-01T00:00:00Z"}
+                return self.reply({"takeover": self.fixture.takeovers[target]})
+            if identity.endswith("/block"):
+                target = identity.removesuffix("/block")
+                if self.command == "POST":
+                    self.fixture.blocked.add(target)
+                else:
+                    self.fixture.blocked.discard(target)
+                return self.reply({"blocked": target in self.fixture.blocked})
+            if identity.endswith("/end"):
+                return self.reply({"ended": True, "settled": 1})
             rows = self.fixture.messages.get(identity, [])
             offset, limit = int(query.get("offset", [0])[0]), int(query.get("limit", [50])[0])
             return self.reply({"phone": identity, "meta": {"agentId": query.get("agentId", ["nova"])[0], "messageCount": len(rows)},
-                               "messages": rows[offset:offset + limit], "asks": [], "blocked": False, "takeover": None,
+                               "messages": rows[offset:offset + limit], "agent": {"id": query.get("agentId", ["nova"])[0]}, "asks": [], "tasks": self.fixture.tasks if identity.endswith("release") else [], "blocked": identity in self.fixture.blocked, "takeover": self.fixture.takeovers.get(identity),
                                "activeTurnStartedAt": "now" if identity in self.fixture.live else None, "liveness": None})
         return self.reply({"error": "not_found"}, 404)
+
+    def terminal_event(self, terminal, kind, **fields):
+        state = self.fixture.terminals[terminal]
+        with self.fixture.lock:
+            state["seq"] += 1
+            state["events"].put({"type": kind, "seq": state["seq"], **fields})
+
+    def terminal_stream(self, terminal):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            while True:
+                try:
+                    event = self.fixture.terminals[terminal]["events"].get(timeout=2)
+                    self.wfile.write(("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n").encode())
+                    self.wfile.flush()
+                    if event["type"] == "exit":
+                        break
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
 
     def steer(self, identity, body):
         text = body.get("text", "")
@@ -178,7 +300,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append(message(answer, reply, "outbound"))
             event("RUN_FINISHED", threadId=identity, runId=run,
                   outcome={"type": "interrupt", "interrupts": [{"id": "launch-direction", "reason": "Choose a direction",
-                           "message": "Should we lead with the story or the product?"}]})
+                           "message": "Should we lead with the story or the product?", "mcpConnect": {"agentId": "nova", "presetId": "docs", "name": "Team docs"}}]})
         except (BrokenPipeError, ConnectionResetError):
             print("Stream disconnected (local Stop)", flush=True)
         finally:
