@@ -1,6 +1,6 @@
 # Keiki in zgx
 
-Keiki's interface runs on [zgx](https://zgx.zeron.sh), starting with
+Keiki's interface runs on the ZGX native desktop framework, starting with
 onboarding. The interface is Luau (`ui/`): it hot-reloads as it is saved,
 keeping its state, so most work never rebuilds Rust. The Rust host
 (`src/main.rs`) makes windows, registers fonts and answers the scripts'
@@ -15,12 +15,14 @@ in [Composer](docs/composer.md).
 Sign-in uses Keiki OAuth at `https://onkeiki.com`, overridden with
 `KEIKI_API_URL`. Refresh credentials use the OS keyring; the workspace is
 always Local under `~/.keiki`, independently of the selected organization.
-`ZERON_DATA_DIR` overrides the local data directory. Release checks are
-opt-in through `KEIKI_RELEASES_URL`, with no Zeron-service fallback.
+`ZERON_DATA_DIR` overrides the local data directory. Release checks default to
+`https://api.github.com/repos/Mail-0/comet/releases/latest` and its asset API.
+`KEIKI_RELEASES_URL` overrides the GitHub release API URL or a custom manifest
+base. There is no Zeron-service fallback. See the root README for packaging,
+release tags and optional private-release credentials.
 
-You need Rust 1.85 or newer (edition 2024). We develop on macOS; Linux
-should work but is untested. The app is this folder: `apps/zgx` in
-zeronsh/zeron, or the root of zeronsh/zeron-zgx, which is a copy of it.
+Use the repository's pinned Rust toolchain. The app is this folder,
+`apps/zgx` in Mail-0/comet, a separate Cargo workspace tested on macOS and Linux.
 
 On macOS you also need Zig 0.16 (`brew install zig@0.16`): Ghostty draws the
 panel's terminals there (zgx-desktop's `ghostty` feature), and zgx builds it
@@ -29,7 +31,7 @@ cached in `~/Library/Caches/zgx-ghostty` for every checkout. Without Zig 0.16
 the build stops and says so (`ZIG` points it at another Zig executable).
 
 ```sh
-git clone git@github.com:zeronsh/zeron-zgx.git && cd zeron-zgx
+git clone git@github.com:Mail-0/comet.git && cd comet/apps/zgx
 cargo run --release -- gallery      # the workbench: every component and demo
 ```
 
@@ -115,7 +117,7 @@ writes the page there, for a test rig). See `src/engine/manager.rs`.
 (src/chat.rs), to run a chat without a paid one; `ZERON_MOCK_DELAY_MS`
 and `ZERON_MOCK_REPEAT` on the engine it starts pace and lengthen its replies.
 
-This is a cargo workspace of its own (in zeronsh/zeron, not a member of the
+This is a cargo workspace of its own (in Mail-0/comet, not a member of the
 root one). zgx
 builds against patched crates (winit, wgpu-hal, accesskit), and a git
 dependency does not carry a patch, so `Cargo.toml` repeats zgx's. Patching
