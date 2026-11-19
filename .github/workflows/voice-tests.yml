@@ -32,7 +32,6 @@ jobs:
       - name: Development runtime projection and split-host diagnostic fixtures (no downloads, Codex, microphone or provider)
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_voice_packaging.py' -v
-          python3 -m unittest discover -s scripts/tests -p 'test_voice_remote*.py' -v
       - uses: ./.github/actions/linux-ci
         with:
           rust-cache: voice

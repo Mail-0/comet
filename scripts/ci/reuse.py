@@ -60,19 +60,14 @@ NEXTEST = ["scripts/ci/nextest.toml"]
 
 SUITE_INPUTS: dict[str, list[str]] = {
     "core": [".github/workflows/ui-tests.yml", "scripts/ci/test-core.sh"] + LINUX_SETUP + NEXTEST,
-    "cursor": [".github/workflows/cursor-compatibility.yml", "scripts/*cursor-sdk*", "crates/harness/src/cursor/**"],
-    "edge": [".github/workflows/preview-tests.yml", "edge/**"],
-    "installer": [".github/workflows/linux-installer.yml", "edge/src/install.sh", "scripts/package-linux.sh",
+    "installer": [".github/workflows/linux-installer.yml", "scripts/package-linux.sh",
                   "scripts/test-linux-desktop-entry.sh", "dist/zeron.desktop", "dist/zeron.png",
                   "scripts/ci/apt-install.sh"],
     "voice": [".github/workflows/voice-tests.yml", "dist/voice/**", "scripts/package-voice-runtime.py",
-              "scripts/codex-voice-remote-smoke.py", "scripts/tests/*voice*"] + LINUX_SETUP + NEXTEST,
+              "scripts/tests/*voice*"] + LINUX_SETUP + NEXTEST,
     "windows": [".github/workflows/windows.yml", "dist/windows/**", "scripts/test-windows-*.ps1",
                 "scripts/package-windows.ps1", ".github/actions/windows-ci-setup/**"] + NEXTEST,
     "macos": [".github/workflows/macos.yml", "dist/macos/**"] + NEXTEST,
-    "ios": [".github/workflows/macos.yml", "apps/ios/**", "scripts/ios/**"],
-    "android": [".github/workflows/android.yml", "apps/android/**", "scripts/android/**",
-                "apps/ios/Zeron/Fonts/**", "apps/ios/Zeron/Assets.xcassets/**"],
     # apps/zgx is a workspace of its own: all of it (sources, lockfile, Luau UI
     # and tests, plugins, SDK) is an input; its path dependencies are in SUITE_PACKAGES.
     "zgx": [".github/workflows/zgx-tests.yml", "scripts/ci/test-zgx.sh", "scripts/ci/zgx-known-failures.txt",
@@ -87,8 +82,6 @@ SUITE_PACKAGES: dict[str, list[str]] = {
     "voice": ["zeron-audio", "zeron-voice-media"],
     "windows": ["zeron-harness", "zeron", "zeron-update", "zeron-proto", "zeron-engine", "zeron-voice-media"],
     "macos": ["zeron-update", "zeron-preview", "zeron-text", "zeron"],
-    "ios": ["zeron-mobile", "zeron-text", "zeron-markdown", "zeron-client"],
-    "android": ["zeron-mobile"],
     # zeron-engine's plugin tests, and the root crates apps/zgx builds against.
     "zgx": ["zeron-engine", "zatex", "zeron-theme", "zeron-preview-label", "zeron-cli", "zeron-launch",
             "zeron-notify", "zeron-proto", "zeron-update", "zeron-visual", "zeron-plugin-guard",

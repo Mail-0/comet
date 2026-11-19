@@ -17,7 +17,6 @@ permissions:
   contents: read
 
 # Pull requests and main leave out the slow and soak tests (scripts/ci/nextest.toml
-# `ci` profile) and run the cursor_shim stress test for 14 rounds; the nightly
 # run (schedule) runs everything in full.
 env:
   NEXTEST_PROFILE: ${{ github.event_name == 'schedule' && 'default' || 'ci' }}

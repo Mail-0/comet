@@ -143,12 +143,12 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(self.changed_after(".github/workflows/ci.yml", "on: push\n"), {"a", "b", "app"})
 
     def test_ci_files_count_for_the_suites_that_run_them(self):
-        keys = lambda: reuse.suite_keys(["core", "edge", "windows"], str(ROOT))[0]  # noqa: E731
+        keys = lambda: reuse.suite_keys(["core", "installer", "windows"], str(ROOT))[0]  # noqa: E731
         if not (ROOT / "crates" / "engine" / "src").is_dir():
             self.skipTest("Rust sources not checked out")
         self.assertIn("scripts/ci/nextest.toml", reuse.SUITE_INPUTS["core"])
         self.assertIn("scripts/ci/test-core.sh", reuse.SUITE_INPUTS["core"])
-        self.assertNotIn("scripts/ci/nextest.toml", reuse.SUITE_INPUTS["edge"])
+        self.assertNotIn("scripts/ci/nextest.toml", reuse.SUITE_INPUTS["installer"])
         self.assertIn(".github/actions/windows-ci-setup/**", reuse.SUITE_INPUTS["windows"])
         self.assertTrue(all(not reuse.matches(f"scripts/ci/{f}", reuse.COMMON)
                             for f in ("plan.py", "admit.py", "reuse.py", "emergency.py")))
@@ -187,13 +187,6 @@ class RealWorkspaceTests(unittest.TestCase):
         self.assertNotIn("apps/zeron", core)
         self.assertIn("apps/zeron", ws.closure(reuse.SUITE_PACKAGES["windows"]))
 
-    def test_mobile_reads_the_shared_fonts(self):
-        # The fingerprints follow HEAD's tree: only once the fonts are committed at the root.
-        if not reuse.exists("assets/fonts", reuse.tree_index(str(ROOT))):
-            self.skipTest("assets/fonts not committed")
-        _, extra, _ = reuse.suite_keys(["ios"], str(ROOT))
-        self.assertIn("assets/fonts", extra["ios"])
-
     def test_every_rust_suite_has_packages_that_exist(self):
         ws = reuse.Workspace(str(ROOT))
         for suite, packages in reuse.SUITE_PACKAGES.items():
@@ -218,12 +211,12 @@ class LookupTests(unittest.TestCase):
 
 class ReusePlanTests(unittest.TestCase):
     def test_whole_suites(self):
-        suites = {s: s in ("core", "ios") for s in plan.SUITE_JOBS}
-        skip = plan.reused_jobs(suites, {"core": {"core-tests"}, "ios": {"ios-core"}})
-        self.assertEqual(skip, {"core": ["core-tests"]})  # iOS: the simulator tests never passed
+        suites = {s: s in ("core", "zgx") for s in plan.SUITE_JOBS}
+        skip = plan.reused_jobs(suites, {"core": {"core-tests"}, "zgx": {"zgx-linux"}})
+        self.assertEqual(skip, {"core": ["core-tests"]})  # The macOS ZGX job never passed.
         running = plan.jobs_to_run(suites, skip)
         self.assertEqual(running["core"], [])
-        self.assertEqual([j for j, _ in running["ios"]], ["ios-core", "ios-tests"])
+        self.assertEqual([j for j, _ in running["zgx"]], ["zgx-macos", "zgx-linux"])
 
     def test_single_jobs_of_splittable_suites(self):
         suites = {s: s in ("windows", "voice") for s in plan.SUITE_JOBS}

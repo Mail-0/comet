@@ -64,7 +64,7 @@ class ReservationTests(unittest.TestCase):
         self.assertEqual(held(declared, jobs, since_admitted=60)["macos"], 3)
         # After CREATE_GRACE only the late jobs (result, Android publish) may still be missing.
         self.assertEqual(held(declared, jobs, since_admitted=admit.CREATE_GRACE + 1),
-                         {"linux": 2, "windows": 0, "macos": 1})
+                         {"linux": 1, "windows": 0, "macos": 1})
         self.assertEqual(held({"linux": 10, "windows": 3, "macos": 3}, [], since_admitted=admit.CREATE_GRACE + 1),
                          admit.LATE_JOBS)
         self.assertEqual(held(declared, jobs, since_admitted=admit.UNSEEN_GRACE + 1),
@@ -133,8 +133,8 @@ class DecideTests(unittest.TestCase):
     def test_no_circular_wait_behind_a_full_run(self):
         # A full run at the head and many waiting behind it, each holding its admit
         # runner: counting those as busy made the head wait for them and them for it.
-        big = {"total": 20, "macos": 5, "windows": 10}
         full = need_of(admit.MAX_RESERVATION)
+        big = {"total": full["total"] + 8, "macos": 5, "windows": 10}
         behind = [waiter(10 + i, 10 + i, linux=8, windows=1) for i in range(12)]
         snap = Snapshot([waiter(1, 1, **{k: v for k, v in admit.MAX_RESERVATION.items()})] + behind, [])
         self.assertTrue(decide(1, full, snap, big).admit)
@@ -164,15 +164,16 @@ class MisbehaviourTests(unittest.TestCase):
     def test_a_run_that_never_takes_its_turn_is_ignored(self):
         # Run 1 claims a full run and its admit step never finishes (an edited ci.yml).
         fake = waiter(1, 1, **admit.MAX_RESERVATION)
+        budget = {**self.BIG, "total": fake.need["total"] + 5}
         snap = lambda: Snapshot([waiter(1, 1, **admit.MAX_RESERVATION), waiter(2, 2, linux=6)], [])  # noqa: E731
         since = {}
         s = snap()
-        admit.mark_unresponsive(2, s, self.BIG, since, now=1000)
-        self.assertFalse(decide(2, need(linux=6), s, self.BIG).admit)  # 16 ahead + 6 > 20
+        admit.mark_unresponsive(2, s, budget, since, now=1000)
+        self.assertFalse(decide(2, need(linux=6), s, budget).admit)
         s = snap()
-        admit.mark_unresponsive(2, s, self.BIG, since, now=1000 + admit.UNRESPONSIVE_GRACE + 1)
+        admit.mark_unresponsive(2, s, budget, since, now=1000 + admit.UNRESPONSIVE_GRACE + 1)
         self.assertTrue(s.waiters[0].ignored)
-        self.assertTrue(decide(2, need(linux=6), s, self.BIG).admit)
+        self.assertTrue(decide(2, need(linux=6), s, budget).admit)
         self.assertEqual(fake.need, s.waiters[0].need)
 
     def test_a_run_that_cannot_start_yet_is_not_ignored(self):
@@ -284,10 +285,10 @@ class PriorityAndLockTests(unittest.TestCase):
 
     def test_a_lock_holds_a_full_run_while_idle(self):
         full = need_of(admit.MAX_RESERVATION)
-        snap = Snapshot([waiter(5, 1, linux=3, macos=2)], [held_(macos=6)], locked={90})
+        snap = Snapshot([waiter(5, 1, linux=3, macos=2)], [held_(macos=7)], locked={90})
         d = decide(5, need(linux=3, macos=2), snap, self.BIG)
-        self.assertEqual(d.used["macos"], 6 + full["macos"])
-        self.assertFalse(d.admit)  # 6 + 4 locked + 2 > 10
+        self.assertEqual(d.used["macos"], 7 + full["macos"])
+        self.assertFalse(d.admit)  # 7 + 2 locked + 2 > 10
         snap.holding = [held_(macos=4)]
         self.assertTrue(decide(5, need(linux=3, macos=2), snap, self.BIG).admit)
 

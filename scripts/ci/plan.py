@@ -92,7 +92,7 @@ MOBILE_CORE = [
 # built: protocol and transport in core-tests, mobile voice in ios-core,
 # voice-media in core-tests and the Windows tests.
 VOICE_PATHS = ["crates/audio/**", "crates/voice-media/**", "dist/voice/**", "scripts/package-voice-runtime.py",
-               "scripts/codex-voice-remote-smoke.py", "scripts/tests/*voice*", ".github/workflows/voice-tests.yml"]
+               "scripts/tests/*voice*", ".github/workflows/voice-tests.yml"]
 
 # The zgx suite's own files, and the crates it builds: main() replaces ZGX_CORE
 # with the closure of reuse.SUITE_PACKAGES["zgx"]; this list is the fallback.
@@ -107,8 +107,6 @@ ZGX_CORE = [
 BROAD: dict[str, list[str]] = {
     "core": CARGO + ["crates/**", "apps/zeron/**", "scripts/ci/**", ".github/actions/linux-ci/**",
                      ".github/workflows/ui-tests.yml"],
-    "cursor": CARGO + ["crates/harness/**", "crates/doc/**", "crates/engine/**",
-                       "scripts/*cursor-sdk*", ".github/workflows/cursor-*.yml"],
     "edge": ["edge/**", ".github/workflows/preview-tests.yml"],
     "installer": ["scripts/package-linux.sh", "scripts/test-linux-desktop-entry.sh",
                   "scripts/ci/apt-install.sh", "dist/zeron.desktop", "dist/zeron.png",

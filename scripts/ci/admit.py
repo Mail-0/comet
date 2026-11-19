@@ -26,7 +26,7 @@ another run is not trusted:
   - it is capped at the most plan.py ever reserves (MAX_RESERVATION);
   - an admitted run's jobs that have not shown up CREATE_GRACE after admission
     stop counting, except the LATE_JOBS that start after the others (the
-    result job, Android publishing), which stop at UNSEEN_GRACE;
+    result job), which stop at UNSEEN_GRACE;
   - a waiting run that could have been admitted for UNRESPONSIVE_GRACE but
     still waits is not following this protocol (an edited admit step that
     never finishes): the runs behind it stop waiting for it.
@@ -102,13 +102,12 @@ ADMIT_PREFIX = "admit"
 UNRESERVED_JOBS = ("plan",)  # jobs that run before admission and are not in reservations
 RESERVATION = re.compile(r"\b(linux|windows|macos)=(\d+)\b")
 # The largest reservation plan.py makes: every suite, on main (checked by test_ci_admit.py).
-MAX_RESERVATION = {"linux": 10, "windows": 3, "macos": 3}
+MAX_RESERVATION = {"linux": 5, "windows": 3, "macos": 2}
 # How long an admitted run's not-yet-created jobs stay reserved. Its suites' jobs
-# are created as soon as admit finishes; LATE_JOBS (the `CI result` job, and
-# Android publishing on main) only once the jobs they need are done.
+# are created as soon as admit finishes; the `CI result` job waits for them.
 CREATE_GRACE = 10 * 60
 UNSEEN_GRACE = 90 * 60
-LATE_JOBS = {"linux": 2, "windows": 0, "macos": 0}
+LATE_JOBS = {"linux": 1, "windows": 0, "macos": 0}
 # A waiting run that could have been admitted this long, but still waits, is ignored.
 UNRESPONSIVE_GRACE = 3 * 60
 # An admitted run's job queued this long (Linux or Windows: the runners waiting
