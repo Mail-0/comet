@@ -475,7 +475,7 @@ pub mod copilot;
 mod executable;
 pub mod mock;
 pub mod realtime;
-pub use copilot::{CopilotCredentialSource, CopilotHarness};
+pub use copilot::{BoundConversation, BoundConversationSource, CopilotCredentialSource, CopilotHarness};
 pub mod process;
 pub mod shell_env;
 #[cfg(windows)]

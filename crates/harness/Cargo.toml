@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+keiki-api.workspace = true
 zeron-copilot.workspace = true
 zeron-proto.workspace = true
 reqwest.workspace = true

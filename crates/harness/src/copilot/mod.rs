@@ -23,10 +23,17 @@ use zeron_proto::{
 
 use crate::{Harness, HarnessError, RunControls, SteerMessage};
 
+mod bound;
+pub use bound::{BoundConversation, BoundConversationSource, BOUND_PREFIX};
+
 /// Credential access is deliberately abstracted at the harness boundary so the
 /// engine can own the device-local holder without introducing a dependency cycle.
 pub trait CopilotCredentialSource: Send + Sync {
     fn snapshot(&self) -> Option<CopilotCredentials>;
+
+    fn bound_source(&self) -> Option<Arc<dyn BoundConversationSource>> {
+        None
+    }
 }
 
 pub struct CopilotHarness {
@@ -107,7 +114,11 @@ impl Harness for CopilotHarness {
         let credentials = Arc::clone(&self.credentials);
         let (event_tx, event_rx) = mpsc::channel(256);
         tokio::spawn(async move {
-            run_copilot(credentials, request, controls, event_tx).await;
+            if request.resume.as_deref().is_some_and(|id| id.starts_with(BOUND_PREFIX)) {
+                bound::run(credentials, request, controls, event_tx).await;
+            } else {
+                run_copilot(credentials, request, controls, event_tx).await;
+            }
         });
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
             rx.recv().await.map(|event| (event, rx))

@@ -9337,6 +9337,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "keiki-api",
  "libc",
  "reqwest",
  "semver",
