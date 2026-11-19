@@ -102,16 +102,16 @@ test("renaming Cloud's row renames every copy, and none of your computers'", fun
 	cloud_menu(app)
 	app:click('role:menu >> role:button "Rename"')
 	app:frames(10)
-	app:fill(`{CLOUD} >> "Name for zeron"`, "Zeron app")
+	app:fill(`{CLOUD} >> "Name for zeron"`, "Keiki app")
 	app:key("Enter")
 	app:frames(20)
 	local calls = said(app)
 	for _, id in { "zc1", "zc2", "zc3" } do
-		expect(calls).to_contain(`rename_project:{id}:Zeron app`)
+		expect(calls).to_contain(`rename_project:{id}:Keiki app`)
 	end
 	expect(calls).never.to_contain("rename_project:zmac")
 	expect(calls).never.to_contain("rename_project:app1")
-	expect(app:tree(CLOUD)).to_contain("Zeron app")
+	expect(app:tree(CLOUD)).to_contain("Keiki app")
 end)
 
 test("changing Cloud's row's icon changes every copy's", function()

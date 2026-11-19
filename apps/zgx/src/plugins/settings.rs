@@ -193,7 +193,7 @@ pub fn declared(plugin: &str, manifest: &Json, builtin: bool) -> Vec<Setting> {
         }
         if kind == "permission" {
             if !builtin {
-                skip(&format!("{id}: a permission row is Zeron's own plugins' alone"));
+                skip(&format!("{id}: a permission row is Keiki's own plugins' alone"));
                 continue;
             }
             let Some(permission) = raw["permission"].as_str().filter(|p| PERMISSIONS.contains(p)) else {
@@ -308,7 +308,7 @@ fn plain(text: &str, most: usize) -> String {
 /// or why not.
 pub fn status(setting: &Setting, asked: &Json) -> Result<Option<Json>, String> {
     if zeron_s(&setting.kind) {
-        return Err(format!("A {} row's status is Zeron's", setting.kind));
+        return Err(format!("A {} row's status is Keiki's", setting.kind));
     }
     if asked.is_null() {
         return Ok(None);
@@ -792,13 +792,13 @@ mod tests {
         assert_eq!((v["enabled"].clone(), v["sound"].clone(), v["shortcut"].clone(), v["destination"].clone()), (json!(false), json!(true), json!("ctrl+alt+space"), json!("automatic")));
         // The shortcut's registration, as Appshots would report it.
         assert!(book.set_status("appshots", "shortcut", &json!({ "badge": "Set up", "tone": "warning", "text": "This shortcut is unavailable. Choose a different key combination." })).unwrap());
-        assert!(book.set_status("appshots", "screen-recording", &json!({ "badge": "Ready" })).is_err(), "a permission's status is Zeron's");
+        assert!(book.set_status("appshots", "screen-recording", &json!({ "badge": "Ready" })).is_err(), "a permission's status is Keiki's");
     }
 
     #[test]
     fn a_page_may_say_what_it_is_in_plain_words() {
         let mut m = manifest();
-        assert_eq!(page_description(&m), None, "none: Zeron's own line");
+        assert_eq!(page_description(&m), None, "none: Keiki's own line");
         m["settings_description"] = json!("Set up once,\n\tone permission at a time.   ");
         assert_eq!(page_description(&m).as_deref(), Some("Set up once, one permission at a time."));
         m["settings_description"] = json!("x".repeat(500));

@@ -1,6 +1,6 @@
 //! Scrolling up a long chat from its end passes through every message: a
 //! trackpad's steps, one a refresh, with the window's spare time building rows
-//! ahead of the view as Zeron.app's does, move what shows by each step and no
+//! ahead of the view as Keiki.app's does, move what shows by each step and no
 //! more. (Nov 10, beta.4: scrolling up from the end of one chat skipped past a
 //! message in one frame, every time, until a send; scrolling back down showed
 //! it. Not reproduced here: these hold the ways it was looked for.) On a long

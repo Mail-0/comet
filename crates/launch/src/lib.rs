@@ -306,8 +306,8 @@ mod tests {
     #[test]
     fn app_path_is_the_bundle_on_macos_layouts() {
         assert_eq!(
-            app_path(Path::new("/Applications/Zeron.app/Contents/MacOS/zeron")),
-            PathBuf::from("/Applications/Zeron.app")
+            app_path(Path::new("/Applications/Keiki.app/Contents/MacOS/zeron")),
+            PathBuf::from("/Applications/Keiki.app")
         );
         assert_eq!(
             app_path(Path::new("/home/me/.zeron/app/current/zeron")),

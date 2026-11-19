@@ -528,7 +528,7 @@ local function changes(args: any): any
 		elseif scope == "turn" then
 			local turn = (turns:get() or {})[args.chat or ""]
 			if not turn or turn.cwd ~= cwd then
-				error("no_turn: No turn has started here since Zeron was set up", 0)
+				error("no_turn: No turn has started here since Keiki was set up", 0)
 			end
 			out.a = turn.tree
 			out.at = turn.at

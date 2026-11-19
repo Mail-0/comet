@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Linux packaging: build the release binary and produce
-#   target/package/zeron-<version>-linux-<arch>.tar.gz
+#   target/package/keiki-<version>-linux-<arch>.tar.gz
 # containing the binaries (the app and its background engine), the .desktop
 # entry, and the icon, plus an install.sh
-# that installs them into the self-updating ~/.zeron/app layout and links
+# that installs them into the self-updating ~/.keiki/app layout and links
 # ~/.local (XDG) paths to it.
 #
 # Usage: scripts/package-linux.sh
@@ -35,7 +35,7 @@ if [[ -n "$ZGX_VERSION" ]]; then
   VERSION="$ZGX_VERSION"
 fi
 OUT_DIR="$ROOT/target/package"
-STAGE="$OUT_DIR/zeron-$VERSION-linux-$ARCH"
+STAGE="$OUT_DIR/keiki-$VERSION-linux-$ARCH"
 TARBALL="$STAGE.tar.gz"
 
 cd "$ROOT"
@@ -115,7 +115,7 @@ mkdir -p "$STAGE/licenses/fonts"
 cp "$ROOT/assets/fonts/licenses/"* "$STAGE/licenses/fonts/"
 cp "$ROOT/crates/voice/NOTICE.md" "$STAGE/licenses/parakeet-v3.txt"
 if [[ -n "$ZGX_VERSION" ]]; then
-  # The scripts and Zeron's own plugins, as scripts/package-zgx-macos.sh: read
+  # The scripts and Keiki's own plugins, as scripts/package-zgx-macos.sh: read
   # beside the binary. Not zgx's generated types or the tests.
   rsync -a --exclude '.zgx/' --exclude '/tests/' --exclude '.lock' --exclude '.DS_Store' \
     "$ROOT/apps/zgx/ui/" "$STAGE/ui/"
@@ -131,14 +131,14 @@ fi
 
 cat >"$STAGE/install.sh" <<'INSTALL'
 #!/usr/bin/env bash
-# Install Zeron for this user (no root needed), in the layout the in-app
-# updater manages: ~/.zeron/app/<version> behind a `current` symlink — the
+# Install Keiki for this user (no root needed), in the layout the in-app
+# updater manages: ~/.keiki/app/<version> behind a `current` symlink — the
 # same layout `curl -fsSL https://zeron.sh/install.sh | sh` uses — with
 # ~/.local/bin/zeron and the desktop entry pointing through it.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="__VERSION__"
-APP_ROOT="$HOME/.zeron/app"
+APP_ROOT="$HOME/.keiki/app"
 # A beta's directory isn't named as a version: crates/update `managed_dir`.
 case "$VERSION" in
   *-beta.*) DEST="$APP_ROOT/beta-$VERSION" ;;
@@ -154,14 +154,14 @@ if [ ! -x "$DEST/zeron" ]; then
   mv "$STAGE" "$DEST"
 fi
 if ! "$DEST/zeron" --version >/dev/null; then
-  echo "Zeron could not start; see the loader error above. Install the missing runtime libraries (including ALSA, libasound.so.2), then retry." >&2
+  echo "Keiki could not start; see the loader error above. Install the missing runtime libraries (including ALSA, libasound.so.2), then retry." >&2
   exit 1
 fi
 ln -sfn "$DEST" "$APP_ROOT/current"
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$APP_ROOT/current/zeron" "$HOME/.local/bin/zeron"
 
-# Launchers list Zeron through a per-user .desktop entry. The one in the tarball
+# Launchers list Keiki through a per-user .desktop entry. The one in the tarball
 # says `Exec=zeron` and `TryExec=zeron`, which only resolve when ~/.local/bin is
 # on the PATH of the desktop session (often not, e.g. a bare Wayland + fuzzel
 # setup) and TryExec then hides the entry outright. So write it with absolute
@@ -223,9 +223,9 @@ install_desktop_entry() {
   return 0
 }
 install_desktop_entry "$HERE" "$APP_ROOT" \
-  || echo "warn: could not install the desktop entry — Zeron won't appear in application launchers"
+  || echo "warn: could not install the desktop entry — Keiki won't appear in application launchers"
 
-echo "Installed Zeron $VERSION. It updates itself from now on."
+echo "Installed Keiki $VERSION. It updates itself from now on."
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) echo "Add ~/.local/bin to your PATH to run \`zeron\` from a terminal." ;;

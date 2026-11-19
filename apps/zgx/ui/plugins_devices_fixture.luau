@@ -46,7 +46,7 @@ local DEVBOX = {
 		update = { version = "1.1.0", added = {}, removed = {} },
 	}),
 	plugin("ping", "Ping", "pending", { author = { kind = "unknown" } }),
-	plugin("teleport", "Teleport", "broken", { error = "Its manifest asks for a permission Zeron doesn't know: teleport" }),
+	plugin("teleport", "Teleport", "broken", { error = "Its manifest asks for a permission Keiki doesn't know: teleport" }),
 }
 
 sessions.now:set({

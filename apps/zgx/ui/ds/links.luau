@@ -1,6 +1,6 @@
 -- Where a web link in prose goes when it is clicked: the system's browser
 -- (zgx's own `href`), or whatever the app sets here (its browser tab beside
--- the chat, with "Open links in Zeron" on). ds/markdown reads it as it
+-- the chat, with "Open links in Keiki" on). ds/markdown reads it as it
 -- makes a link; the shell sets it. `opener(url)` answers true when it took
 -- the link, false to let it open outside.
 --

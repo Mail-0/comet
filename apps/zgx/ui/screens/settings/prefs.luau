@@ -154,7 +154,7 @@ function M.SEND_WITH(): { { value: string, label: string } }
 end
 function M.OPEN_LINKS(): { { value: string, label: string } }
 	return {
-		{ value = "zeron", label = "Zeron" },
+		{ value = "zeron", label = "Keiki" },
 		{ value = "external", label = ui.t("settings.prefs.default_browser"):get() },
 	}
 end

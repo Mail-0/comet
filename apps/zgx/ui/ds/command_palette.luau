@@ -33,7 +33,7 @@
 -- a search reorders them, and a search narrowing the last one looks only
 -- at what that one found, so thousands of sessions cost what dozens do.
 --
--- `CommandPalette { open = state, root = { id = "root", title = "Zeron", items = { … } } }`
+-- `CommandPalette { open = state, root = { id = "root", title = "Keiki", items = { … } } }`
 
 local motion = require("@self/motion")
 local control = require("@self/control")

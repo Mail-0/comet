@@ -108,7 +108,7 @@ test("composer place: short of room the branch gives way first, then the project
 	expect(app:error()).to_be(nil)
 end)
 
-test("composer place: the context ring opens a card of the numbers, as Zeron writes them", function()
+test("composer place: the context ring opens a card of the numbers, as Keiki writes them", function()
 	local app = mounted()
 	app:hover("#composer-context")
 	rested(app)

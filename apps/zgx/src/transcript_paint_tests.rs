@@ -1,5 +1,5 @@
 //! The transcript as it is drawn: a long chat opened and scrolled, its rows
-//! built ahead in spare time (`zgx::spare`) as Zeron.app's are, keeps its
+//! built ahead in spare time (`zgx::spare`) as Keiki.app's are, keeps its
 //! message rows apart in every frame's layout, and each frame drawn only where
 //! damaged (as a window draws it) shows exactly what a whole repaint does.
 //! Also with other chats' long messages folded behind Show more, and with

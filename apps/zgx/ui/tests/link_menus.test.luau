@@ -218,7 +218,7 @@ test("a file link: Open, Reveal in Finder on this computer, Copy path", function
 	expect(app:error()).to_be(nil)
 end)
 
-test("a chat mentioned: Open, Copy link (its Zeron link)", function()
+test("a chat mentioned: Open, Copy link (its Keiki link)", function()
 	local app = setup()
 	menu(app, 'role:link ~"Long chat"')
 	expect(shows(app, "Open")).to_be(true)

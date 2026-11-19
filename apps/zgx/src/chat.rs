@@ -7943,7 +7943,7 @@ mod tests {
         assert!(is(m.field("text"), "All done."));
         assert!(is(m.field("copy"), "All done."));
         // A person's that merely starts alike is theirs, as written.
-        let typed = "[Message from Zeron chat x]\n\nhi";
+        let typed = "[Message from Keiki chat x]\n\nhi";
         let m = message(&said(typed.to_owned()), None).unwrap();
         assert!(m.field("sender").is_none_or(|s| matches!(s, Value::Nil)));
         assert!(is(m.field("text"), typed));

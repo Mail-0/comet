@@ -222,7 +222,7 @@ test("the dots count every step and never move", function()
 	expect(last).to_be(3)
 end)
 
-test("someone who already had Zeron is welcomed with only their username and card", function()
+test("someone who already had Keiki is welcomed with only their username and card", function()
 	state.welcome = true
 	-- No username yet, whatever else their account had finished.
 	expect(run { path = "signed_in", passed = { "appearance", "org", "invite", "github", "providers" } }).to_be("username")

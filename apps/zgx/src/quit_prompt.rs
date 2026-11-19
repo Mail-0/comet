@@ -1,4 +1,4 @@
-//! Quitting with "Keep Zeron running after you quit" off (Settings →
+//! Quitting with "Keep Keiki running after you quit" off (Settings →
 //! General; the engine's `crates/engine/src/keep_running.rs`).
 //!
 //! On (the default) nothing happens here: the engine keeps running, as it

@@ -78,7 +78,7 @@ impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PermissionRequired => f.write_str(
-                "Window capture permission is required. Open Zeron Settings → Appshots for the platform-specific recovery step.",
+                "Window capture permission is required. Open Keiki Settings → Appshots for the platform-specific recovery step.",
             ),
             Self::SelfCapture => f.write_str("Switch to another app to capture an Appshot."),
             Self::NoEligibleWindow => f.write_str("No application window is available to capture."),
@@ -146,7 +146,7 @@ pub fn validate_capture_dimensions(width: u32, height: u32) -> Result<usize, Cap
     let pixels = u64::from(width) * u64::from(height);
     let rgba = pixels * 4;
     if pixels > MAX_CAPTURE_PIXELS || rgba > MAX_CAPTURE_RGBA_BYTES {
-        return Err(format!("The captured window ({width}×{height}) exceeds Zeron's capture budget.").into());
+        return Err(format!("The captured window ({width}×{height}) exceeds Keiki's capture budget.").into());
     }
     Ok(rgba as usize)
 }
@@ -234,7 +234,7 @@ pub struct Staged {
 
 pub fn stage(captured: Captured, dir: &std::path::Path) -> Result<Staged, CaptureError> {
     if captured.png.len() as u64 > MAX_IMAGE_BYTES {
-        return Err("The captured window is larger than Zeron's 24 MB image limit.".into());
+        return Err("The captured window is larger than Keiki's 24 MB image limit.".into());
     }
     let png = trim_padding(&captured.png)?.unwrap_or(captured.png);
     let size = png_dimensions(&png).ok_or("The captured window is not a valid PNG image.")?;

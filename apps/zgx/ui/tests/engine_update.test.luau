@@ -71,7 +71,7 @@ test("an engine too old for this interface: restarted, then the way back to Stab
 	expect(eventually(app, function(): boolean
 		return app:state("test_engine_restarts") == 1
 	end)).to_be(true)
-	expect(app:wait('role:button "This Zeron needs a newer engine"', { timeout_ms = 15000 })).to_be(true)
+	expect(app:wait('role:button "This Keiki needs a newer engine"', { timeout_ms = 15000 })).to_be(true)
 	expect(app:state("test_engine_restarts")).to_be(1)
 	-- A newer engine serves it: nothing shown.
 	app:set_state("engine.interface", { supported = true })

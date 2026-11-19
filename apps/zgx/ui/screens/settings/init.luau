@@ -86,7 +86,7 @@ settings.add {
 	id = about.ID,
 	title = about.TITLE,
 	icon = "info-square",
-	group = "Zeron",
+	group = "Keiki",
 	view = about.view,
 }
 

@@ -66,7 +66,7 @@ test("`$` lists the skills; with the agent's `$` off it's plain text, and with `
 	app:set_state(PREFS, {})
 end)
 
-test("a Codex chat whose model the catalog doesn't name lists Codex's commands and skills in `/`, then Zeron's", function()
+test("a Codex chat whose model the catalog doesn't name lists Codex's commands and skills in `/`, then Keiki's", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	app:command("codex_model_less")
@@ -195,13 +195,13 @@ test("a draft whose last word is a trigger nothing matches still sends on Enter"
 	end
 end)
 
-test("Zeron's own commands end the `/` list, named clear of the agent's, and only a chat's in a chat", function()
+test("Keiki's own commands end the `/` list, named clear of the agent's, and only a chat's in a chat", function()
 	local app = chat()
 	app:type("role:textbox", "/")
 	settle(app)
 	expect(app:has('role:option "/model"')).to_be(true)
 	expect(app:has('role:option "/stop"')).to_be(true)
-	expect(app:has('~"Zeron: open settings"')).to_be(true)
+	expect(app:has('~"Keiki: open settings"')).to_be(true)
 	-- The agent has a `/new`: it keeps it, and Zeron's is `/zeron:new`.
 	expect(app:has('role:option "/new"')).to_be(true)
 	expect(app:has('role:option "/zeron:new"')).to_be(true)
@@ -217,7 +217,7 @@ test("Zeron's own commands end the `/` list, named clear of the agent's, and onl
 	expect(app:has('role:option "/rename"')).to_be(false)
 end)
 
-test("one of Zeron's own picked runs at once, its token gone and the rest kept; a draft of only it runs as it's sent", function()
+test("one of Keiki's own picked runs at once, its token gone and the rest kept; a draft of only it runs as it's sent", function()
 	local app = chat()
 	app:type("role:textbox", "Keep this /sto")
 	settle(app)
@@ -239,7 +239,7 @@ end)
 
 -- (`/rename` opens the sidebar's rename, which reads the host's places:
 -- the fixture has none, so it's left to the app.)
-test("every one of Zeron's own runs from the chat page without an error", function()
+test("every one of Keiki's own runs from the chat page without an error", function()
 	-- (The fixture's agent has a `/new` of its own, so Zeron's is
 	-- `/zeron:new`: `/new` goes to the agent, as it should.)
 	for _, name in { "model", "resume", "settings", "files", "terminal", "zeron:new" } do

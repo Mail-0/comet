@@ -37,9 +37,9 @@ fn authorize() -> Result<(), String> {
             unsafe { zeron_request_microphone() };
             return Err("Allow microphone access, then hold to dictate again.".into());
         }
-        -2 => return Err("Microphone access requires a packaged Zeron app.".into()),
+        -2 => return Err("Microphone access requires a packaged Keiki app.".into()),
         _ => return Err(
-            "Allow Zeron microphone access in System Settings → Privacy & Security → Microphone."
+            "Allow Keiki microphone access in System Settings → Privacy & Security → Microphone."
                 .into(),
         ),
     }
@@ -149,7 +149,7 @@ impl Service {
     fn dir(&self) -> Result<PathBuf, String> {
         self.dir
             .clone()
-            .ok_or_else(|| "Zeron's data folder isn't known".to_string())
+            .ok_or_else(|| "Keiki's data folder isn't known".to_string())
     }
     fn idle(&self) -> Result<(), String> {
         if self.needs_poll() || zeron_voice::busy() || DOWNLOADING.load(Ordering::Acquire) {

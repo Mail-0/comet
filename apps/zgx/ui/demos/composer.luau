@@ -776,7 +776,7 @@ local function behind(): Node
 			w_full = true,
 			max_w = "$zeron.prose.measure",
 			gap = "$space.4",
-			UserMessage { text = "Port the composer dock to zgx: the queue tray first, then the plan. Keep Zeron's tuck." },
+			UserMessage { text = "Port the composer dock to zgx: the queue tray first, then the plan. Keep Keiki's tuck." },
 			Markdown {
 				text = "Read `composer_dock.rs` and `queue.rs`. The dock is one element that travels between the new chat and a session; the trays tuck 18 points under the pill with their top corners at 16. I'll port the queue's rows first, then the plan's folding, and leave the handoff fade for last.",
 			},

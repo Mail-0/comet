@@ -322,7 +322,7 @@ return ui.column { id = "root", ui.text { id = "label", label() } }
     write(&root.join("plugins/sneaky"), "x.luau", r#"return function() return "the plugin's, as the app" end"#);
     let (mut a, _) = app_of(&root, source, &[item], vec![]);
     a.frames(2);
-    assert_eq!(a.text("label"), "Zeron's", "{}", a.tree());
+    assert_eq!(a.text("label"), "Keiki's", "{}", a.tree());
     assert!(!has_text(&mut a, "the plugin's, as the app"));
 }
 
@@ -488,7 +488,7 @@ fn a_plugin_draws_each_project_s_icon() {
     a.frames(3);
     assert_eq!(a.error(), None);
     assert_eq!(drawn(&mut a), vec!["p1:Atlas:🚀".to_string(), "p2:Borealis:-".to_string()], "{}", a.tree());
-    assert!(a.find("tile-p1").is_none(), "Zeron's tile is replaced");
+    assert!(a.find("tile-p1").is_none(), "Keiki's tile is replaced");
     assert!(!a.tree().contains("/secret"), "no project's folder");
 
     let root = dir("project-icons-ids");
@@ -840,13 +840,13 @@ return ui.column {
 }
 "#;
 const ZERON_CARD: &str = r#"return function() return ui.text { id = "card", "Zeron's" } end"#;
-const ZERON: Files = &[("app.luau", ZERON_APP), ("screens/card.luau", ZERON_CARD), ("screens/plugins/page.luau", "return 'Zeron plugins page'")];
+const ZERON: Files = &[("app.luau", ZERON_APP), ("screens/card.luau", ZERON_CARD), ("screens/plugins/page.luau", "return 'Keiki plugins page'")];
 
 #[test]
 fn switching_templates_live_keeps_the_window_s_state() {
     let airy: Files = &[("screens/card.luau", r#"return function() return ui.text { id = "card", "Airy" } end"#)];
     let l = &mut Live::new("switch", ZERON, &[("airy", airy)], live::BUILTIN, vec![]);
-    assert_eq!(l.app.text("card"), "Zeron's");
+    assert_eq!(l.app.text("card"), "Keiki's");
     l.app.click("more");
     l.app.click("more");
     l.settle();
@@ -855,7 +855,7 @@ fn switching_templates_live_keeps_the_window_s_state() {
     assert_eq!(l.app.text("card"), "Airy");
     assert_eq!(l.app.text("count"), "2", "the app's module is the same file: its state stays");
     l.switch(live::BUILTIN);
-    assert_eq!(l.app.text("card"), "Zeron's");
+    assert_eq!(l.app.text("card"), "Keiki's");
     assert_eq!(l.app.text("count"), "2");
     assert!(l.notices.is_empty());
 }
@@ -877,7 +877,7 @@ return function() return ui.text { id = "card", function() if n:get() > 0 then e
     // It breaks after it mounted, in one of its reactive functions.
     l.app.host.shared("n", Value::from(0.)).set(Value::from(1.));
     l.settle();
-    assert_eq!(l.app.text("card"), "Zeron's", "Zeron's own card in its place");
+    assert_eq!(l.app.text("card"), "Keiki's", "Keiki's own card in its place");
     assert_eq!(l.app.text("title"), "Hello from mine", "the rest stays the template's");
     assert_eq!(l.app.text("count"), "1", "state kept");
     assert_eq!(l.notices, vec!["file screens/card.luau"], "told once");
@@ -891,7 +891,7 @@ fn a_template_whose_root_breaks_falls_back_to_zeron_s_whole() {
     l.app.click("more");
     l.settle();
     l.switch("bad");
-    assert_eq!(l.app.text("card"), "Zeron's", "not even its card: the whole is set aside");
+    assert_eq!(l.app.text("card"), "Keiki's", "not even its card: the whole is set aside");
     assert_eq!(l.app.text("count"), "1");
     assert_eq!(l.notices, vec!["broken bad"]);
     assert!(l.overlay.from_template.is_empty());
@@ -902,7 +902,7 @@ fn what_s_never_templated_is_always_zeron_s() {
     let t: Files = &[("screens/plugins/page.luau", "return 'a fake plugins page'"), ("screens/card.luau", ZERON_CARD)];
     let l = &mut Live::new("never", ZERON, &[("sneaky", t)], "sneaky", vec![]);
     let page = std::fs::read_to_string(l.root.join(live::LIVE).join("screens/plugins/page.luau")).unwrap();
-    assert_eq!(page, "return 'Zeron plugins page'");
+    assert_eq!(page, "return 'Keiki plugins page'");
     assert!(!l.overlay.from_template.contains("screens/plugins/page.luau"));
 }
 
@@ -949,7 +949,7 @@ ui.contribute { target = ".greeting", before = ui.text { "Oh" } }
     let counts = |l: &Live| l.app.host.contributions().into_iter().map(|c| (c.target, c.matches)).collect::<Vec<_>>();
     assert_eq!(counts(l), vec![("#title".to_string(), 0), (".greeting".to_string(), 0)]);
     l.switch(live::BUILTIN);
-    assert_eq!(counts(l), vec![("#title".to_string(), 1), (".greeting".to_string(), 1)], "Zeron's own has both");
+    assert_eq!(counts(l), vec![("#title".to_string(), 1), (".greeting".to_string(), 1)], "Keiki's own has both");
 }
 
 
@@ -1107,10 +1107,10 @@ fn a_plugin_breaking_a_rule_fails_alone_and_says_why() {
     let module = plugin(&root, "module", r#"ui.override { module = "@app/screens/card", with = "./init" }"#, &["ui.change"], &["#card"], &[]);
     let l = &mut Live::new("rules", ZERON, &[], live::BUILTIN, vec![fine, slot, reserved, key, shift, command, module]);
     l.settle();
-    assert_eq!(l.app.text("card"), "Zeron's", "the window carries on");
+    assert_eq!(l.app.text("card"), "Keiki's", "the window carries on");
     for (id, says) in [
         ("slot", "a slot named “bar”, but a plugin's slots start with its id. Call it “slot.bar”"),
-        ("zeronish", "a slot named “zeron.chat”, but names starting with “zeron” are Zeron's own"),
+        ("zeronish", "a slot named “zeron.chat”, but names starting with “zeron” are Keiki's own"),
         ("key", "has the shortcut “k” with no ⌘, ⌃ or ⌥"),
         ("shift", "has the shortcut “shift+k” with no ⌘, ⌃ or ⌥"),
         ("command", "“zeron.go” starts with “zeron”"),

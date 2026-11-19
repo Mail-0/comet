@@ -920,7 +920,7 @@ test("New chat starts where the chat last open was: its project", function()
 	expect(app:state("shell_project")).to_be("atlas")
 end)
 
-test("a session's row shows its running subagents as Zeron's pill: how many, 99+ past that, none at none", function()
+test("a session's row shows its running subagents as Keiki's pill: how many, 99+ past that, none at none", function()
 	local app = open()
 	local function pill(): string?
 		for line in app:tree("#sidebar"):gmatch("[^\n]+") do

@@ -201,7 +201,7 @@ test("a whole output that can't come says why, keeps the ten lines, and is asked
 	for _, case in {
 		{ word = "offline", says = "The device that ran this command is offline. Try again when it's back." },
 		{ word = "unavailable", says = "The rest of this output wasn't kept." },
-		{ word = "update", says = "Update Zeron on the device that ran this command to see all of its output." },
+		{ word = "update", says = "Update Keiki on the device that ran this command to see all of its output." },
 	} do
 		app:set_state("test_tool_whole", case.word)
 		app:click('role:button "Show all 300 lines"')

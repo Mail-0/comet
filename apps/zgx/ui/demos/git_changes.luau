@@ -52,7 +52,7 @@ local DIRS = {
 	"apps/zgx/ui/screens",
 	"edge/src",
 	"edge/src/rooms",
-	"apps/ios/Zeron/Views",
+	"apps/ios/Keiki/Views",
 	"apps/android/app/src/main",
 	"docs",
 }
@@ -67,7 +67,7 @@ local EXT: { [string]: string } = {
 	["apps/zgx/ui/screens"] = "luau",
 	["edge/src"] = "ts",
 	["edge/src/rooms"] = "ts",
-	["apps/ios/Zeron/Views"] = "swift",
+	["apps/ios/Keiki/Views"] = "swift",
 	["apps/android/app/src/main"] = "kt",
 	["docs"] = "md",
 }

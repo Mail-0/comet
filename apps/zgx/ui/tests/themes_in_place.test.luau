@@ -51,7 +51,7 @@ local function read(app: any, what: string): string
 	return tostring(app:state(what))
 end
 
-test("every theme is listed, Zeron's first, each with its swatch, what it has and where it's from", function()
+test("every theme is listed, Keiki's first, each with its swatch, what it has and where it's from", function()
 	local app = open()
 	local rows = order(app)
 	expect(rows[1]).to_be("zeron")

@@ -241,8 +241,8 @@ impl Rig {
         let mut rig = Self::new(behavior);
         let applications = rig.data.parent().unwrap().join("Applications");
         let mac = MacRig {
-            bundle: applications.join("Zeron.app"),
-            incoming: applications.join(".Zeron.app.new-test"),
+            bundle: applications.join("Keiki.app"),
+            incoming: applications.join(".Keiki.app.new-test"),
         };
         write_bundle(&mac.bundle, "1.0.0", "ok");
         write_bundle(&mac.incoming, "2.0.0", behavior);
@@ -388,7 +388,7 @@ impl Rig {
                 .unwrap()
                 .flatten()
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| name != "Zeron.app")
+                .filter(|name| name != "Keiki.app")
                 .collect()
         };
         // What the engine does a moment after committing: at the commit itself
@@ -944,7 +944,7 @@ mod mac {
     /// The 3.0.0 release, and an update to it asked of the running engine.
     fn ask_for_the_next_update(rig: &Rig, behavior: &str) -> String {
         let mac = rig.mac.as_ref().unwrap();
-        let incoming = mac.bundle.with_file_name(".Zeron.app.new-next");
+        let incoming = mac.bundle.with_file_name(".Keiki.app.new-next");
         write_bundle(&incoming, "3.0.0", behavior);
         let layout = Layout::MacBundle { bundle: mac.bundle.clone(), incoming };
         let id = transaction::request(&rig.data, layout, "2.0.0", "3.0.0", RestartMode::Relaunch)
@@ -955,8 +955,8 @@ mod mac {
     }
 
     /// m1-laptop, Nov 11. The background engine had become 0.2.138 as an
-    /// update's trial, so it ran from `.Zeron.app.new-<id>`, which its commit
-    /// renamed to `Zeron.app`. Asked from another device for the next update,
+    /// update's trial, so it ran from `.Keiki.app.new-<id>`, which its commit
+    /// renamed to `Keiki.app`. Asked from another device for the next update,
     /// with the app closed, it stopped, didn't recognise its own installation,
     /// and nothing started again. Now it becomes the new version itself.
     #[test]
@@ -1042,8 +1042,8 @@ mod mac {
     fn a_bundle_in_use_is_kept_until_nothing_runs_from_it() {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        let bundle = root.join("Zeron.app");
-        let retired = root.join(".Zeron.app.old-123");
+        let bundle = root.join("Keiki.app");
+        let retired = root.join(".Keiki.app.old-123");
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::create_dir_all(retired.join("Contents/MacOS")).unwrap();
         let sleeper = retired.join("Contents/MacOS/sleeper");

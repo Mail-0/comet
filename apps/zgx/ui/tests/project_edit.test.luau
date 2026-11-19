@@ -164,7 +164,7 @@ test("edit project: Default with its own colour clears the icon; the old picture
 	expect(said(app)).to_contain("set_project_icon:borealis:::")
 end)
 
-test("edit project: an engine without project icons says Zeron needs an update; a picture never worn is let go of", function()
+test("edit project: an engine without project icons says Keiki needs an update; a picture never worn is let go of", function()
 	local app = open()
 	app:command("fixture.icons_outdated")
 	app:click(`{DIALOG} >> role:radio "Image"`)
@@ -177,7 +177,7 @@ test("edit project: an engine without project icons says Zeron needs an update; 
 	app:frames(20)
 	expect(said(app)).to_contain("upload_icon:")
 	expect(said(app)).to_contain("set_project_icon_refused:borealis")
-	expect(app:has(`#project-edit-error >> "Zeron on this computer needs an update to save project icons. Update it, then save again."`)).to_be(true)
+	expect(app:has(`#project-edit-error >> "Keiki on this computer needs an update to save project icons. Update it, then save again."`)).to_be(true)
 	expect(app:state("project_edit_open")).to_be(true)
 	expect(said(app)).never.to_contain("forget_icon")
 	-- Cancelled: the uploaded picture, worn by nothing, goes.

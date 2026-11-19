@@ -210,7 +210,7 @@ local GROUPS: { Group } = {
 						gap = "$space.6",
 						block(
 							"STYLES",
-							ds.Text { "Welcome to Zeron", style = "display" },
+							ds.Text { "Welcome to Keiki", style = "display" },
 							ds.Text { "Choose a look", style = "title" },
 							ds.Text { "Heading", style = "heading" },
 							ds.Text { "Body copy sits at thirteen points, in Geist.", style = "body" },
@@ -515,7 +515,7 @@ local GROUPS: { Group } = {
 				id = "sidebar",
 				title = "App shell",
 				fill = true,
-				about = "The window as Zeron's: its title bar, its sidebar (grouped, sorted, your sections, dragged), a new chat over its wallpaper, a session's page, the composer travelling between them.",
+				about = "The window as Keiki's: its title bar, its sidebar (grouped, sorted, your sections, dragged), a new chat over its wallpaper, a session's page, the composer travelling between them.",
 				demo = function()
 					local compact = ui.persist("demo_sidebar_compact", true)
 					local collapsed = ui.state("demo_sidebar_collapsed", false)
@@ -526,7 +526,7 @@ local GROUPS: { Group } = {
 					local projects: { SidebarTypes.Project } = {
 						{
 							id = "zeron",
-							name = "Zeron",
+							name = "Keiki",
 							src = "assets/favicons/zeron.png",
 							hue = "violet",
 							sessions = {
@@ -1625,7 +1625,7 @@ local GROUPS: { Group } = {
 			{
 				id = "marks",
 				title = "Marks",
-				about = "The agents Zeron runs, each on its tile.",
+				about = "The agents Keiki runs, each on its tile.",
 				demo = function()
 					return block(
 						"MARKS",

@@ -1,4 +1,4 @@
-//! Release channels: `stable` (everyone) and `beta` (Zeron.app testers).
+//! Release channels: `stable` (everyone) and `beta` (Keiki.app testers).
 //!
 //! The channel an install follows is kept in the data dir,
 //! `update-channel.json`, where every updater reads it on each check: the
@@ -280,7 +280,7 @@ pub fn macos_at_least(system: &str, minimum: &str) -> bool {
 pub fn beta_unavailable() -> Option<String> {
     let install = crate::detect_install();
     if !install.follows_channels() {
-        return Some("Beta updates are for the Zeron app on a Mac.".into());
+        return Some("Beta updates are for the Keiki app on a Mac.".into());
     }
     if !matches!(install, crate::InstallKind::MacApp { .. }) {
         return None;
@@ -288,9 +288,9 @@ pub fn beta_unavailable() -> Option<String> {
     match macos_version() {
         Some(version) if macos_at_least(version, BETA_MINIMUM_MACOS) => None,
         Some(version) => Some(format!(
-            "Zeron beta needs macOS {BETA_MINIMUM_MACOS} or later. This Mac has macOS {version}."
+            "Keiki beta needs macOS {BETA_MINIMUM_MACOS} or later. This Mac has macOS {version}."
         )),
-        None => Some(format!("Zeron beta needs macOS {BETA_MINIMUM_MACOS} or later.")),
+        None => Some(format!("Keiki beta needs macOS {BETA_MINIMUM_MACOS} or later.")),
     }
 }
 

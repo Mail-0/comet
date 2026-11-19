@@ -364,7 +364,7 @@ impl Updates {
             Ok(answer) => answer,
             Err(error) => {
                 let error = error.to_string();
-                eprintln!("zeron-zgx: updates: Zeron on {device}: {error}");
+                eprintln!("zeron-zgx: updates: Keiki on {device}: {error}");
                 if let Some(d) = self.devices.borrow_mut().get_mut(&device) {
                     d.updating_from = None;
                     d.update_id = None;

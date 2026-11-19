@@ -140,7 +140,7 @@ function M.todos(): { Dock.Todo }
 		{ id = "t4", text = "Fold the running tray when nothing runs", state = "pending" },
 		{ id = "t5", text = "Capture every state in dark and light", state = "pending" },
 		{ id = "t6", text = "Check frames while typing a long draft", state = "pending" },
-		{ id = "t7", text = "Write up what Zeron's composer has that ours doesn't", state = "pending" },
+		{ id = "t7", text = "Write up what Keiki's composer has that ours doesn't", state = "pending" },
 	}
 end
 
@@ -262,7 +262,7 @@ local NOTICES: { [string]: Notice } = {
 	reconnecting = { tone = "info", spinner = true, text = "Reconnecting — messages will send once the connection recovers." },
 	sending = { tone = "neutral", spinner = true, text = "Sending…" },
 	error = { tone = "danger", text = "Send failed: devbox didn't answer." },
-	too_large = { tone = "danger", text = "Zeron.app.zip is too large (24 MB max)." },
+	too_large = { tone = "danger", text = "Keiki.app.zip is too large (24 MB max)." },
 	too_many = { tone = "warning", text = "Up to 20 files at a time. 2 were left out." },
 	restored = { tone = "neutral", text = "Draft restored from Tuesday." },
 	archived = { tone = "neutral", text = "This chat is archived." },

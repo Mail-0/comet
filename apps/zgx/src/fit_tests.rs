@@ -120,11 +120,11 @@ fn a_resize_walk_shows_the_columns_zerons_policy_shows() {
         let want = horizontal_panel_fit(w, sidebar_width, (true, 1), (true, 3), (true, 0), false);
         let shows = (side > 0.5, panel > 0.5);
         if shows != (want.sidebar, want.right) {
-            faults.push(format!("{w}: shows sidebar {} panel {}, Zeron's {} {}", shows.0, shows.1, want.sidebar, want.right));
+            faults.push(format!("{w}: shows sidebar {} panel {}, Keiki's {} {}", shows.0, shows.1, want.sidebar, want.right));
         }
         let tree = want.right && want.files;
         if want.sidebar && (side - SIDEBAR_EDGE - want.sidebar_limit).abs() > 0.5 {
-            faults.push(format!("{w}: the sidebar is {side}, Zeron's {} and the window's edge", want.sidebar_limit));
+            faults.push(format!("{w}: the sidebar is {side}, Keiki's {} and the window's edge", want.sidebar_limit));
         }
         if want.right {
             // (Its width at its share, the chat keeping its least; see
@@ -139,7 +139,7 @@ fn a_resize_walk_shows_the_columns_zerons_policy_shows() {
             && was != now
         {
             let way = if step < widths.len() / 2 { "narrowing" } else { "widening" };
-            drops.push(format!("{way} to {w}: sidebar {} tree {} panel {} (Zeron's sidebar {} files {} right {})", now.0, now.1, now.2, want.sidebar, want.files, want.right));
+            drops.push(format!("{way} to {w}: sidebar {} tree {} panel {} (Keiki's sidebar {} files {} right {})", now.0, now.1, now.2, want.sidebar, want.files, want.right));
         }
         last = Some(now);
     }

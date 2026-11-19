@@ -1,6 +1,6 @@
 name: zgx build
 
-# The Zeron app (apps/zgx, its `beta` feature) built and packaged for every
+# The Keiki app (apps/zgx, its `beta` feature) built and packaged for every
 # platform, with the engine from this same commit inside: on macOS
 # (scripts/package-zgx-macos.sh), Linux (scripts/package-linux.sh) and Windows
 # (scripts/package-windows.ps1). Called by release.yml for a stable release
@@ -107,7 +107,7 @@ jobs:
         run: ZGX_ENGINE="$GITHUB_WORKSPACE/target/release/zeron-engine" scripts/package-zgx-macos.sh
       - name: inspect the bundle
         run: |
-          app="target/package-zgx/Zeron.app"
+          app="target/package-zgx/Keiki.app"
           plist="$app/Contents/Info.plist"
           plutil -p "$plist"
           test "$(plutil -extract CFBundleIdentifier raw "$plist")" = sh.zeron.app
@@ -183,8 +183,8 @@ jobs:
         run: |
           home="$RUNNER_TEMP/home"
           mkdir -p "$RUNNER_TEMP/unpacked" "$home"
-          tar -xzf "target/package/zeron-$ZGX_VERSION-linux-$(uname -m).tar.gz" -C "$RUNNER_TEMP/unpacked"
-          dir="$RUNNER_TEMP/unpacked/zeron-$ZGX_VERSION-linux-$(uname -m)"
+          tar -xzf "target/package/keiki-$ZGX_VERSION-linux-$(uname -m).tar.gz" -C "$RUNNER_TEMP/unpacked"
+          dir="$RUNNER_TEMP/unpacked/keiki-$ZGX_VERSION-linux-$(uname -m)"
           test "$("$dir/zeron" --version)" = "zeron $ZGX_VERSION"
           test "$("$dir/zeron-engine" --version)" = "zeron-engine $ZGX_VERSION"
           test -f "$dir/ui/app.luau"
@@ -203,8 +203,8 @@ jobs:
             *-beta.*) want="beta-$ZGX_VERSION" ;;
             *) want="$ZGX_VERSION" ;;
           esac
-          test "$(basename "$(readlink "$home/.zeron/app/current")")" = "$want"
-          test "$("$home/.zeron/app/current/zeron" --version)" = "zeron $ZGX_VERSION"
+          test "$(basename "$(readlink "$home/.keiki/app/current")")" = "$want"
+          test "$("$home/.keiki/app/current/zeron" --version)" = "zeron $ZGX_VERSION"
           du -sh "$dir"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -260,7 +260,7 @@ jobs:
           FEED: ${{ inputs.windows-feed }}
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'unpacked'
-          Expand-Archive -LiteralPath "target/package/zeron-$env:ZGX_VERSION-windows-x86_64.zip" -DestinationPath $dir
+          Expand-Archive -LiteralPath "target/package/keiki-$env:ZGX_VERSION-windows-x86_64.zip" -DestinationPath $dir
           $interface = (& "$dir/zeron.exe" --version | Out-String).Trim()
           if ($interface -ne "zeron $env:ZGX_VERSION") { throw "the interface says '$interface'" }
           $beta = $env:ZGX_VERSION -match '-beta\.\d+$'
@@ -276,7 +276,7 @@ jobs:
           # A stable release's standalone .exe (all the old app's updater
           # installs) is the zip's own zeron.exe, and answers its version
           # without its folder.
-          $standalone = "target/package/zeron-$env:ZGX_VERSION-windows-x86_64.exe"
+          $standalone = "target/package/keiki-$env:ZGX_VERSION-windows-x86_64.exe"
           if (-not $beta) {
             if ((Get-FileHash $standalone).Hash -ne (Get-FileHash "$dir/zeron.exe").Hash) { throw 'the standalone .exe is not the zip''s' }
             $alone = Join-Path $env:RUNNER_TEMP 'alone'

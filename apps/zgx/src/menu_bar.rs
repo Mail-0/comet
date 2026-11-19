@@ -72,7 +72,7 @@ pub enum Role {
 /// The host's own command ids: no script's command may have one.
 pub const HOST_COMMANDS: &str = "zeron.";
 
-/// "Use Zeron v3"'s shortcut, the host's whatever a script declares:
+/// "Use Keiki v3"'s shortcut, the host's whatever a script declares:
 /// ⌘⌥⇧Home on a Mac, Ctrl+Alt+Shift+Home on Linux and Windows, where
 /// there's no menu bar to reach the item from and a template draws the
 /// palette. (Home for the default; no letter, which AltGr+Shift types on
@@ -81,7 +81,7 @@ pub const HOST_COMMANDS: &str = "zeron.";
 pub const DEFAULT_INTERFACE_KEY: &str = "cmd+alt+shift+home";
 
 /// The host's own item that switches to the default interface.
-const USE_ZERON_TITLE: &str = "Use Zeron v3";
+const USE_ZERON_TITLE: &str = "Use Keiki v3";
 
 /// A plugin's command (zgx names each `<plugin>/<id>`; Zeron's have no `/`).
 pub fn is_plugins(command: &Command) -> bool {
@@ -289,7 +289,7 @@ impl Menus {
     }
 
     /// The bar, with the host's own after the scripts' View items:
-    /// "Use Zeron v3" (the default's way back), which no template can take
+    /// "Use Keiki v3" (the default's way back), which no template can take
     /// away, and, with a template in preview, "Keep <name>…" (its ellipsis
     /// the macOS one for an item that asks before acting: it opens the keep
     /// sheet).
@@ -473,9 +473,9 @@ impl MenuBar {
         if let Err(error) = self.platform.set_menus(bar.menus.clone()) {
             // Never a bar without Zeron's shortcuts: `Bar::of` made one the
             // platform should take, so this is a bug to find.
-            eprintln!("zeron-zgx: MENU BAR REFUSED: {error}. Zeron's own commands alone instead; plugins' are out of the menu bar until the next change.");
+            eprintln!("zeron-zgx: MENU BAR REFUSED: {error}. Keiki's own commands alone instead; plugins' are out of the menu bar until the next change.");
             if let Err(error) = self.platform.set_menus(bar.own.clone()) {
-                eprintln!("zeron-zgx: MENU BAR REFUSED AGAIN (Zeron's own): {error}. The host's items alone.");
+                eprintln!("zeron-zgx: MENU BAR REFUSED AGAIN (Keiki's own): {error}. The host's items alone.");
                 if let Err(error) = self.platform.set_menus(Bar::host_only(None)) {
                     eprintln!("zeron-zgx: menus: {error}");
                 }

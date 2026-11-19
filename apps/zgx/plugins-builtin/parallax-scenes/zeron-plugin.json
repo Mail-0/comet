@@ -2,7 +2,7 @@
   "id": "parallax-scenes",
   "name": "Parallax scenes",
   "version": "1.0.0",
-  "description": "Zeron's member-card scenes behind a new chat, each layer moving with the pointer.",
+  "description": "Keiki's member-card scenes behind a new chat, each layer moving with the pointer.",
   "icon": "icon.svg",
   "entry": "init.luau",
   "permissions": [
@@ -13,7 +13,7 @@
       "#new-chat-background"
     ]
   },
-  "settings_description": "Zeron's member-card scenes behind a new chat. Use it as the wallpaper here; Zeron's effect is drawn over the scene.",
+  "settings_description": "Keiki's member-card scenes behind a new chat. Use it as the wallpaper here; Keiki's effect is drawn over the scene.",
   "settings": [
     {
       "kind": "wallpaper",

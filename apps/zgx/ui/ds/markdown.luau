@@ -435,7 +435,7 @@ end
 -- name; 7 points after the name (Zeron's room: a no-break space of Geist
 -- is a quarter em, its well and name 6 of them in, 2 after, at 14).
 local CHIP_PADDING = { 1, 7, 2 }
-local CHIP_RADIUS = ui.raw(5, "Zeron's inline chip corner (chip.rs)")
+local CHIP_RADIUS = ui.raw(5, "Keiki's inline chip corner (chip.rs)")
 local function chip_icon(icon: { [string]: any }): { [string]: any }
 	icon.size = 14
 	icon.gap = 2
@@ -764,7 +764,7 @@ local function runs_now(list: { MarkdownRun }, style: { [string]: any }?, ctx: C
 			span.padding = { 4, 1 }
 			-- Zeron's inline code corner (markdown/render.rs's 4.5), each
 			-- line's piece of a wrapped span rounded on its own.
-			span.radius = ui.raw(4.5, "Zeron's inline code corner")
+			span.radius = ui.raw(4.5, "Keiki's inline code corner")
 			span.text_size = inline
 		end
 		-- (What the page says a link is: one of the chat's files, or one of

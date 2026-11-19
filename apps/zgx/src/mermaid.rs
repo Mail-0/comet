@@ -674,7 +674,7 @@ mod tests {
 
     const FLOWCHART: &str = "flowchart TD\n  A[Start] --> B{Ready?}\n  B -->|yes| C[Ship it]\n  B -->|no| D[Fix]\n  D --> B";
     const SEQUENCE: &str =
-        "sequenceDiagram\n  participant U as User\n  participant Z as Zeron\n  U->>Z: Ask\n  Z-->>U: Answer\n  Note over U,Z: Both ways";
+        "sequenceDiagram\n  participant U as User\n  participant Z as Keiki\n  U->>Z: Ask\n  Z-->>U: Answer\n  Note over U,Z: Both ways";
 
     fn request(source: &str, dark: bool) -> Request {
         let colors = if dark {

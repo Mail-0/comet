@@ -129,7 +129,7 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    const DARK: &str = "{\n\t// Zeron dark.\n\t\"name\": \"zeron-dark\", \"type\": \"dark\", \"extends\": \"zgx-dark\",\n\t\"tokens\": { \"accent\": \"#9277b0\", \"zeron\": { \"window\": \"#0e0e10\" }, },\n}";
+    const DARK: &str = "{\n\t// Keiki dark.\n\t\"name\": \"zeron-dark\", \"type\": \"dark\", \"extends\": \"zgx-dark\",\n\t\"tokens\": { \"accent\": \"#9277b0\", \"zeron\": { \"window\": \"#0e0e10\" }, },\n}";
     const LIGHT: &str = "{ \"name\": \"zeron-light\", \"type\": \"light\", \"extends\": \"zgx-light\", \"tokens\": { \"accent\": \"#7a55c4\" } }";
 
     /// A templates folder with Zeron's own themes.
@@ -137,7 +137,7 @@ mod tests {
         let t = dir(name).join("templates");
         write(&t, ".zeron/ds/themes/zeron-dark.json", DARK);
         write(&t, ".zeron/ds/themes/zeron-light.json", LIGHT);
-        write(&t, ".zeron/theme.luau", "-- Zeron's own.\nreturn nil\n");
+        write(&t, ".zeron/theme.luau", "-- Keiki's own.\nreturn nil\n");
         t
     }
 
@@ -220,7 +220,7 @@ mod tests {
                 e["theme"]["tokens"]["accent"].as_str().or(e["palette"]["accent"].as_str()).map(|a| format!("{s} {a}"))
             };
             let said: Vec<String> = SCHEMES.iter().filter_map(|s| accent(s)).collect();
-            println!("{}: {}", i.id, if look.is_null() { "Zeron's own".to_string() } else { said.join(", ") });
+            println!("{}: {}", i.id, if look.is_null() { "Keiki's own".to_string() } else { said.join(", ") });
         }
     }
 }

@@ -164,7 +164,7 @@ pub fn refuse(action: &str) -> Result<(), String> {
     match current() {
         Some(p) if blocked(action) => {
             eprintln!("zeron-zgx: preview: {action} refused while {} isn't kept", p.id);
-            Err(format!("{} is a preview. Keep it first, or go back to Zeron v3.", p.name))
+            Err(format!("{} is a preview. Keep it first, or go back to Keiki v3.", p.name))
         }
         _ => Ok(()),
     }
@@ -202,7 +202,7 @@ pub fn refused(error: &str) -> bool {
 pub fn guard(kind: zgx_script::GuardKind, name: &str) -> Result<(), String> {
     use zgx_script::GuardKind as Kind;
     let Some(p) = current() else { return Ok(()) };
-    let refused = || Err(format!("{}{IS_A_PREVIEW}. Keep it first, or go back to Zeron v3.", p.name));
+    let refused = || Err(format!("{}{IS_A_PREVIEW}. Keep it first, or go back to Keiki v3.", p.name));
     match kind {
         Kind::Clipboard | Kind::Dialog | Kind::File | Kind::Folder | Kind::Notification | Kind::Window => Ok(()),
         Kind::Action | Kind::AsyncAction | Kind::Function => match REFUSED_BY_GUARD.iter().any(|b| name.starts_with(b)) {
@@ -326,7 +326,7 @@ pub fn read_at_launch() {
     let on = held || crashed || safe_path().is_some_and(|p| p.is_file());
     if held || crashed {
         let key = if cfg!(target_os = "macos") { "⌥ held at launch" } else { "Alt held at launch" };
-        eprintln!("zeron-zgx: safe mode ({})", if held { key } else { "the template crashed Zeron twice" });
+        eprintln!("zeron-zgx: safe mode ({})", if held { key } else { "the template crashed Keiki twice" });
         let _ = write_safe(true);
         LAUNCH_REASON.store(if held { 1 } else { 2 }, Ordering::Relaxed);
     }
@@ -610,7 +610,7 @@ mod tests {
         live::set_active(&templates, "agent-made").unwrap();
         let id = live::active(&templates);
         assert_eq!(id, "agent-made");
-        assert!(!trusted_at(&templates, &id, &approvals), "never approved in Zeron's window");
+        assert!(!trusted_at(&templates, &id, &approvals), "never approved in Keiki's window");
         // What the window does with it (`looked`): a preview, gated.
         set((!trusted_at(&templates, &id, &approvals)).then(|| Preview { id: id.clone(), name: "Sleek".into() }));
         assert!(refuse("terminal.start").is_err() && refuse("account.sign_out").is_err() && refuse("plugins.install").is_err());

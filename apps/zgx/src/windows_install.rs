@@ -2,7 +2,7 @@
 //!
 //! Zeron before this app was one self-contained `zeron.exe`, and its updater
 //! (still running on every PC that hasn't updated) installs a release by
-//! swapping that one file (`zeron-<version>-windows-<arch>.exe`). This app
+//! swapping that one file (`keiki-<version>-windows-<arch>.exe`). This app
 //! also needs its version's folder beside it (`beta\<version>\`: scripts,
 //! plugins, the engine). So before anything else, a `zeron.exe` that finds
 //! its folder missing brings it in from the release feed, as an update would
@@ -66,7 +66,7 @@ pub fn complete_if_needed(argv: &[String]) -> Result<(), Failed> {
             }
             Err(error) => {
                 if !window || !ask_to_retry(&error) {
-                    return Err(Failed(format!("Zeron couldn't finish installing this update: {error}")));
+                    return Err(Failed(format!("Keiki couldn't finish installing this update: {error}")));
                 }
             }
         }
@@ -91,7 +91,7 @@ fn run_installed(directory: &Path, args: &[String], version: &str) -> Failed {
     let installed = directory.join("zeron.exe");
     match std::process::Command::new(&installed).args(args).status() {
         Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-        Err(error) => Failed(format!("Zeron {version} is installed, but couldn't start: {error}")),
+        Err(error) => Failed(format!("Keiki {version} is installed, but couldn't start: {error}")),
     }
 }
 
@@ -102,10 +102,10 @@ fn ask_to_retry(error: &str) -> bool {
         IDRETRY, MB_ICONERROR, MB_RETRYCANCEL, MB_SETFOREGROUND, MessageBoxW,
     };
     let text = format!(
-        "Zeron couldn't finish installing its update.\n\n{error}\n\nCheck your internet connection and choose Retry. Nothing was removed: if you cancel, Zeron tries again the next time it opens."
+        "Keiki couldn't finish installing its update.\n\n{error}\n\nCheck your internet connection and choose Retry. Nothing was removed: if you cancel, Keiki tries again the next time it opens."
     );
     let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let (text, caption) = (wide(&text), wide("Zeron"));
+    let (text, caption) = (wide(&text), wide("Keiki"));
     // SAFETY: both are NUL-terminated UTF-16 strings that outlive the call.
     let answer = unsafe {
         MessageBoxW(

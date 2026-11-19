@@ -126,7 +126,7 @@ local PLUGINS: { [string]: any } = {
 	wide = {
 		id = "wide",
 		name = "Composer kit",
-		version = "✓ Zeron",
+		version = "✓ Keiki",
 		hash = "wide-1",
 		status = "pending",
 		author = { kind = "verified", username = "ada" },

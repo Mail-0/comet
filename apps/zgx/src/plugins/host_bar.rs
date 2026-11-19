@@ -124,15 +124,15 @@ impl Notice {
         let (body, tone, stays) = match reason {
             preview::SafeReason::Held => (
                 if cfg!(target_os = "macos") {
-                    "You held ⌥ as Zeron opened. Pick a template in Settings → Templates to use it again."
+                    "You held ⌥ as Keiki opened. Pick a template in Settings → Templates to use it again."
                 } else {
-                    "You held Alt as Zeron opened. Pick a template in Settings → Templates to use it again."
+                    "You held Alt as Keiki opened. Pick a template in Settings → Templates to use it again."
                 },
                 Tone::Neutral,
                 false,
             ),
             preview::SafeReason::Crashed => (
-                "Your template closed Zeron twice as it opened. Pick it again in Settings → Templates once it's fixed.",
+                "Your template closed Keiki twice as it opened. Pick it again in Settings → Templates once it's fixed.",
                 Tone::Warning,
                 true,
             ),
@@ -527,7 +527,7 @@ fn toasts(runtime: &zgx::reactive::Runtime, locale: zgx::reactive::Signal<zgx_sc
         },
     );
     component(move |_| {
-        modal("Zeron", shown)
+        modal("Keiki", shown)
             .top_layer()
             .autofocus(false)
             .p(0.)

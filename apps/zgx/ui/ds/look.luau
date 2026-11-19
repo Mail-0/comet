@@ -18,7 +18,7 @@ local function accent(value: string, preset: boolean?): Accent
 	return setmetatable({ value = value, preset = preset }, {
 		__index = function(_, field: string): string?
 			if field == "label" then
-				return if value == "zeron" then "Zeron" else locale.s(`ds.look.accent.{value}`)
+				return if value == "zeron" then "Keiki" else locale.s(`ds.look.accent.{value}`)
 			end
 			return nil
 		end,

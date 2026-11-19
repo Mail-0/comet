@@ -400,7 +400,7 @@ fn connect(b: &Rc<Bridge>, rpc: &Rpc) {
                 async move { call("SetBuiltinPlugins", json!({ "dir": builtin })).await }
             });
             if let Err(error) = asked.await {
-                eprintln!("zeron-zgx: Zeron's own plugins weren't loaded: {error}");
+                eprintln!("zeron-zgx: Keiki's own plugins weren't loaded: {error}");
             }
         });
     }
@@ -824,10 +824,10 @@ pub fn prepare_live() -> PathBuf {
         return root.join(live::LIVE).join("app.luau");
     }
     if let Err(error) = live::sync_zeron(&ui, &root) {
-        eprintln!("zeron-zgx: Zeron's own interface wasn't copied ({error}); running it from ui/");
+        eprintln!("zeron-zgx: Keiki's own interface wasn't copied ({error}); running it from ui/");
         return fallback;
     }
-    zgx::profile::mark("Zeron's own interface copied");
+    zgx::profile::mark("Keiki's own interface copied");
     match live::compose(&root, &id, &Default::default(), false) {
         Ok((_, overlay)) => {
             LIVE_OVERLAY.with(|o| *o.borrow_mut() = overlay);
@@ -845,13 +845,13 @@ pub fn prepare_live() -> PathBuf {
             root.join(live::LIVE).join("app.luau")
         }
         Err(error) => {
-            eprintln!("zeron-zgx: the template wasn't laid down ({error}); running Zeron's own from ui/");
+            eprintln!("zeron-zgx: the template wasn't laid down ({error}); running Keiki's own from ui/");
             fallback
         }
     }
 }
 
-/// The host's own menu item's action ("Use Zeron v3").
+/// The host's own menu item's action ("Use Keiki v3").
 pub const USE_ZERON_TEMPLATE: &str = "zeron.use-zeron-template";
 /// The host's own "Keep <template>…": the keep sheet for the one in preview.
 pub const KEEP_TEMPLATE: &str = "zeron.keep-template";
@@ -943,7 +943,7 @@ pub(crate) fn shortcut_notice(lost: &[crate::menu_bar::Dropped], name_of: impl F
     let first = &lost[0];
     let key = shortcut_words(&first.key);
     let mut words = match &first.why {
-        Why::Zerons(title) => format!("Its {key} for “{}” is already Zeron's ({title}), so it's in the menu bar without one.", first.title),
+        Why::Zerons(title) => format!("Its {key} for “{}” is already Keiki's ({title}), so it's in the menu bar without one.", first.title),
         Why::Plugins(other) => format!("Its {key} for “{}” is already {}'s, so it's in the menu bar without one.", first.title, name_of(other)),
         Why::NoKey => format!("Its {key} for “{}” isn't a key a menu can show, so it's in the menu bar without one.", first.title),
         Why::NoModifier => format!("Its {key} for “{}” has no ⌘, ⌃ or ⌥, so it would take that key from everything you type in. It's in the menu bar without one.", first.title),
@@ -1158,7 +1158,7 @@ pub fn set_view(handle: zgx::compose::ViewHandle) {
     }
 }
 
-/// "Use Zeron v3" (the host's own menu item, and Revert in its toast, which no
+/// "Use Keiki v3" (the host's own menu item, and Revert in its toast, which no
 /// template can take away): safe mode (preview.rs), so Zeron's own runs
 /// whatever `.active` says until you pick a template on the Templates page,
 /// and the terminals templates started are closed. The window follows.
@@ -1167,7 +1167,7 @@ pub fn use_zeron_template() {
     if let Some(root) = templates_root()
         && let Err(error) = live::set_active(&root, live::BUILTIN)
     {
-        eprintln!("zeron-zgx: Zeron's template wasn't chosen: {error}");
+        eprintln!("zeron-zgx: Keiki's template wasn't chosen: {error}");
     }
     if let Some(b) = BRIDGE.with(|b| b.borrow().upgrade()) {
         b.chose.set(true);
@@ -1599,7 +1599,7 @@ impl Bridge {
             self.template_broken(error);
             return;
         }
-        eprintln!("zeron-zgx: template {id}: {rel} failed, showing Zeron's own: {}", recovery::first_line(error));
+        eprintln!("zeron-zgx: template {id}: {rel} failed, showing Keiki's own: {}", recovery::first_line(error));
         let what = if rel.ends_with(".luau") { templates::title(&templates::module_of(rel)) } else { rel.to_string() };
         self.request("template_failed", &what, Value::from(rel));
         self.look();
@@ -1616,7 +1616,7 @@ impl Bridge {
         if !self.broken.borrow_mut().fail(&id, &live::template_stamp(&root.join(&id)), error) {
             return;
         }
-        eprintln!("zeron-zgx: template {id} can't run, showing Zeron's own: {}", recovery::first_line(error));
+        eprintln!("zeron-zgx: template {id} can't run, showing Keiki's own: {}", recovery::first_line(error));
         let name = template_name(&root, &id);
         self.request("template_broken", &name, Value::from(id.as_str()));
         self.look();
@@ -1663,7 +1663,7 @@ impl Bridge {
     /// it's made from changed, and the window told.
     async fn looked(self: Rc<Self>, root: &Path, survey: live::Survey) {
         if let Err(error) = &survey.synced {
-            eprintln!("zeron-zgx: Zeron's own interface wasn't copied: {error}");
+            eprintln!("zeron-zgx: Keiki's own interface wasn't copied: {error}");
             return;
         }
         let id = survey.id.clone();
@@ -1738,7 +1738,7 @@ impl Bridge {
                 *self.overlay.borrow_mut() = overlay;
                 *self.laid.borrow_mut() = want;
             }
-            Some(Err(error)) => eprintln!("zeron-zgx: the template wasn't laid over Zeron's own: {error}"),
+            Some(Err(error)) => eprintln!("zeron-zgx: the template wasn't laid over Keiki's own: {error}"),
             None => {}
         }
         self.publish_templates();
@@ -2108,7 +2108,7 @@ impl Bridge {
         let loaded = self.loaded.borrow().iter().any(|p| p.name == plugin && plugin != "templates");
         if !loaded {
             let name = self.item(&plugin).map(|i| i.name().to_string()).unwrap_or(plugin.clone());
-            answer_tool(id, false, Json::Null, format!("{name} isn't on in Zeron right now"));
+            answer_tool(id, false, Json::Null, format!("{name} isn't on in Keiki right now"));
             return;
         }
         let mut fields = vec![
@@ -2267,7 +2267,7 @@ impl Bridge {
                     }
                     let reply = call("CallPluginService", params).await.map_err(|e| {
                         if e.contains("unknown method") {
-                            "old_engine: This device's Zeron is from before plugin services".to_string()
+                            "old_engine: This device's Keiki is from before plugin services".to_string()
                         } else {
                             e
                         }
@@ -2308,7 +2308,7 @@ impl Bridge {
                     }
                     let reply = call("PluginAgents", params).await.map_err(|e| {
                         if e.contains("unknown method") {
-                            "old_engine: This device's Zeron is from before plugins could read usage".to_string()
+                            "old_engine: This device's Keiki is from before plugins could read usage".to_string()
                         } else {
                             e
                         }
@@ -2317,7 +2317,7 @@ impl Bridge {
                         return Err(format!(
                             "{}: {}",
                             reply["reason"].as_str().unwrap_or("failed"),
-                            reply["message"].as_str().unwrap_or("Zeron didn't answer")
+                            reply["message"].as_str().unwrap_or("Keiki didn't answer")
                         ));
                     }
                     let value = &reply["value"];
@@ -3085,7 +3085,7 @@ impl Bridge {
         let region = surfaces::around(&found, 24., bounds.width, bounds.height)
             .ok_or("None of its nodes shows now, so there's nothing of it to picture")?;
         let (w, h, pixels) = surfaces::crop(image.pixels(), image.width(), image.height(), region, scale);
-        let dir = engine::data_dir().ok_or("Zeron's data folder isn't known")?.join("plugins").join(".snapshots");
+        let dir = engine::data_dir().ok_or("Keiki's data folder isn't known")?.join("plugins").join(".snapshots");
         let path = dir.join(format!("{plugin}.png"));
         surfaces::save_png(&path, w, h, &pixels)?;
         Ok(json!({
@@ -3810,13 +3810,13 @@ mod network_tests;
 
 #[cfg(test)]
 mod menu_tests {
-    /// "Use Zeron v3" is the host's own, in View, whatever the
+    /// "Use Keiki v3" is the host's own, in View, whatever the
     /// scripts declare (none here, as when a template broke before any).
     #[test]
     fn the_host_s_menu_always_has_a_way_back_to_zeron_s_template() {
         let menus = format!("{:?}", crate::menu_bar::Bar::of(&[], &[], &[], None).menus);
         assert!(menus.contains("View"), "{menus}");
-        assert!(menus.contains("Use Zeron v3"), "{menus}");
+        assert!(menus.contains("Use Keiki v3"), "{menus}");
         assert!(menus.contains(super::USE_ZERON_TEMPLATE), "{menus}");
     }
 
@@ -3840,7 +3840,7 @@ mod menu_tests {
         let shown = format!("{bar:?}");
         assert!(zgx_desktop::app_menu_bar(bar, |_| {}).is_ok(), "the platform takes the bar: {shown}");
         assert_eq!(shown.matches(super::USE_ZERON_TEMPLATE).count(), 1, "{shown}");
-        assert!(shown.contains("Use Zeron v3") && !shown.contains("Stay Here") && !shown.contains("Keep Me"), "{shown}");
+        assert!(shown.contains("Use Keiki v3") && !shown.contains("Stay Here") && !shown.contains("Keep Me"), "{shown}");
         assert!(!shown.contains("zeron.anything") && shown.contains("New Chat"), "{shown}");
     }
 }

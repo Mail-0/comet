@@ -46,7 +46,7 @@ local function seed(app: any)
 	app:set_state("browser_history", {
 		[ADA] = {
 			{ url = "https://react.dev/learn", title = "Quick Start – React", at = now - 60, count = 2 },
-			{ url = "https://zeron.sh/", title = "Zeron", at = now - 1800, count = 1 },
+			{ url = "https://zeron.sh/", title = "Keiki", at = now - 1800, count = 1 },
 			{ url = "https://example.com/", title = "Example Domain", at = now - 3 * 86400, count = 1 },
 		},
 	})
@@ -85,7 +85,7 @@ test("Browser settings: history lists, filters, and lets one page go in place", 
 	local app = settings("History")
 	seed(app)
 	expect(app:wait(`{PAGE} >> "Quick Start – React"`, { timeout_ms = 5000 })).to_be(true)
-	expect(shows(app, PAGE, "Zeron")).to_be(true)
+	expect(shows(app, PAGE, "Keiki")).to_be(true)
 	expect(shows(app, PAGE, "Example Domain")).to_be(true)
 	expect(shows(app, PAGE, "3 pages kept.")).to_be(true)
 	-- Laid out by day, the latest first, each with the time it was visited.
@@ -102,7 +102,7 @@ test("Browser settings: history lists, filters, and lets one page go in place", 
 	app:set_state("settings_browser_history_query", "")
 	app:frames(20)
 	-- One let go: the others stay the same rows.
-	local zeron = node(app, PAGE, "Zeron")
+	local zeron = node(app, PAGE, "Keiki")
 	expect(zeron).never.to_be_nil()
 	-- (Its × shows as the row is pointed at, in its time's place.)
 	local remove = `{PAGE} >> role:button "Remove Example Domain from history"`
@@ -113,7 +113,7 @@ test("Browser settings: history lists, filters, and lets one page go in place", 
 	app:click(remove)
 	app:frames(20)
 	expect(shows(app, PAGE, "Example Domain")).to_be(false)
-	expect(node(app, PAGE, "Zeron")).to_be(zeron)
+	expect(node(app, PAGE, "Keiki")).to_be(zeron)
 	local kept = (app:state("browser_history") :: any)[ADA]
 	expect(#kept).to_be(2)
 end)

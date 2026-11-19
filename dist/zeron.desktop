@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Zeron
+Name=Keiki
 GenericName=Coding Agent Controller
 Comment=Multi-device controller for coding agents
 Exec=zeron %u

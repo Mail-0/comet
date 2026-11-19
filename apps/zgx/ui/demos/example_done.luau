@@ -8,7 +8,7 @@ local kit = require("@demos/example_kit")
 return {
 	id = "ex_done",
 	title = "All set",
-	about = "The last step of setup: the organization made, what was set up in three lines, and the way in. After it the window closes and Zeron opens on the organization.",
+	about = "The last step of setup: the organization made, what was set up in three lines, and the way in. After it the window closes and Keiki opens on the organization.",
 	demo = function()
 		return kit.stage {
 			w = 680,

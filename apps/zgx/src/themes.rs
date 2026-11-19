@@ -434,7 +434,7 @@ mod tests {
         let dracula = rig.wear(&slots_of(&find_builtin("dracula").unwrap()), "light");
         assert_eq!(dracula["current"], "theme-light");
         let own_light = rig.wear(&json!({}), "light");
-        assert_eq!(dracula["asked"], own_light["asked"], "an empty slot is Zeron's");
+        assert_eq!(dracula["asked"], own_light["asked"], "an empty slot is Keiki's");
         assert_ne!(rig.wear(&slots_of(&find_builtin("dracula").unwrap()), "dark")["asked"], zeron["asked"]);
     }
 
@@ -453,7 +453,7 @@ mod tests {
         // user's Ghostty ones: a light window's terminal text dark, its
         // whites legible on white.
         let rig = Rig::new();
-        let zeron = builtin().into_iter().find(|b| b.id == "zeron").expect("Zeron's own themes");
+        let zeron = builtin().into_iter().find(|b| b.id == "zeron").expect("Keiki's own themes");
         let list: Vec<Json> = zeron.variants.iter().map(|v| palette(v, "zeron")).collect();
         rig.app
             .host
@@ -486,10 +486,10 @@ mod tests {
         for kind in ["dark", "light"] {
             let before = rig.wear(&json!({}), kind);
             let theme = rig.wear(&slots_of(&find_builtin("github").unwrap()), kind);
-            assert_ne!(theme["asked"]["text.primary"], before["asked"]["text.primary"], "GitHub's text isn't Zeron's");
+            assert_ne!(theme["asked"]["text.primary"], before["asked"]["text.primary"], "GitHub's text isn't Keiki's");
             assert_ne!(theme["asked"]["zeron.syntax.keyword"], before["asked"]["zeron.syntax.keyword"]);
             let after = rig.wear(&json!({}), kind);
-            assert_eq!(after["asked"], before["asked"], "every role back as Zeron's ({kind})");
+            assert_eq!(after["asked"], before["asked"], "every role back as Keiki's ({kind})");
         }
     }
 
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn a_field_on_dark_glass_is_a_wash_the_glass_shows_through() {
         let rig = Rig::new();
-        let mut worn = vec![("Zeron".to_string(), rig.wear(&json!({}), "dark"))];
+        let mut worn = vec![("Keiki".to_string(), rig.wear(&json!({}), "dark"))];
         for theme in builtin().into_iter().filter(|b| b.id != "zeron") {
             if let Some(v) = theme.variant(true) {
                 worn.push((v.name.clone(), rig.wear(&slots_of(&theme), "dark")));

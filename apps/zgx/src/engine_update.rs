@@ -15,7 +15,7 @@
 //!   engine.restart     stop the engine this app started; the supervisor
 //!                      starts the one on disk in its place
 //!
-//! Zeron.app's beta manages Zeron.app's own engine, which restarts into its
+//! Keiki.app's beta manages Keiki.app's own engine, which restarts into its
 //! bundle's by itself (src/engine/manager.rs): no staleness of this app's to
 //! judge there, and `engine.restart` stops it at once. Instead each
 //! connection asks whether the engine serves this interface (its
@@ -170,7 +170,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
                 return;
             };
             tell_interface(serves_interface(&info["capabilities"]));
-            // Zeron.app's engine follows its bundle by itself.
+            // Keiki.app's engine follows its bundle by itself.
             if config.follows_bundle() {
                 return;
             }
@@ -207,15 +207,15 @@ fn install_restart(host: &ScriptHost) {
     host.async_action("engine.restart", |_| async move { crate::plugins::preview::refuse("engine.restart")?;
         let engine = engine::get();
         let Some(config) = engine.config() else {
-            return Err("Zeron isn't available here".into());
+            return Err("Keiki isn't available here".into());
         };
         // (Only one this app started, and only while it can start another;
-        // in the beta, Zeron.app's own, which its bundle's replaces.)
+        // in the beta, Keiki.app's own, which its bundle's replaces.)
         let Some(rpc) = engine.current() else {
             return Err("offline".into());
         };
         if config.follows_bundle() {
-            eprintln!("zeron-zgx: engine: restarting Zeron's engine");
+            eprintln!("zeron-zgx: engine: restarting Keiki's engine");
             engine.stop().await?;
             return Ok(Value::Nil);
         }

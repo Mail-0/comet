@@ -100,7 +100,7 @@ test("a Claude model's row is its Anthropic account; switching ChatGPT never tou
 	expect(app:has('"Add Claude account"')).to_be(true)
 end)
 
-test("a provider Zeron adds keys for offers its key, on this Mac", function()
+test("a provider Keiki adds keys for offers its key, on this Mac", function()
 	local app = with_model("pi/openrouter/kimi")
 	open_panel(app)
 	local row = app:tree("#model-picker-account")
@@ -131,7 +131,7 @@ test("a provider with no account yet says None and offers to add one", function(
 	expect(calls).to_contain("sign_in_to:pi:github-copilot")
 end)
 
-test("a provider with no account and nothing Zeron adds has no row", function()
+test("a provider with no account and nothing Keiki adds has no row", function()
 	local app = with_model("pi/groq/llama")
 	expect(app:has("#model-picker-usage")).to_be(false)
 	open_panel(app)

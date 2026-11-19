@@ -462,7 +462,7 @@ function M.open_file(session: any, path: string, project: any?, at: any?)
 	end
 end
 
--- A web link (a chat's, with "Open links in Zeron" on) in `session`'s
+-- A web link (a chat's, with "Open links in Keiki" on) in `session`'s
 -- panel: the browser tab already showing it, else a new one; nil opens an
 -- empty browser tab. The panel opens for the session showing (or, with
 -- `page`, a plugin page's own panel). Whether a tab took it (a session or a

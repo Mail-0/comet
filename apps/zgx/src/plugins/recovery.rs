@@ -119,7 +119,7 @@ fn rule_broken(line: &str) -> Option<String> {
         if let Some(owner) = quoted(line, "the plugin `").filter(|_| line.contains("offers only slots")) {
             return Some(format!("It offers a slot named “{slot}”, but a plugin's slots start with its id. Call it “{owner}.{slot}”, or use zeron.slot(\"{slot}\")."));
         }
-        return Some(format!("It offers a slot named “{slot}”, but names starting with “zeron” are Zeron's own."));
+        return Some(format!("It offers a slot named “{slot}”, but names starting with “zeron” are Keiki's own."));
     }
     if line.contains("ui.command `") && line.contains("`key = \"") {
         let command = quoted(line, "ui.command `")?;
@@ -128,7 +128,7 @@ fn rule_broken(line: &str) -> Option<String> {
     }
     if line.contains("ui.command `") && line.contains("names are the app's alone") {
         let command = quoted(line, "ui.command `")?;
-        return Some(format!("Its command “{command}” starts with “zeron”, and those names are Zeron's own. Rename it."));
+        return Some(format!("Its command “{command}” starts with “zeron”, and those names are Keiki's own. Rename it."));
     }
     if line.contains("ui.override { module = \"") && line.contains("a trust grant") {
         let module = line[line.find("module = \"")? + "module = \"".len()..].split('"').next()?;
@@ -222,7 +222,7 @@ mod tests {
         let slot = reason("plug: runtime error: init.luau:1: ui.slot `bar`: the plugin `plug` offers only slots of its own, named `plug.…`");
         assert_eq!(slot, "It offers a slot named “bar”, but a plugin's slots start with its id. Call it “plug.bar”, or use zeron.slot(\"bar\").");
         let reserved = reason("plug: runtime error: ui.slot `zeron.x`: `zeron.` names are the app's alone, not the plugin `plug`'s");
-        assert_eq!(reserved, "It offers a slot named “zeron.x”, but names starting with “zeron” are Zeron's own.");
+        assert_eq!(reserved, "It offers a slot named “zeron.x”, but names starting with “zeron” are Keiki's own.");
         let key = reason("plug: runtime error: ui.command `go`: `key = \"k\"`: a plugin's shortcut has a modifier, unless the host grants `Capability::Named(\"zgx.command.bare_keys\")`: a key alone would be taken from every field");
         assert!(key.starts_with("Its command “go” has the shortcut “k” with no ⌘, ⌃ or ⌥"), "{key}");
         assert!(!key.contains("Capability"), "{key}");

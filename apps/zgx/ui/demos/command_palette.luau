@@ -306,7 +306,7 @@ end
 for _, item in SESSIONS do
 	table.insert(ITEMS, item)
 end
-local ROOT: CommandPalette.Page = { id = "root", title = "Zeron", items = ITEMS }
+local ROOT: CommandPalette.Page = { id = "root", title = "Keiki", items = ITEMS }
 
 -- The app's command, for a host that lists commands in its menus. Its key
 -- is the page's own (below), so ⌘K stays free on every other page.

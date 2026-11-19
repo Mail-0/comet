@@ -1,8 +1,8 @@
 //! Settings → About & updates (ui/screens/settings/about.luau): which Zeron
 //! this is, and its updates.
 //!
-//! **The Zeron app** (this interface in Zeron.app's bundle: the beta) updates
-//! itself, as Zeron.app does (crates/update `desktop`, shared with the GPUI
+//! **The Zeron app** (this interface in Keiki.app's bundle: the beta) updates
+//! itself, as Keiki.app does (crates/update `desktop`, shared with the GPUI
 //! app's `app_update.rs`): its own checker follows the release channel this
 //! Mac chose (`update-channel.json`), a found release downloads in the
 //! background, "Restart to update" installs it and relaunches, and one
@@ -93,7 +93,7 @@ async fn on_tokio<T: Send + 'static>(work: impl std::future::Future<Output = T> 
     rx.recv().await
 }
 
-/// The app's download and install, as Zeron.app's (crates/ui app_update.rs).
+/// The app's download and install, as Keiki.app's (crates/ui app_update.rs).
 #[derive(Debug, Clone, PartialEq)]
 enum Flow {
     Idle,

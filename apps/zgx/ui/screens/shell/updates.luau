@@ -264,7 +264,7 @@ local function mark_of(r: any, size: number, bare: boolean?): Node
 end
 
 local function name_of(r: any): string
-	return if r.kind == "zeron" then "Zeron" else r.name or ""
+	return if r.kind == "zeron" then "Keiki" else r.name or ""
 end
 
 -- Running chats on its device: updating its Zeron restarts its engine, which

@@ -44,7 +44,7 @@ end)
 -- The choices as a select lists them, in the locale shown (a computed
 -- reading their messages: they follow it).
 -- The question asked when the app quits with work still running and
--- "Keep Zeron running after you quit" off (src/quit_prompt.rs), in the
+-- "Keep Keiki running after you quit" off (src/quit_prompt.rs), in the
 -- language shown: by then the scripts are gone, so the host keeps it.
 -- (Many chats are worded with 999999, which the host replaces.)
 ui.effect(function()

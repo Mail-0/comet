@@ -37,7 +37,7 @@ templates.now:set({
 	state = "ready",
 	active = "zeron",
 	list = {
-		{ id = "zeron", name = "Zeron", builtin = true, active = true, status = "ok" },
+		{ id = "zeron", name = "Keiki", builtin = true, active = true, status = "ok" },
 		{ id = "ledger", name = "Ledger", author = "you", builtin = false, active = false, status = "ok" },
 	},
 } :: any)

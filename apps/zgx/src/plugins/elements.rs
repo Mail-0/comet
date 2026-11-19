@@ -45,7 +45,7 @@ pub const ELEMENTS: &[Element] = &[
     e("#chat-home", "a new chat", "A new chat, before it's sent: no session here.", &[]),
     // What a new chat opens on, when Settings → Appearance's Wallpaper names
     // the plugin replacing it (`ui.change`): Zeron's effect is drawn over it.
-    e("#new-chat-background", "a new chat's background", "Behind a new chat, under Zeron's effect: replace it to draw the background. `pointer` is { x, y }, 0 to 1 (0.5 at rest).", &["pointer"]),
+    e("#new-chat-background", "a new chat's background", "Behind a new chat, under Keiki's effect: replace it to draw the background. `pointer` is { x, y }, 0 to 1 (0.5 at rest).", &["pointer"]),
     e("#chat-session", "a chat", "A session's page: everything in it has its session.", &["session"]),
     e("#session-header", "a chat's header", "A session page's header.", &[]),
     e("#transcript", "a chat", "A session's transcript.", &[]),
@@ -126,14 +126,14 @@ pub fn parts(selector: &str) -> (Option<String>, Vec<String>) {
     (id, classes)
 }
 
-/// Where `selector` is in words: its element's place, or "part of Zeron".
+/// Where `selector` is in words: its element's place, or "part of Keiki".
 pub fn place(selector: &str) -> &'static str {
     let last = selector.rsplit(">>").next().unwrap_or(selector).trim();
     ELEMENTS
         .iter()
         .find(|e| e.selector == last || last.starts_with(e.selector))
         .map(|e| e.place)
-        .unwrap_or("part of Zeron")
+        .unwrap_or("part of Keiki")
 }
 
 /// The ids and classes zgx's report of the window names (mounted now, or
@@ -212,7 +212,7 @@ pub fn describe(ids: &BTreeSet<String>, classes: &BTreeSet<String>, tree: serde_
         "elements": elements,
         "everywhere": ["appearance", "route"],
         "window": tree,
-        "stable": "Elements marked stable keep their names across Zeron's updates, and every template keeps them: place by these where you can. Others may move.",
+        "stable": "Elements marked stable keep their names across Keiki's updates, and every template keeps them: place by these where you can. Others may move.",
         "how": "Place a node by selector: zeron.place { at = \".session-row\", after = function() return ui.text { … } end }. \
                 Selectors: #id, .class, `#a >> .b` (inside), role:button \"Send\". What's built at a place reads what it gives \
                 with zeron.context(name) (nil where absent) or zeron.need(name) (draws nothing there, and Settings says why). \
@@ -241,7 +241,7 @@ mod tests {
     fn places_are_told_in_words() {
         assert_eq!(place("#titlebar-actions"), "the title bar");
         assert_eq!(place("#sidebar >> .session-row"), "a sidebar row");
-        assert_eq!(place("#nowhere"), "part of Zeron");
+        assert_eq!(place("#nowhere"), "part of Keiki");
         assert_eq!(place("#transcript >> .md-code.lang-mermaid"), "a reply's code block");
     }
 

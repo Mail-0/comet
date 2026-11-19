@@ -291,7 +291,7 @@ impl GitHub {
             Err(error) => {
                 eprintln!("zeron-zgx: github: Cloud's status unavailable: {error}");
                 if self.generation.get() == generation {
-                    self.unavailable("Zeron can't be reached right now. Skip for now.");
+                    self.unavailable("Keiki can't be reached right now. Skip for now.");
                 }
                 return;
             }
@@ -338,7 +338,7 @@ impl GitHub {
             Err(error) => {
                 eprintln!("zeron-zgx: github: the vault didn't answer: {error}");
                 if self.generation.get() == generation {
-                    self.unavailable("Zeron can't be reached right now. Skip for now.");
+                    self.unavailable("Keiki can't be reached right now. Skip for now.");
                 }
                 return;
             }

@@ -612,7 +612,7 @@ pub(super) fn foreground_after_capture() {
         let _: () = msg_send![configuration, setCreatesNewApplicationInstance: 0i8];
         let completion = ConcreteBlock::new(|_app: *mut Object, error: *mut Object| {
             if !error.is_null() {
-                eprintln!("zeron-zgx: couldn't bring Zeron forward after an Appshot");
+                eprintln!("zeron-zgx: couldn't bring Keiki forward after an Appshot");
             }
         })
         .copy();
@@ -914,7 +914,7 @@ fn encode_png(image: *mut c_void) -> Result<Vec<u8>, String> {
         }
         let len: usize = msg_send![data, length];
         if len as u64 > super::MAX_IMAGE_BYTES {
-            return Err("The captured window is larger than Zeron's 24 MB image limit.".into());
+            return Err("The captured window is larger than Keiki's 24 MB image limit.".into());
         }
         let bytes: *const u8 = msg_send![data, bytes];
         if bytes.is_null() || len == 0 {

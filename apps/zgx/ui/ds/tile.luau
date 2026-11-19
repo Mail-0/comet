@@ -2,7 +2,7 @@
 -- 50). One tile wherever a project shows: the sidebar, a dropdown, the
 -- composer's project.
 --
--- `Tile { label = "Zeron", hue = "violet", size = 18 }`; `inside` puts a
+-- `Tile { label = "Keiki", hue = "violet", size = 18 }`; `inside` puts a
 -- glyph where the initial goes (pinned's pin), and `hue` may be nil for a
 -- neutral tile (a quiet wash, the glyph in secondary ink). `src` is the
 -- project's own artwork (an image its people chose, else its favicon, as

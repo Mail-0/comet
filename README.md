@@ -1,56 +1,21 @@
-# Zeron
+# Keiki
 
-Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi, Antigravity) locally by default, with optional multi-device sync.
+Keiki is a desktop workspace for coding with cloud agents, built on Zeron's
+Rust engine and zgx desktop app.
 
-*English | [简体中文](README.zh-CN.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Español](README.es.md)*
+## Development
 
-![Zeron desktop app](docs/media/readme/app-screenshot.jpg)
-
-## Desktop app
-
-Download the latest release for your platform from [GitHub Releases](https://github.com/zeronsh/zeron/releases/latest):
-
-- **macOS** — `zeron-<version>-macos-arm64.dmg`
-- **Windows** — `zeron-<version>-windows-x86_64-setup.exe`
-- **Linux** — `zeron-<version>-linux-<arch>.tar.gz`, then run its `install.sh`
-
-No account or network connection is needed; sessions stay on your device. The app updates itself.
-
-## Headless (CLI)
-
-For servers and other machines without a display, such as a VPS that keeps agents running after you close your laptop. Linux only:
-
-```bash
-curl -fsSL https://zeron.sh/install.sh | sh
-zeron status
+```sh
+cargo check --workspace
+cargo check --manifest-path apps/zgx/Cargo.toml
 ```
 
-The installer starts the engine as a background service that survives reboots.
+The desktop app lives in `apps/zgx`; `apps/zeron` provides the headless engine
+and CLI. Internal crate and executable names retain the `zeron` prefix.
 
-```bash
-zeron status      # local/synced mode and engine status
-zeron update      # update to the latest release
-zeron daemon start|stop|restart|status
-```
+Local data and default worktrees live in `~/.keiki`. On first launch, existing
+`~/.zeron` or `~/.comet-native` data is migrated, preserving legacy paths on
+Unix so existing Git worktrees keep working. `ZERON_DATA_DIR` overrides the
+data directory and `ZERON_WORKTREES_DIR` overrides the worktree root.
 
-## Multi-device sync (optional)
-
-Sign in to start an agent on one device and follow or drive it from another:
-
-```bash
-zeron daemon stop
-zeron login        # or: zeron logout to return to local-only
-zeron daemon start
-```
-
-Devices signed in to the same account can read and write each other's workspace files, so only sign in devices you trust. Existing local sessions are never uploaded.
-
-## Sponsors
-
-Thank you to [The Context Company](https://www.thecontextcompany.com/) for sponsoring Zeron. You can help fund Zeron's development too by [becoming a sponsor on GitHub](https://github.com/sponsors/zeronsh).
-
----
-
-Developing or curious how it works? [Ask DeepWiki](https://deepwiki.com/zeronsh/zeron) or check out [ARCHITECTURE.md](ARCHITECTURE.md).
-
-Licensed under the [MIT License](LICENSE).
+Upstream: [Zeron](https://github.com/zeronsh/zeron). See [LICENSE](LICENSE).

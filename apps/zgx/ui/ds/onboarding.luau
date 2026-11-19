@@ -2,7 +2,7 @@
 -- a step header (where in the flow this is, and what it asks), and option
 -- cards (a choice made by picking a card: one of them, or several).
 --
---   Hero { title = "Welcome to Zeron", body = "…", art = Mark { … }, …actions }
+--   Hero { title = "Welcome to Keiki", body = "…", art = Mark { … }, …actions }
 --   StepHeader { step = 2, count = 4, title = "Which agents do you use?", body = "…" }
 --   OptionCards { value = state, options = { { value = "claude", title = "Claude", mark = "claude" }, … } }
 --   OptionCards { value = list_state, multiple = true, options = … }

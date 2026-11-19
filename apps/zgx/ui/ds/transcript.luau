@@ -346,7 +346,7 @@ local function strip(m: Message, row: State<Message>, hovered: () -> boolean): N
 	return ui.row {
 		w_full = true,
 		h = LANE,
-		pt = ui.raw(LANE_TOP, "Zeron's 8 over the lane's 24-point line"),
+		pt = ui.raw(LANE_TOP, "Keiki's 8 over the lane's 24-point line"),
 		items = "center",
 		justify = if mine then "end" else "start",
 		selectable = false,
@@ -367,7 +367,7 @@ local function strip(m: Message, row: State<Message>, hovered: () -> boolean): N
 					end,
 					text_size = "$font.size.sm",
 					color = "$text.secondary",
-					opacity = ui.raw(0.55, "Zeron's timestamp: the muted ink at 55%"),
+					opacity = ui.raw(0.55, "Keiki's timestamp: the muted ink at 55%"),
 				},
 				ui.show(
 					function(): boolean
@@ -408,7 +408,7 @@ end
 -- on the right over the prompt that moved it (Zeron's `switch_marker`).
 local function switch_side(name: string?, mark: Mark.Name?): Node
 	return ui.row {
-		gap = ui.raw(5, "Zeron's caption mark-to-name gap"),
+		gap = ui.raw(5, "Keiki's caption mark-to-name gap"),
 		items = "center",
 		min_w = 0,
 		if mark then ui.div { aria_hidden = true, Mark { name = mark, size = 14, bare = true } } else nil,
@@ -423,7 +423,7 @@ local function seam(m: Message): Node
 		w_full = true,
 		justify = "end",
 		ui.row {
-			gap = ui.raw(6, "Zeron's caption gap"),
+			gap = ui.raw(6, "Keiki's caption gap"),
 			items = "center",
 			min_w = 0,
 			text_size = "$font.size.md",
@@ -432,7 +432,7 @@ local function seam(m: Message): Node
 			switch_side(m.from, m.from_mark),
 			ui.div {
 				aria_hidden = true,
-				opacity = ui.raw(0.7, "Zeron's caption arrow, fainter than its names"),
+				opacity = ui.raw(0.7, "Keiki's caption arrow, fainter than its names"),
 				Icon { name = "arrow-right", size = 12 },
 			},
 			switch_side(m.to, m.to_mark),
@@ -457,7 +457,7 @@ local function sender_line(m: Message, props: Props): Node
 		local c = now()
 		local mark = if c then c.mark else nil
 		local line: { [any]: any } = {
-			gap = ui.raw(6, "Zeron's caption gap"),
+			gap = ui.raw(6, "Keiki's caption gap"),
 			items = "center",
 			min_w = 0,
 			max_w = "80%",
@@ -466,7 +466,7 @@ local function sender_line(m: Message, props: Props): Node
 			selectable = false,
 			ui.text { locale.t("ds.transcript.message_from"), shrink = 0 },
 			ui.row {
-				gap = ui.raw(5, "Zeron's caption mark-to-name gap"),
+				gap = ui.raw(5, "Keiki's caption mark-to-name gap"),
 				items = "center",
 				min_w = 0,
 				ui.div {
@@ -505,7 +505,7 @@ local function sender_line(m: Message, props: Props): Node
 			return ui.row { w_full = true, justify = "end", ui.button(line) }
 		end
 		return ui.row { w_full = true, justify = "end", ui.row(line) }
-	end, { w_full = true, pb = ui.raw(6, "Zeron's USER_CAPTION_GAP") })
+	end, { w_full = true, pb = ui.raw(6, "Keiki's USER_CAPTION_GAP") })
 end
 
 -- A reply's row: its tools, its text, and while it waits for either, that it
@@ -2340,7 +2340,7 @@ local function Transcript(props: Props): Node
 			items = "start",
 			px = if props.side then ui.raw(props.side, "a little wider than the composer") else "$space.5",
 			pt = function(): number
-				return ui.raw(pt(), "Zeron's gaps over a message (transcript.rs top_gap_for)")
+				return ui.raw(pt(), "Keiki's gaps over a message (transcript.rs top_gap_for)")
 			end,
 			-- The air at the conversation's end, on its last row: on the list
 			-- itself it would clip every row short of the list's foot.
@@ -2676,7 +2676,7 @@ local function Transcript(props: Props): Node
 			left = 0,
 			right = 0,
 			bottom = foot,
-			pb = ui.raw(6, "Zeron's: the pill floats six above the composer"),
+			pb = ui.raw(6, "Keiki's: the pill floats six above the composer"),
 			justify = "center",
 			pointer_events = "none",
 			-- (The composer's pill beside it: half its width and the gap between

@@ -27,7 +27,7 @@ return {
 	demo = function()
 		return Settings.Page {
 			title = "Git",
-			description = "How Zeron commits, pushes and keeps your branches in step.",
+			description = "How Keiki commits, pushes and keeps your branches in step.",
 			trail = SearchField { value = query, placeholder = "Search settings", size = "sm", w = 200 },
 			Settings.Section {
 				title = "Commits",
@@ -35,7 +35,7 @@ return {
 				Settings.Group {
 					Settings.Row {
 						label = "Sign commits",
-						description = "With the SSH key Zeron made for this device.",
+						description = "With the SSH key Keiki made for this device.",
 						control = Switch { value = sign, label = "Sign commits" },
 					},
 					Settings.Row {
@@ -45,7 +45,7 @@ return {
 					},
 					Settings.Row {
 						label = "Author",
-						description = "The name and email on commits Zeron makes for you.",
+						description = "The name and email on commits Keiki makes for you.",
 						stacked = true,
 						control = ui.row {
 							gap = "$space.3",
@@ -80,7 +80,7 @@ return {
 							options = { { value = "zed", label = "Zed" }, { value = "cursor", label = "Cursor" }, { value = "code", label = "VS Code" } },
 						},
 					},
-					Settings.Row { label = "Fetch in the background", description = "Every 5 minutes, while Zeron is open.", control = Switch { value = fetch, label = "Fetch" }, disabled = true },
+					Settings.Row { label = "Fetch in the background", description = "Every 5 minutes, while Keiki is open.", control = Switch { value = fetch, label = "Fetch" }, disabled = true },
 				},
 			},
 			Settings.Section {
@@ -94,7 +94,7 @@ return {
 				Settings.Group {
 					Settings.Row {
 						label = "Reset Git settings",
-						description = "Back to Zeron's defaults. Your repositories aren't touched.",
+						description = "Back to Keiki's defaults. Your repositories aren't touched.",
 						control = Button { "Reset", tone = "secondary", size = "sm" },
 					},
 					Settings.Row { label = "Sign out of GitHub", danger = true, on_click = function() end },

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build this checkout's `zeron` for Linux x86_64 (what Boat sandboxes run) in
 # a Docker container, and package it as the tarball the Cloud install script
-# downloads: target/package-dev/zeron-<version>-linux-x86_64.tar.gz, plus
+# downloads: target/package-dev/keiki-<version>-linux-x86_64.tar.gz, plus
 # target/package-dev/latest.txt naming that version.
 #
 # For trying unreleased engine changes on real Cloud machines
@@ -52,7 +52,7 @@ docker run --rm --platform linux/amd64 \
   -w /src "$IMAGE" \
   sh -c "cargo build --release -p zeron && cp /target/release/zeron /src/target/package-dev/zeron.linux-x86_64 && cp /target/release/zeron-engine /src/target/package-dev/zeron-engine.linux-x86_64"
 
-STAGE="$OUT/zeron-$VERSION-linux-x86_64"
+STAGE="$OUT/keiki-$VERSION-linux-x86_64"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 mv "$OUT/zeron.linux-x86_64" "$STAGE/zeron"

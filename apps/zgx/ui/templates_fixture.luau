@@ -23,7 +23,7 @@ local function theme(scheme: string, accent: string, window: string, text: strin
 end
 
 local model: { state.Template } = {
-	{ id = "zeron", name = "Zeron", description = "The default interface.", author = "Zeron", version = "0.2.131", zeron_version = "0.2.131", builtin = true, active = true, status = "ok" },
+	{ id = "zeron", name = "Keiki", description = "The default interface.", author = "Keiki", version = "0.2.131", zeron_version = "0.2.131", builtin = true, active = true, status = "ok" },
 	{ id = "hot-pink", name = "Hot Pink", description = "Everything pink.", author = "you", version = "1.0.0", builtin = false, active = false, status = "ok", look = { stamp = "p1", light = theme("light", "#d6247a", "#fff0f6", "#3d0a22"), dark = theme("dark", "#ff3e9a", "#1a0010", "#ffe0ef") } },
 	{ id = "night", name = "Night", description = "A darker dark.", author = "you", version = "1.0.0", builtin = false, active = false, status = "ok", look = { stamp = "n1", dark = theme("dark", "#22ccaa", "#000000", "#e8fff9") } },
 	{ id = "airy", name = "Airy", description = "More room between things.", author = "you", version = "1.0.0", zeron_version = "0.2.131", builtin = false, active = false, status = "ok" },
@@ -195,7 +195,7 @@ ui.command {
 }
 ui.command {
 	id = "updated",
-	title = "Zeron updates past Airy",
+	title = "Keiki updates past Airy",
 	run = function()
 		local t = find("airy")
 		t.status = "out_of_date"

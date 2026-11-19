@@ -160,7 +160,7 @@ test("each scope says when it has nothing, and when nothing matches", function()
 	expect(app:tree("#mention-launcher")).to_contain("No chats match “zzzz”")
 end)
 
-test("a file picked goes as its mention, a chat as Zeron's chat link", function()
+test("a file picked goes as its mention, a chat as Keiki's chat link", function()
 	local app = chat()
 	app:type(BOX, "@chat.r")
 	settle(app)

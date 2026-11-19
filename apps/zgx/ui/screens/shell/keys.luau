@@ -68,7 +68,7 @@ for _, k in
 		{ id = "shell.dictate", title = "Hold to dictate", key = "cmd+d", group = "App", menu = "Edit", elsewhere = true },
 		{ id = "shell.close", title = "Close", key = "cmd+w", group = "App", menu = "File", reserved = true },
 		-- (No key of their own: Settings → Shortcuts can give them one.)
-		{ id = "shell.reload", title = "Reload Zeron", key = "", group = "App", menu = "View" },
+		{ id = "shell.reload", title = "Reload Keiki", key = "", group = "App", menu = "View" },
 		{ id = "shell.reload_interface", title = "Reload interface", key = "", group = "App", menu = "View" },
 	} :: { Key }
 do

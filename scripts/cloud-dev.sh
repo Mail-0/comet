@@ -69,7 +69,7 @@ if [[ "$MODE" == boat ]]; then
     exit 1
   }
   VERSION="$(cat "$ROOT/target/package-dev/latest.txt" 2>/dev/null || true)"
-  TARBALL="$ROOT/target/package-dev/zeron-$VERSION-linux-x86_64.tar.gz"
+  TARBALL="$ROOT/target/package-dev/keiki-$VERSION-linux-x86_64.tar.gz"
   [[ -n "$VERSION" && -f "$TARBALL" ]] || {
     echo "MODE=boat needs a Linux build: run scripts/build-linux-dev.sh" >&2
     exit 1

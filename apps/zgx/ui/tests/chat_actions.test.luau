@@ -165,7 +165,7 @@ test("@ lists the session's files as it's typed, and a pick lands in the draft",
 	expect(app:text('role:textbox "Message"')).to_contain("chat.rs")
 end)
 
-test("an @ pick goes out as Zeron's file mention", function()
+test("an @ pick goes out as Keiki's file mention", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	open(app, "s2")
@@ -751,7 +751,7 @@ end)
 -- Review comments left on files (the files pane's): chips on the composer,
 -- sent after the words as Zeron's review-comments block, each its file and
 -- line; with no words, Zeron's own line for them.
-test("review comments go with the message as Zeron's block", function()
+test("review comments go with the message as Keiki's block", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	open(app, "s2")

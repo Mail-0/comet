@@ -1,4 +1,4 @@
-//! `zeron://` links the system hands the app, as Zeron.app opens them
+//! `zeron://` links the system hands the app, as Keiki.app opens them
 //! (crates/ui/src/lib.rs, state.rs `open_deep_link`), in the formats both
 //! apps share (crates/notify):
 //!   zeron://notification/<target>   a clicked banner (the engine posts them
@@ -55,7 +55,7 @@ pub fn install(host: &ScriptHost) {
 /// which workspace is open, and only if it's the link's.
 pub fn open(url: &str) {
     let Some((target, workspace)) = parse(url) else {
-        eprintln!("zeron-zgx: links: not a Zeron link: {url}");
+        eprintln!("zeron-zgx: links: not a Keiki link: {url}");
         return;
     };
     let Some(workspace) = workspace else {
@@ -72,10 +72,10 @@ pub fn open(url: &str) {
 }
 
 /// Banner clicks, taken in this process. The engine posts Zeron's banners,
-/// but macOS hands a click to the app its bundle names (Zeron.app's
+/// but macOS hands a click to the app its bundle names (Keiki.app's
 /// interface, this process), never to the engine that posted it, so the
 /// engine's own route (`open -a … zeron://notification/…`) never runs. As
-/// Zeron.app's interface always has (crates/ui `notify::on_click`), the
+/// Keiki.app's interface always has (crates/ui `notify::on_click`), the
 /// click is answered here: Zeron comes forward, on the banner's chat.
 pub fn take_banner_clicks() {
     zeron_notify::on_click(|target| {

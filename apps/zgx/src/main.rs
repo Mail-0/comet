@@ -347,7 +347,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         application = application.font(font?);
     }
     // The Zeron app's links (`zeron://`: a clicked banner, a chat's link),
-    // delivered to the app as Zeron.app's are (src/links.rs).
+    // delivered to the app as Keiki.app's are (src/links.rs).
     if cfg!(feature = "beta") {
         application = application
             .application_id("sh.zeron.app")?
@@ -380,7 +380,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             links::open(url);
         }
     })?;
-    // Quitting with "Keep Zeron running after you quit" off: the engine
+    // Quitting with "Keep Keiki running after you quit" off: the engine
     // stops once its work is done, asking first about any still running
     // (src/quit_prompt.rs). (Not for a relaunch: the app is coming back.)
     if !relaunch::asked() {
@@ -1255,7 +1255,7 @@ fn run_menu_command(host: &ScriptHost, id: &str) {
 
 fn intro_window() -> WindowOptions {
     WindowOptions {
-        title: "Zeron".into(),
+        title: "Keiki".into(),
         transparent: true,
         decorations: false,
         resizable: false,
@@ -1283,7 +1283,7 @@ fn zeron_glass() -> Glass {
 /// blur, which the theme's `background` tints (the shipping app's glass).
 fn zeron_window(width: f64, height: f64) -> WindowOptions {
     WindowOptions {
-        title: "Zeron".into(),
+        title: "Keiki".into(),
         width,
         height,
         decorations: cfg!(target_os = "macos"),

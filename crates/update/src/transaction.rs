@@ -545,7 +545,7 @@ fn room_verdict(free: u64, needed: u64) -> Result<(), String> {
 /// once it's staged. A check that can't run refuses too: not knowing isn't room.
 pub fn ensure_room(data_dir: &Path, app_root: &Path, download: u64) -> Result<(), String> {
     let cannot = |err: std::io::Error| {
-        format!("Zeron couldn't check the free disk space ({err}), so it didn't update.")
+        format!("Keiki couldn't check the free disk space ({err}), so it didn't update.")
     };
     let snapshot = store_bytes(data_dir);
     let snapshot_copy = snapshot + snapshot / 20;
@@ -825,7 +825,7 @@ pub fn request_within(
 // ---------------------------------------------------------------------------
 
 /// An engine that was an earlier update's trial runs from that update's
-/// incoming bundle (`.Zeron.app.new-…`, beside the installed one), and its
+/// incoming bundle (`.Keiki.app.new-…`, beside the installed one), and its
 /// commit renamed that folder to the installed bundle: macOS goes on naming
 /// the executable by the path it was started from, which no longer exists.
 /// That engine *is* the installed version. Without this it counted as a build
@@ -1141,7 +1141,7 @@ pub fn boot<G>(
                 "another version was installed during the update; leaving its data alone"
             );
             let reason = format!(
-                "Zeron {} was installed while this update was running, so the update stopped there.",
+                "Keiki {} was installed while this update was running, so the update stopped there.",
                 who.me
             );
             let done = finish(data_dir, transaction, Phase::Failed, Some(reason))?;
@@ -1193,14 +1193,14 @@ fn start_trial<G>(
     let new_binary = transaction.layout.new_binary(&transaction.target, &exe_name);
     if !new_binary.is_file() {
         let why = format!(
-            "Zeron {}'s files are missing, so it stayed on {}.",
+            "Keiki {}'s files are missing, so it stayed on {}.",
             transaction.target, transaction.from
         );
         return give_up(transaction, why, new_binary.display().to_string());
     }
     if let Err(err) = take_snapshot(data_dir, &transaction.id) {
         let why = format!(
-            "Zeron couldn't back up its data before updating, so it stayed on {}.",
+            "Keiki couldn't back up its data before updating, so it stayed on {}.",
             transaction.from
         );
         return give_up(transaction, why, format!("{err:#}"));
@@ -1215,7 +1215,7 @@ fn start_trial<G>(
         // Without a watchdog a stuck new version would never be stopped. Nothing
         // has touched the data yet, so there's nothing to restore.
         let why = format!(
-            "Zeron couldn't watch over the update, so it stayed on {}.",
+            "Keiki couldn't watch over the update, so it stayed on {}.",
             transaction.from
         );
         return give_up(transaction, why, format!("{err:#}"));
@@ -1226,7 +1226,7 @@ fn start_trial<G>(
     let err = hand_over(data_dir, options, &mut transaction, &new_binary);
     // Only reached if the new binary couldn't be started at all.
     let why = format!(
-        "Zeron {} couldn't start here, so it stayed on {}.",
+        "Keiki {} couldn't start here, so it stayed on {}.",
         transaction.target, transaction.from
     );
     give_up(transaction, why, err.to_string())
@@ -1329,7 +1329,7 @@ fn roll_back(data_dir: &Path, mut transaction: Transaction) -> anyhow::Result<()
     let outcome = if transaction.interrupted {
         format!("{why} It's on {from} for now and will try {target} again.")
     } else {
-        format!("{why} Zeron went back to {from} instead of {target}.")
+        format!("{why} Keiki went back to {from} instead of {target}.")
     };
     let done = finish(data_dir, transaction, Phase::RolledBack, Some(outcome))?;
     crash_point("rollback-recorded");
@@ -1917,11 +1917,11 @@ mod tests {
         assert_eq!(unknown.state, UpdateState::Unknown);
     }
 
-    /// `/Applications`-like folder with the installed `Zeron.app` at
-    /// `version`, and an update to 2.0.0 requested into `.Zeron.app.new-next`.
+    /// `/Applications`-like folder with the installed `Keiki.app` at
+    /// `version`, and an update to 2.0.0 requested into `.Keiki.app.new-next`.
     fn mac_install(version: &str) -> (tempfile::TempDir, Transaction) {
         let root = tempfile::tempdir().unwrap();
-        let bundle = root.path().join("Zeron.app");
+        let bundle = root.path().join("Keiki.app");
         std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
         std::fs::write(
             bundle.join("Contents/Info.plist"),
@@ -1929,7 +1929,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(bundle.join("Contents/MacOS/Zeron Engine"), "").unwrap();
-        let incoming = root.path().join(".Zeron.app.new-next");
+        let incoming = root.path().join(".Keiki.app.new-next");
         std::fs::create_dir_all(incoming.join("Contents/MacOS")).unwrap();
         let mut update = transaction(Phase::Requested);
         update.layout = Layout::MacBundle { bundle, incoming };
@@ -1937,21 +1937,21 @@ mod tests {
     }
 
     /// m1-laptop, Nov 11: the engine had been the trial of the update before
-    /// (started from `.Zeron.app.new-<id>`, renamed to `Zeron.app` at its
+    /// (started from `.Keiki.app.new-<id>`, renamed to `Keiki.app` at its
     /// commit) and was still named by that path. Asked for the next update,
     /// it didn't recognise its own installation, stopped, and never came back.
     #[test]
     fn an_engine_from_an_earlier_update_is_the_installed_version() {
         let (root, update) = mac_install("1.0.0");
-        let installed = root.path().join("Zeron.app/Contents/MacOS/Zeron Engine");
-        let earlier = root.path().join(".Zeron.app.new-earlier/Contents/MacOS/Zeron Engine");
+        let installed = root.path().join("Keiki.app/Contents/MacOS/Zeron Engine");
+        let earlier = root.path().join(".Keiki.app.new-earlier/Contents/MacOS/Zeron Engine");
         for exe in [&installed, &earlier] {
             let who = update.layout.whoami_of(exe, &update);
             assert_eq!(who, Some(self::who("1.0.0", "1.0.0")), "{}", exe.display());
             assert_eq!(step_for(&update, &who.unwrap()), Step::StartTrial);
         }
         // The new version, on trial from the incoming bundle.
-        let trial = root.path().join(".Zeron.app.new-next/Contents/MacOS/Zeron Engine");
+        let trial = root.path().join(".Keiki.app.new-next/Contents/MacOS/Zeron Engine");
         std::fs::write(&trial, "").unwrap();
         assert_eq!(update.layout.whoami_of(&trial, &update), Some(who("2.0.0", "1.0.0")));
     }
@@ -1990,13 +1990,13 @@ mod tests {
     #[test]
     fn only_the_installation_is_recognised() {
         let (root, update) = mac_install("1.0.0");
-        let abandoned = root.path().join(".Zeron.app.new-abandoned");
+        let abandoned = root.path().join(".Keiki.app.new-abandoned");
         std::fs::create_dir_all(abandoned.join("Contents/MacOS")).unwrap();
         for exe in [
             root.path().join("build/Zeron Engine"),
             abandoned.join("Contents/MacOS/Zeron Engine"),
             root.path().join(".Other.app.new-x/Contents/MacOS/Zeron Engine"),
-            root.path().join(".Zeron.app.new-x/Zeron Engine"),
+            root.path().join(".Keiki.app.new-x/Zeron Engine"),
         ] {
             assert_eq!(update.layout.whoami_of(&exe, &update), None, "{}", exe.display());
         }
@@ -2008,7 +2008,7 @@ mod tests {
     fn an_engine_knows_whether_it_carries_out_the_update() {
         let (root, update) = mac_install("1.0.0");
         let data = tempfile::tempdir().unwrap();
-        let earlier = root.path().join(".Zeron.app.new-earlier/Contents/MacOS/Zeron Engine");
+        let earlier = root.path().join(".Keiki.app.new-earlier/Contents/MacOS/Zeron Engine");
         let beside = root.path().join("build/Zeron Engine");
         assert!(!starts_from(data.path(), &earlier), "no update requested");
         write(data.path(), &update).unwrap();

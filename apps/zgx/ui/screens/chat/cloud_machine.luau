@@ -345,7 +345,7 @@ function M.failure_words(word: string): string
 	elseif word == "offline" then
 		return say("offline", "You're offline. Try again once you're back.")
 	elseif word == "outdated" then
-		return say("outdated", "This version of Zeron can't wake Cloud machines. Update it in About.")
+		return say("outdated", "This version of Keiki can't wake Cloud machines. Update it in About.")
 	elseif string.find(word, " ", 1, true) then
 		return word
 	end

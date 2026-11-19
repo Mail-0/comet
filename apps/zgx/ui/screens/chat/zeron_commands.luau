@@ -16,14 +16,14 @@ local M = {}
 export type Command = { name: string, detail: string, chat: boolean }
 
 M.CATALOG = {
-	{ name = "model", detail = "Zeron: choose agent, model, and reasoning", chat = false },
-	{ name = "new", detail = "Zeron: start a new conversation", chat = false },
-	{ name = "resume", detail = "Zeron: search and open conversations", chat = false },
-	{ name = "settings", detail = "Zeron: open settings", chat = false },
-	{ name = "files", detail = "Zeron: open project files", chat = true },
-	{ name = "terminal", detail = "Zeron: open a terminal", chat = true },
-	{ name = "rename", detail = "Zeron: rename this conversation", chat = true },
-	{ name = "stop", detail = "Zeron: stop the active run", chat = true },
+	{ name = "model", detail = "Keiki: choose agent, model, and reasoning", chat = false },
+	{ name = "new", detail = "Keiki: start a new conversation", chat = false },
+	{ name = "resume", detail = "Keiki: search and open conversations", chat = false },
+	{ name = "settings", detail = "Keiki: open settings", chat = false },
+	{ name = "files", detail = "Keiki: open project files", chat = true },
+	{ name = "terminal", detail = "Keiki: open a terminal", chat = true },
+	{ name = "rename", detail = "Keiki: rename this conversation", chat = true },
+	{ name = "stop", detail = "Keiki: stop the active run", chat = true },
 } :: { Command }
 
 -- The rows the `/` list ends with: Zeron's commands, named clear of the

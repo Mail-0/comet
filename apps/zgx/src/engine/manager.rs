@@ -1,8 +1,8 @@
 //! Which engine this app works through, and keeping it running: the one
 //! place that starts, restarts and refuses engines.
 //!
-//! **Zeron.app's beta** (the `beta` feature: this interface as the Zeron app
-//! itself, scripts/package-zgx-macos.sh) manages Zeron.app's own engine, as
+//! **Keiki.app's beta** (the `beta` feature: this interface as the Zeron app
+//! itself, scripts/package-zgx-macos.sh) manages Keiki.app's own engine, as
 //! the shipping app does (crates/engine/src/managed.rs, through the same
 //! crates/launch): the bundle's `Contents/MacOS/Zeron Engine`, started
 //! detached with `ZERON_MANAGED_ENGINE` and the bundle as `ZERON_APP`, its
@@ -92,7 +92,7 @@ pub struct Config {
     edge: String,
     client: String,
     callback_port: u16,
-    /// Zeron.app's engine, managed as Zeron.app manages it (the beta): its
+    /// Keiki.app's engine, managed as Keiki.app manages it (the beta): its
     /// bundle's, started through crates/launch; it restarts into a newer
     /// bundle by itself.
     managed: bool,
@@ -112,7 +112,7 @@ impl Config {
         if self.spawn { self.bin.as_deref() } else { None }
     }
 
-    /// Whether this is Zeron.app's engine, which follows its bundle by
+    /// Whether this is Keiki.app's engine, which follows its bundle by
     /// itself (no "older than the one on disk" of this app's to judge).
     pub fn follows_bundle(&self) -> bool {
         self.managed
@@ -164,7 +164,7 @@ impl Config {
         }
     }
 
-    /// The beta's: Zeron.app's engine, resolved as Zeron.app resolves it.
+    /// The beta's: Keiki.app's engine, resolved as Keiki.app resolves it.
     fn zeron_app(
         var: impl Fn(&str) -> Option<String>,
         home: &Path,
@@ -340,7 +340,7 @@ impl Spawner {
     }
 }
 
-/// Zeron.app's engine, started as Zeron.app starts it (crates/launch).
+/// Keiki.app's engine, started as Keiki.app starts it (crates/launch).
 fn launch(config: &Config) -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let child = zeron_launch::launch(
@@ -492,14 +492,14 @@ mod tests {
         assert!(!staging.follows_bundle());
     }
 
-    /// The beta manages Zeron.app's own engine: its port and data, the
+    /// The beta manages Keiki.app's own engine: its port and data, the
     /// bundle's engine, production's edge and sign-in; never staging's.
     #[cfg(feature = "beta")]
     #[test]
     fn a_beta_build_manages_zeron_app_s_engine() {
         let dir = std::env::temp_dir().join(format!("zgx-beta-engine-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let macos = dir.join("Zeron.app/Contents/MacOS");
+        let macos = dir.join("Keiki.app/Contents/MacOS");
         std::fs::create_dir_all(&macos).unwrap();
         let exe = macos.join("zeron");
         std::fs::write(macos.join("Zeron Engine"), "").unwrap();
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(beta.startable(), Some(macos.join("Zeron Engine").as_path()));
         assert_eq!((beta.edge.as_str(), beta.client.as_str(), beta.callback_port), (prod.edge.as_str(), prod.client.as_str(), 27641));
         assert!(beta.follows_bundle());
-        // As Zeron.app: ZERON_DATA_DIR and ZERON_IPC_PORT move it; the
+        // As Keiki.app: ZERON_DATA_DIR and ZERON_IPC_PORT move it; the
         // development variables don't.
         let moved = config_of(&[("ZERON_DATA_DIR", "/tmp/z"), ("ZERON_IPC_PORT", "27700"), ("ZERON_ZGX_ENGINE_PORT", "1")], home, Some(&exe), &prod.edge).unwrap();
         assert_eq!((moved.port, moved.data_dir), (27700, PathBuf::from("/tmp/z")));

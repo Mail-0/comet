@@ -513,10 +513,10 @@ fn zeron_v2_is_installed_as_zeron_s_and_runs_one_page() {
     let listed = live::installed(&t);
     let ids: Vec<&str> = listed.iter().map(|i| i.id.as_str()).collect();
     assert_eq!(&ids[..2], [live::BUILTIN, "zeron-v2"]);
-    assert_eq!((listed[0].name.as_str(), listed[1].name.as_str()), ("Zeron v3", "Zeron v2"));
-    assert_eq!(listed[1].description, "The single-page layout from before Zeron v3.");
+    assert_eq!((listed[0].name.as_str(), listed[1].name.as_str()), ("Keiki v3", "Keiki v2"));
+    assert_eq!(listed[1].description, "The single-page layout from before Keiki v3.");
     assert!(listed[1].official.is_some() && !listed[1].out_of_date);
-    assert!(preview::trusted_at(&t, "zeron-v2", &root.join("approvals.json")), "no consent asked of Zeron's own");
+    assert!(preview::trusted_at(&t, "zeron-v2", &root.join("approvals.json")), "no consent asked of Keiki's own");
     assert!(official::verified(&t.join("zeron-v2")).is_some());
 
     // v3, the default: the page a card under the top bar.

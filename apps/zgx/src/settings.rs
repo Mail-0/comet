@@ -94,7 +94,7 @@ const ENGINE_METHODS: &[&str] = &[
     "SetTitleSettings",
     "GetNativeSubagents",
     "SetNativeSubagents",
-    // "Keep Zeron running after you quit" (src/quit_prompt.rs).
+    // "Keep Keiki running after you quit" (src/quit_prompt.rs).
     "GetBackgroundSettings",
     "SetBackgroundSettings",
     // Whether this window has the keys: banners set to "only when in the

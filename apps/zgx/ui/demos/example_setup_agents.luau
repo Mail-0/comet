@@ -144,7 +144,7 @@ return {
 						if s == "looking" then
 							return "Looking for coding agents on this Mac…"
 						elseif s == "unavailable" then
-							return "Zeron runs the coding agents you already use."
+							return "Keiki runs the coding agents you already use."
 						elseif none_installed() then
 							return "None are on this Mac yet. Install one to continue."
 						end

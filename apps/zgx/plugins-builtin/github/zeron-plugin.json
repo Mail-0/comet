@@ -27,7 +27,7 @@
     {
       "id": "open_pr_links",
       "kind": "switch",
-      "label": "Open pull request links in Zeron",
+      "label": "Open pull request links in Keiki",
       "description": "A pull request link in a chat opens here, beside the chat. Off, it opens where your other links do.",
       "default": true
     }

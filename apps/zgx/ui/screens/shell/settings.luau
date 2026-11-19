@@ -121,7 +121,7 @@ end
 -- the window (Zeron's: the window's buttons sit in it).
 local TITLE_H = 38
 -- The group the pages that come and go list ahead of.
-local EXTRAS_BEFORE = "Zeron"
+local EXTRAS_BEFORE = "Keiki"
 
 -- Archived: sessions put away (screens/settings/archived), last.
 M.add {
@@ -337,7 +337,7 @@ function M.View(props: { inset: boolean?, collapsed: State<boolean>? }?): Node
 					end
 					local last: string? = nil
 					-- Those that come and go (plugins' pages), under their own
-					-- headings: ahead of the "Zeron" group (About and updates
+					-- headings: ahead of the "Keiki" group (About and updates
 					-- stay last), or at the end where there's none.
 					local extras_in = false
 					local function add_extras()

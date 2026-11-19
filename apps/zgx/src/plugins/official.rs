@@ -21,7 +21,7 @@
 //!   package's record) or not marked is someone's, and never touched. The
 //!   official one then takes the next free id (`<id>-2`…).
 //! - One exactly as this build writes it (`verified`) is Zeron's: listed as
-//!   built in (no Delete, no Export, "By Zeron"), and run with the app's
+//!   built in (no Delete, no Export, "By Keiki"), and run with the app's
 //!   powers without asking, as the default is, its files being Zeron's own.
 //!   Anything else is an ordinary template: a preview until you keep it.
 
@@ -53,10 +53,10 @@ pub struct Official {
 /// Every official template, in the order the Templates page lists them
 /// (after the default).
 pub const OFFICIAL: &[Official] =
-    &[Official { id: "zeron-v2", name: "Zeron v2", description: "The single-page layout from before Zeron v3." }];
+    &[Official { id: "zeron-v2", name: "Keiki v2", description: "The single-page layout from before Keiki v3." }];
 
 /// The default template's name and description (its id is `live::BUILTIN`).
-pub const DEFAULT_NAME: &str = "Zeron v3";
+pub const DEFAULT_NAME: &str = "Keiki v3";
 pub const DEFAULT_DESCRIPTION: &str = "The default interface. Chats can sit side by side.";
 
 pub fn find(id: &str) -> Option<Official> {
@@ -81,7 +81,7 @@ pub fn manifest(o: &Official, id: &str) -> serde_json::Value {
         "id": id,
         "name": o.name,
         "description": o.description,
-        "author": "Zeron",
+        "author": "Keiki",
         "version": live::ZERON_VERSION,
         "zeron_version": live::ZERON_VERSION,
         MARK: o.id,
@@ -376,7 +376,7 @@ mod tests {
                 "screens/shell/page.luau",
                 "screens/shell/view.luau",
             ],
-            "Zeron v2's files"
+            "Keiki v2's files"
         );
         for rel in &files {
             let v2 = std::fs::read_to_string(source(&ui(), &V2).join(rel)).unwrap();
@@ -409,7 +409,7 @@ mod tests {
         want.sort();
         assert_eq!(held, want, "its interface, its .base.json and its manifest: nothing else");
         let m = read_json(&at.join(MANIFEST));
-        assert_eq!((m["name"].as_str(), m["author"].as_str(), m[MARK].as_str()), (Some("Zeron v2"), Some("Zeron"), Some("zeron-v2")));
+        assert_eq!((m["name"].as_str(), m["author"].as_str(), m[MARK].as_str()), (Some("Keiki v2"), Some("Keiki"), Some("zeron-v2")));
         assert_eq!(m["zeron_version"], live::ZERON_VERSION);
         // Again: the same place, nothing rewritten.
         let stamp = live::template_stamp(&at);
@@ -480,7 +480,7 @@ mod tests {
         std::fs::remove_file(t.join("zeron-v2/.imported.json")).unwrap();
         write(&t, ".zeron/zeron-template.json", r#"{"name":"Zeron v3","author":"Zeron"}"#);
         let listed = live::installed(&t);
-        assert_eq!(listed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), [live::BUILTIN, "zeron-v2", "my-v2"], "the default, Zeron's, then the rest");
+        assert_eq!(listed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), [live::BUILTIN, "zeron-v2", "my-v2"], "the default, Keiki's, then the rest");
         assert_eq!(listed[1].official, Some(V2));
     }
 }

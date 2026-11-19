@@ -209,7 +209,7 @@ local function box_of(app: any, find: string): { y: number, h: number }?
 	return nil
 end
 
-test("an agent Zeron can't add an account to ends its list at its last account", function()
+test("an agent Keiki can't add an account to ends its list at its last account", function()
 	-- (Claude Code: no "Add … account" action, so no rule and no gap under
 	-- the last row.)
 	local app = with_accounts(here(accounts()))

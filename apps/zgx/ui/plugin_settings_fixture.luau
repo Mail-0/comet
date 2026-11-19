@@ -121,7 +121,7 @@ local function publish()
 					id = "parallax-scenes",
 					name = "Parallax scenes",
 					version = "1.0.0",
-					description = "Zeron's member-card scenes behind a new chat, each layer moving with the pointer.",
+					description = "Keiki's member-card scenes behind a new chat, each layer moving with the pointer.",
 					author = { kind = "zeron" },
 					status = "on",
 					permissions = { "ui.change" },
@@ -176,7 +176,7 @@ local function publish()
 		table.insert(list, {
 			plugin = "parallax-scenes",
 			name = "Parallax scenes",
-			description = "Zeron's member-card scenes behind a new chat. Use it as the wallpaper here; Zeron's effect is drawn over the scene.",
+			description = "Keiki's member-card scenes behind a new chat. Use it as the wallpaper here; Keiki's effect is drawn over the scene.",
 			settings = SCENES_SETTINGS,
 			values = scene_values,
 			status = {},
@@ -284,7 +284,7 @@ ui.command {
 }
 ui.command {
 	id = "snapper_on",
-	title = "Zeron's own Snapper is on",
+	title = "Keiki's own Snapper is on",
 	run = function()
 		model.snapper = true
 		publish()
@@ -316,7 +316,7 @@ ui.command {
 }
 ui.command {
 	id = "grant_capture",
-	title = "Screen Recording granted in System Settings (Zeron hasn't looked yet)",
+	title = "Screen Recording granted in System Settings (Keiki hasn't looked yet)",
 	run = function()
 		granted.capture = true
 	end,

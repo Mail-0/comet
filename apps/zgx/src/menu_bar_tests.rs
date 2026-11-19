@@ -296,7 +296,7 @@ ui.command { id = "nameless", title = "Nameless", menu = "", key = "cmd+shift+u"
     let expected = zerons(&w);
     assert!(desktop.refusals.borrow().is_empty(), "refused: {:?}", desktop.refusals.borrow());
     let wrong = unreached(&mut w, &desktop, &expected);
-    assert!(wrong.is_empty(), "Zeron's:\n{}", wrong.join("\n"));
+    assert!(wrong.is_empty(), "Keiki's:\n{}", wrong.join("\n"));
     for (keys, id) in [("cmd+shift+y", "keys/free"), ("cmd+shift+u", "keys/nameless")] {
         assert_eq!(w.reach(&desktop, keys).as_deref(), Some(id), "the plugin's {keys}");
         assert!(w.app.host.run_command(id), "{id} runs");
@@ -317,7 +317,7 @@ ui.command { id = "nameless", title = "Nameless", menu = "", key = "cmd+shift+u"
     assert_eq!(lost.len(), 4, "{lost:?}");
     // Its row on the Plugins page.
     let notice = crate::plugins::shortcut_notice(&lost, |id| id.to_string());
-    assert_eq!(notice, "Its ⌘K for “Mine” is already Zeron's (Search), so it's in the menu bar without one. So are 3 more of its commands.");
+    assert_eq!(notice, "Its ⌘K for “Mine” is already Keiki's (Search), so it's in the menu bar without one. So are 3 more of its commands.");
 }
 
 /// Two plugins with one key: the one loaded first keeps it, the other's
@@ -407,7 +407,7 @@ fn a_bar_refused_anyway_leaves_zeron_s_own() {
     let expected = zerons(&w);
     assert!(!desktop.refusals.borrow().is_empty(), "the test's platform refused it");
     let wrong = unreached(&mut w, &desktop, &expected);
-    assert!(wrong.is_empty(), "Zeron's own after a refusal:\n{}", wrong.join("\n"));
+    assert!(wrong.is_empty(), "Keiki's own after a refusal:\n{}", wrong.join("\n"));
     assert!(items(&desktop.menus.borrow()).iter().any(|(_, a, _)| a == crate::plugins::USE_ZERON_TEMPLATE));
 }
 
@@ -431,7 +431,7 @@ return ui.column {}
     assert!(wrong.is_empty(), "after it closed:\n{}", wrong.join("\n"));
 }
 
-/// The host's own View items: "Use Zeron v3" always, "Keep <template>…"
+/// The host's own View items: "Use Keiki v3" always, "Keep <template>…"
 /// while one is in preview, after the scripts' View items; a script's
 /// command with a host id (`zeron.`) is left out, never a second item.
 #[test]
@@ -447,7 +447,7 @@ fn the_host_s_own_items_follow_a_preview_and_no_script_takes_their_ids() {
         vec![
             ("Toggle sidebar".into(), "shell.toggle_sidebar".into()),
             ("Keep Dusk…".into(), crate::plugins::KEEP_TEMPLATE.into()),
-            ("Use Zeron v3".into(), crate::plugins::USE_ZERON_TEMPLATE.into()),
+            ("Use Keiki v3".into(), crate::plugins::USE_ZERON_TEMPLATE.into()),
         ]
     );
     let none = crate::menu_bar::Bar::of(&commands, &[], &[], None);
@@ -456,7 +456,7 @@ fn the_host_s_own_items_follow_a_preview_and_no_script_takes_their_ids() {
 
 /// B1: the way back to the default interface is a key no script can take:
 /// `cmd+alt+shift+home` (Ctrl+Alt+Shift+Home on Linux and Windows, where
-/// there's no menu bar to reach "Use Zeron v3" from) is the host's item's,
+/// there's no menu bar to reach "Use Keiki v3" from) is the host's item's,
 /// whatever a template or a plugin declares on it, and reserved, so a
 /// focused web page or terminal never has it first.
 #[test]
@@ -471,7 +471,7 @@ fn the_default_interface_key_is_the_host_s_whatever_a_script_declares() {
     assert!(bar.reserved.contains(&key), "reserved: {:?}", bar.reserved);
     // The plugin's row says whose it is.
     let why = bar.dropped.iter().find(|d| d.plugin == "thief").map(|d| d.why.clone());
-    assert_eq!(why, Some(crate::menu_bar::Why::Zerons("Use Zeron v3".into())));
+    assert_eq!(why, Some(crate::menu_bar::Why::Zerons("Use Keiki v3".into())));
     // And the bar of the host's own alone has it too.
     let own: Vec<String> = items(&bar.own).into_iter().filter(|(_, _, k)| k.as_ref() == Some(&key)).map(|(_, a, _)| a).collect();
     assert_eq!(own, vec![crate::plugins::USE_ZERON_TEMPLATE.to_string()]);

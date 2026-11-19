@@ -2471,7 +2471,7 @@ ui.contribute { target = "#page-title", after = ui.text { id = "lent-words", loc
     app.frames(30);
     assert_eq!(app.text("lent-words"), "Working", "{}", app.tree());
     choose_language(&mut app, "zh-Hans");
-    assert_ne!(app.text("lent-words"), "Working", "Zeron's words follow the language in a plugin too");
+    assert_ne!(app.text("lent-words"), "Working", "Keiki's words follow the language in a plugin too");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

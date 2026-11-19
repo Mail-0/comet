@@ -24,7 +24,7 @@ return {
 					-- hairline under it.
 					banner.Banner { edge = true, tone = "danger", title = "Can't reach GitHub.", body = "Pull requests and checks are from 4 minutes ago.", action = { label = "Retry" } },
 					banner.Banner { edge = true, tone = "warning", title = "This branch is 12 commits behind main.", action = { label = "Update branch" }, on_dismiss = function() end },
-					banner.Banner { edge = true, tone = "info", title = "Zeron 0.3 is ready.", body = "Restart to update.", actions = { { label = "Restart", primary = true }, { label = "Later" } } },
+					banner.Banner { edge = true, tone = "info", title = "Keiki 0.3 is ready.", body = "Restart to update.", actions = { { label = "Restart", primary = true }, { label = "Later" } } },
 					-- Inside a page, among its cards: the same line, rounded.
 					banner.Banner { tone = "danger", title = "Tests failed", body = "2 of 318. Fix them on the branch and the check runs again.", action = { label = "See what failed" } },
 				}

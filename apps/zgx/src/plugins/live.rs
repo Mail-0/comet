@@ -237,7 +237,7 @@ pub fn sync_zeron(ui: &Path, templates: &Path) -> std::io::Result<usize> {
             "id": BUILTIN,
             "name": super::official::DEFAULT_NAME,
             "description": super::official::DEFAULT_DESCRIPTION,
-            "author": "Zeron",
+            "author": "Keiki",
             "version": ZERON_VERSION,
             "zeron_version": ZERON_VERSION,
         })),
@@ -990,7 +990,7 @@ mod tests {
         assert_eq!(active(&t), BUILTIN);
         assert_eq!(chosen(&t), "t", "what was chosen, still shown");
         set_active(&t, "t").unwrap();
-        assert_eq!(active(&t), BUILTIN, "re-selected from a timer: still Zeron's own");
+        assert_eq!(active(&t), BUILTIN, "re-selected from a timer: still Keiki's own");
         super::super::preview::enter_safe_for_test(false);
         assert_eq!(active(&t), "t");
     }
@@ -1095,7 +1095,7 @@ mod tests {
         assert_eq!(read(&t.join(LIVE), "screens/x.luau"), "-- x, updated");
         // `.live` written by someone else, or a file of it gone.
         std::thread::sleep(std::time::Duration::from_millis(5));
-        write(&t.join(LIVE), "screens/x.luau", "-- not this Zeron's");
+        write(&t.join(LIVE), "screens/x.luau", "-- not this Keiki's");
         assert!(!runs_as_is(BUILTIN));
         lay(BUILTIN);
         std::fs::remove_file(t.join(LIVE).join("app.luau")).unwrap();
@@ -1161,7 +1161,7 @@ mod tests {
         assert_eq!((id.as_str(), name.as_str()), ("t-copy", "Tidy copy"));
         assert_eq!(new_id(&t, "My Dark  Theme!"), "my-dark-theme");
         assert_eq!(new_id(&t, "T"), "template-t");
-        assert_eq!(new_id(&t, "Zeron"), "template-zeron");
+        assert_eq!(new_id(&t, "Keiki"), "template-zeron");
         assert_eq!(new_id(&t, "  "), "template");
         std::fs::create_dir_all(t.join("airy")).unwrap();
         assert_eq!(new_id(&t, "Airy"), "airy-2");
@@ -1172,7 +1172,7 @@ mod tests {
     fn a_bundle_s_interface_isn_t_watched_file_by_file() {
         let root = dir("watched-bundle");
         let templates = root.join("templates");
-        let ui = root.join("Zeron.app/Contents/Resources/ui");
+        let ui = root.join("Keiki.app/Contents/Resources/ui");
         write(&ui, "app.luau", "return 1");
         write(&ui, "screens/shell/page.luau", "return 2");
         std::fs::create_dir_all(&templates).unwrap();

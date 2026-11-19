@@ -341,7 +341,7 @@ fn every_menu_item_is_in_the_command_palette() {
         assert!(app.host.run_command("shell.palette"), "the palette didn't open");
         app.wait_until(|app| app.find(field).is_some());
         app.frames(20);
-        let label = if id == crate::plugins::USE_ZERON_TEMPLATE { "Use Zeron v3".to_owned() } else { title.clone() };
+        let label = if id == crate::plugins::USE_ZERON_TEMPLATE { "Use Keiki v3".to_owned() } else { title.clone() };
         app.type_text(field, &label);
         app.frames(20);
         let row = format!("role:option \"{label}\"");

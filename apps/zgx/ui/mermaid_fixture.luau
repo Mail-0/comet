@@ -63,7 +63,7 @@ ui.state("test_mermaid_writing", ""):set(table.concat(told, " "))
 local PIECES = {
 	"Here's the flow:\n\n```mermaid\nflowchart TD\n  A[Start] --> B{Ready?}\n",
 	"  B -->|yes| C[Ship it]\n  B -->|no| D[Fix]\n",
-	"```\n\nAnd who talks to whom:\n\n```mermaid\nsequenceDiagram\n  participant U as User\n  participant Z as Zeron\n  U->>Z: Ask\n  Z-->>U: Answer\n```\n",
+	"```\n\nAnd who talks to whom:\n\n```mermaid\nsequenceDiagram\n  participant U as User\n  participant Z as Keiki\n  U->>Z: Ask\n  Z-->>U: Answer\n```\n",
 	"\nThis one isn't a diagram:\n\n```mermaid\nnot a diagram at all\n```\n",
 }
 local reply = ui.state("test_mermaid_reply", "")

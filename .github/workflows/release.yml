@@ -10,7 +10,7 @@ name: release
 # `comet-native-releases` R2 bucket (served at zeron.sh/releases/* for
 # `curl -fsSL https://zeron.sh/install.sh | sh`), bumping latest.txt.
 #
-# Every shipped Zeron installs these (crates/update at v0.2.138 reads the same
+# Every shipped Keiki installs these (crates/update at v0.2.138 reads the same
 # names, checksums and `--version` answers).
 #
 # Trigger: push a tag `v<version>` matching the workspace version in
@@ -81,7 +81,7 @@ jobs:
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
               macos-arm64.dmg macos-arm64-app.tar.gz \
               windows-x86_64.zip windows-x86_64.exe windows-x86_64-setup.exe; do
-            test -f "dist/zeron-$ver-$platform" \
+            test -f "dist/keiki-$ver-$platform" \
               || { echo "missing artifact for tag v$ver: $platform — check builds and Cargo.toml version"; exit 1; }
           done
           echo "VERSION=$ver" >> "$GITHUB_ENV"
@@ -89,7 +89,7 @@ jobs:
         run: |
           # The app needs macOS 13 (Ghostty's floor). A Mac below it is held on
           # the release it has, and told why (crates/update `offer`, in every
-          # Zeron since 0.2.136).
+          # Keiki since 0.2.136).
           manifest=$(jq -n --arg version "$VERSION" '{version: $version, minimumMacOS: "13.0", files: {}}')
           for f in dist/*; do
             sha=$(sha256sum "$f" | cut -d' ' -f1)

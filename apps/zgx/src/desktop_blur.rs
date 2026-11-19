@@ -202,8 +202,8 @@ mod tests {
     fn only_events_that_may_change_the_blur_are_asked_about() {
         assert!(hyprland::matters("configreloaded>>\n"));
         assert!(hyprland::matters("movewindowv2>>55aa,3,3\n"));
-        assert!(hyprland::matters("openwindow>>55aa,3,zeron-zgx,Zeron\n"));
-        assert!(!hyprland::matters("activewindow>>zeron-zgx,Zeron\n"));
+        assert!(hyprland::matters("openwindow>>55aa,3,zeron-zgx,Keiki\n"));
+        assert!(!hyprland::matters("activewindow>>zeron-zgx,Keiki\n"));
         assert!(!hyprland::matters("workspacev2>>3,3\n"));
     }
 }

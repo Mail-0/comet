@@ -23,9 +23,9 @@
 //! The engine's edge, sign-in client and loopback port come from here (the
 //! engine this app starts is given them, src/engine/manager.rs).
 //!
-//! Zeron.app's beta (the `beta` feature) is production's only: edge.zeron.sh,
+//! Keiki.app's beta (the `beta` feature) is production's only: edge.zeron.sh,
 //! its client and port 27641 (the only loopback production's WorkOS client
-//! accepts, shared with Zeron.app). It has no staging built in, and the
+//! accepts, shared with Keiki.app). It has no staging built in, and the
 //! variables below do nothing in it.
 //!
 //! Development builds are staging's by default, production one variable

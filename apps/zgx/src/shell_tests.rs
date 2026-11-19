@@ -453,13 +453,13 @@ fn a_sessions_copy_menu_copies_and_says_so() {
     assert!(app.find("role:menuitem \"Harness session ID\"").is_none(), "no harness id, none offered");
     // Its Zeron link (every session's), as the host makes it.
     app.frames(20);
-    app.click("role:menuitem \"Zeron conversation link\"");
+    app.click("role:menuitem \"Keiki conversation link\"");
     assert!(
         app.wait_until(|app| app.desktop.as_ref().unwrap().clipboard().starts_with("zeron://open/chat/a3?workspace=")),
-        "the Zeron link: {:?}",
+        "the Keiki link: {:?}",
         app.desktop.as_ref().unwrap().clipboard()
     );
-    assert!(app.wait_until(|app| app.find("\"Zeron conversation link copied\"").is_some()), "said so");
+    assert!(app.wait_until(|app| app.find("\"Keiki conversation link copied\"").is_some()), "said so");
 }
 
 /// Deleting a session is asked once more (Zeron's "Delete session?"): its

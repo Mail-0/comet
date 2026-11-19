@@ -35,7 +35,7 @@ const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstal
 /// a package for `beta\<version>` before it installs it, and the beta channel
 /// carries stable releases too, so the one name stays.) Such an app can't
 /// update by swapping one file, so it updates from the package
-/// (`zeron-<version>-windows-<arch>.zip`); nothing already there is replaced,
+/// (`keiki-<version>-windows-<arch>.zip`); nothing already there is replaced,
 /// which a running engine would prevent. The old app (one self-contained
 /// `zeron.exe`) reads no such folder.
 const BETA: &str = "beta";
@@ -108,12 +108,12 @@ pub(super) fn release_url() -> anyhow::Result<Option<String>> {
 }
 
 pub fn artifact(version: &str) -> String {
-    format!("zeron-{version}-windows-{}.exe", std::env::consts::ARCH)
+    format!("keiki-{version}-windows-{}.exe", std::env::consts::ARCH)
 }
 
 /// A packaged app's update: the portable package.
 fn package(version: &str) -> String {
-    format!("zeron-{version}-windows-{}.zip", std::env::consts::ARCH)
+    format!("keiki-{version}-windows-{}.zip", std::env::consts::ARCH)
 }
 
 /// `x.y.z`, or a beta's `x.y.z-beta.n`: digits and dots only, since it names
@@ -421,7 +421,7 @@ pub async fn complete_install(
         })?;
     let latest = manifest.version.trim().to_owned();
     if latest != version && !super::version_newer(&latest, version) {
-        bail!("the release feed offers Zeron {latest}, which is older than this Zeron {version}");
+        bail!("the release feed offers Keiki {latest}, which is older than this Keiki {version}");
     }
     let base = manifest.channel.base(&super::release_base(edge_url)?);
     let staged = stage_package(&base, &manifest, directory).await?;
@@ -435,7 +435,7 @@ pub async fn complete_install(
         if let Some(stage) = staged.parent() {
             let _ = std::fs::remove_dir_all(stage);
         }
-        bail!("the release feed has moved on to Zeron {latest}; this Zeron {version} can't be completed from it");
+        bail!("the release feed has moved on to Keiki {latest}; this Keiki {version} can't be completed from it");
     }
     if latest == version {
         let result = install_version_files(&staged, directory);
@@ -511,7 +511,7 @@ fn lock_completion_blocking(directory: &Path, wait: std::time::Duration) -> anyh
         }
         ensure!(
             std::time::Instant::now() < deadline,
-            "another start of Zeron is completing this installation; try again in a moment"
+            "another start of Keiki is completing this installation; try again in a moment"
         );
         std::thread::sleep(std::time::Duration::from_millis(250));
     }

@@ -182,10 +182,10 @@ fn require_mac_app_update_platform() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `zeron-<ver>-<os>-<arch>.tar.gz` — the headless/CLI tarball (Linux CI builds).
+/// `keiki-<ver>-<os>-<arch>.tar.gz` — the headless/CLI tarball (Linux CI builds).
 pub fn headless_artifact(version: &str) -> String {
     let (os, arch) = platform_key();
-    format!("zeron-{version}-{os}-{arch}.tar.gz")
+    format!("keiki-{version}-{os}-{arch}.tar.gz")
 }
 
 /// The directory under a managed install's root that holds `version`.
@@ -201,10 +201,10 @@ pub fn managed_dir(version: &str) -> String {
     }
 }
 
-/// `zeron-<ver>-macos-<arch>-app.tar.gz` — the macOS app update payload.
+/// `keiki-<ver>-macos-<arch>-app.tar.gz` — the macOS app update payload.
 pub fn mac_app_artifact(version: &str) -> String {
     let (_, arch) = platform_key();
-    format!("zeron-{version}-macos-{arch}-app.tar.gz")
+    format!("keiki-{version}-macos-{arch}-app.tar.gz")
 }
 
 /// A release version: dotted numbers and, for a prerelease, its semver
@@ -356,7 +356,7 @@ fn offer_given(
         && !channel::macos_at_least(system, minimum)
     {
         return Offer::Held(format!(
-            "Zeron {latest} needs macOS {minimum} or later. This Mac has macOS {system}."
+            "Keiki {latest} needs macOS {minimum} or later. This Mac has macOS {system}."
         ));
     }
     if !leaving_beta {
@@ -367,7 +367,7 @@ fn offer_given(
         && version_newer(engine, target_engine)
     {
         return Offer::Held(format!(
-            "This beta's engine ({engine}) is newer than Zeron {latest}'s. You'll move to Stable once it catches up."
+            "This beta's engine ({engine}) is newer than Keiki {latest}'s. You'll move to Stable once it catches up."
         ));
     }
     if version_newer(latest, running) {
@@ -604,7 +604,7 @@ impl std::fmt::Display for UpdateBlocker {
             ),
             Self::NotWritable(dir) => write!(
                 f,
-                "Zeron doesn't have permission to replace itself in {}.",
+                "Keiki doesn't have permission to replace itself in {}.",
                 dir.display()
             ),
         }
@@ -832,7 +832,7 @@ impl UpdateAbility {
         match kind {
             InstallKind::Managed { .. } if os != "linux" => Self::refused(
                 InstallMethod::Unmanaged,
-                "Zeron on a Mac updates through the Zeron app. Install the app on this Mac.",
+                "Keiki on a Mac updates through the Keiki app. Install the app on this Mac.",
                 None,
             ),
             InstallKind::Managed { .. } if !supervised => Self::refused(
@@ -876,7 +876,7 @@ impl UpdateAbility {
             ),
             InstallKind::Unmanaged => Self::refused(
                 InstallMethod::Unmanaged,
-                "This copy of Zeron wasn't installed by the installer, so it can't replace itself.",
+                "This copy of Keiki wasn't installed by the installer, so it can't replace itself.",
                 (os == "linux").then_some(LINUX_INSTALL_COMMAND),
             ),
         }
@@ -1583,7 +1583,7 @@ fn restart_outcome(code: Option<i32>, stderr: &[u8]) -> anyhow::Result<()> {
 // macOS app-bundle installs — the desktop path
 // ---------------------------------------------------------------------------
 
-/// Download + unpack the app tarball into `{data_dir}/updates/<ver>/Zeron.app`
+/// Download + unpack the app tarball into `{data_dir}/updates/<ver>/Keiki.app`
 /// (idempotent). The bundle is unpacked beside its final name and renamed in
 /// only after its binary answers with the expected version, so an interrupted
 /// unpack can never be mistaken for a staged update. Returns the staged bundle.
@@ -1601,7 +1601,7 @@ pub async fn stage_mac_app(
     );
     let updates = data_dir.join("updates");
     let dir = updates.join(version);
-    let staged = dir.join("Zeron.app");
+    let staged = dir.join("Keiki.app");
     let staged_binary = staged.join("Contents/MacOS/zeron");
     if staged_binary.exists() && verify_staged_binary(&staged_binary, version).await.is_ok() {
         return Ok(staged);
@@ -1623,13 +1623,13 @@ pub async fn stage_mac_app(
             &unpack.to_string_lossy(),
         ],
     )
-    .map(|()| unpack.join("Zeron.app"));
+    .map(|()| unpack.join("Keiki.app"));
     std::fs::remove_file(&tarball).ok();
     let unpacked = unpacked?;
     let unpacked_binary = unpacked.join("Contents/MacOS/zeron");
     if !unpacked_binary.exists() {
         let _ = std::fs::remove_dir_all(&dir);
-        bail!("app tarball {file} did not contain Zeron.app");
+        bail!("app tarball {file} did not contain Keiki.app");
     }
     if let Err(err) = verify_staged_binary(&unpacked_binary, version).await {
         let _ = std::fs::remove_dir_all(&dir);
@@ -1684,8 +1684,8 @@ pub fn process_runs_from(dir: &Path) -> bool {
     }
 }
 
-/// Bundles an update set aside (`.Zeron.app.old-…`) or left half-installed
-/// (`.Zeron.app.new-…`), once nothing runs from them.
+/// Bundles an update set aside (`.Keiki.app.old-…`) or left half-installed
+/// (`.Keiki.app.new-…`), once nothing runs from them.
 pub fn prune_retired_mac_bundles(bundle: &Path) {
     let (Some(parent), Some(name)) = (bundle.parent(), bundle.file_name()) else {
         return;
@@ -2419,7 +2419,7 @@ impl Updater {
                 transaction::fail_request(
                     &data_dir,
                     &requested.id,
-                    "Zeron couldn't restart to install the update, so nothing changed.".into(),
+                    "Keiki couldn't restart to install the update, so nothing changed.".into(),
                 );
                 self.refresh_update_report();
             }
@@ -2519,7 +2519,7 @@ impl Updater {
                     transaction::fail_request(
                         data_dir,
                         id,
-                        "Zeron couldn't restart to install the update, so nothing changed.".into(),
+                        "Keiki couldn't restart to install the update, so nothing changed.".into(),
                     );
                     updater.refresh_update_report();
                 }
@@ -3244,7 +3244,7 @@ mod tests {
         assert!(read_only.cannot_apply_reason.unwrap().contains("/opt/zeron"));
 
         let bundle = InstallKind::MacApp {
-            bundle: PathBuf::from("/Applications/Zeron.app"),
+            bundle: PathBuf::from("/Applications/Keiki.app"),
         };
         let mac = UpdateAbility::decide(&bundle, "macos", true, false, None);
         assert_eq!(mac.install, InstallMethod::MacApp);
@@ -3536,12 +3536,12 @@ mod tests {
         );
         assert_eq!(
             detect_install_from_for_os(
-                Path::new("/Applications/Zeron.app/Contents/MacOS/zeron"),
+                Path::new("/Applications/Keiki.app/Contents/MacOS/zeron"),
                 Some(Path::new("/Users/u")),
                 "macos",
             ),
             InstallKind::MacApp {
-                bundle: PathBuf::from("/Applications/Zeron.app")
+                bundle: PathBuf::from("/Applications/Keiki.app")
             }
         );
         // A path merely containing `.app` without the bundle layout is not a bundle.
@@ -3562,10 +3562,10 @@ mod tests {
     #[test]
     fn artifact_names_match_packaging() {
         let (os, arch) = platform_key();
-        assert!(headless_artifact("0.2.0").starts_with("zeron-0.2.0-"));
+        assert!(headless_artifact("0.2.0").starts_with("keiki-0.2.0-"));
         assert_eq!(
             headless_artifact("0.2.0"),
-            format!("zeron-0.2.0-{os}-{arch}.tar.gz")
+            format!("keiki-0.2.0-{os}-{arch}.tar.gz")
         );
         assert!(mac_app_artifact("0.2.0").ends_with("-app.tar.gz"));
     }
@@ -3618,7 +3618,7 @@ mod tests {
                 .contains("not supported on windows")
         );
         assert!(
-            apply_mac_app(&data_dir.join("Zeron.app"), &data_dir.join("Installed.app"))
+            apply_mac_app(&data_dir.join("Keiki.app"), &data_dir.join("Installed.app"))
                 .unwrap_err()
                 .to_string()
                 .contains("not supported on windows")
@@ -3634,12 +3634,12 @@ mod tests {
     #[test]
     fn manifest_parses_with_and_without_files() {
         let full: Manifest = serde_json::from_str(
-            r#"{"version":"0.1.1","files":{"zeron-0.1.1-linux-x86_64.tar.gz":{"sha256":"abc"}}}"#,
+            r#"{"version":"0.1.1","files":{"keiki-0.1.1-linux-x86_64.tar.gz":{"sha256":"abc"}}}"#,
         )
         .unwrap();
         assert_eq!(full.version, "0.1.1");
         assert_eq!(
-            full.files["zeron-0.1.1-linux-x86_64.tar.gz"]
+            full.files["keiki-0.1.1-linux-x86_64.tar.gz"]
                 .sha256
                 .as_deref(),
             Some("abc")
@@ -3905,7 +3905,7 @@ mod tests {
     #[test]
     fn a_bundle_s_engine_version_is_its_key_else_the_app_s() {
         let tmp = tempfile::tempdir().unwrap();
-        let bundle = tmp.path().join("Zeron.app");
+        let bundle = tmp.path().join("Keiki.app");
         std::fs::create_dir_all(bundle.join("Contents")).unwrap();
         let write = |body: &str| std::fs::write(bundle.join("Contents/Info.plist"), body).unwrap();
         // A beta: the app is 0.2.136-beta.1, its engine stable's 0.2.135. An
@@ -4026,7 +4026,7 @@ mod tests {
         assert_eq!(offer_given(&caught_up, "0.2.139-beta.6", Channel::Stable, None, None, false), Offer::Newer);
         #[cfg(target_os = "linux")]
         {
-            let unpacked = std::path::Path::new("/home/someone/Downloads/zeron-0.2.139-beta.6-linux-x86_64/zeron");
+            let unpacked = std::path::Path::new("/home/someone/Downloads/keiki-0.2.139-beta.6-linux-x86_64/zeron");
             let home = std::path::Path::new("/home/someone");
             assert_eq!(detect_install_from(unpacked, Some(home)), InstallKind::Unmanaged);
             assert!(!InstallKind::Unmanaged.follows_channels());
@@ -4082,7 +4082,7 @@ mod tests {
         apply_headless(&app_root, "0.4.0").unwrap();
         assert_eq!(installed_version(&managed).as_deref(), Some("0.4.0"));
 
-        let bundle = tmp.path().join("Zeron.app");
+        let bundle = tmp.path().join("Keiki.app");
         std::fs::create_dir_all(bundle.join("Contents")).unwrap();
         std::fs::write(
             bundle.join("Contents/Info.plist"),
@@ -4101,27 +4101,27 @@ mod tests {
         let writable = |_: &Path| true;
         let read_only = |_: &Path| false;
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Applications/Zeron.app"), writable),
+            mac_bundle_blocker(Path::new("/Applications/Keiki.app"), writable),
             None
         );
         assert_eq!(
             mac_bundle_blocker(
-                Path::new("/private/var/folders/x/T/AppTranslocation/ABC/d/Zeron.app"),
+                Path::new("/private/var/folders/x/T/AppTranslocation/ABC/d/Keiki.app"),
                 writable
             ),
             Some(UpdateBlocker::Translocated)
         );
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Volumes/Zeron/Zeron.app"), read_only),
+            mac_bundle_blocker(Path::new("/Volumes/Keiki/Keiki.app"), read_only),
             Some(UpdateBlocker::DiskImage)
         );
         // An external drive the user can write to updates in place.
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Volumes/Work/Zeron.app"), writable),
+            mac_bundle_blocker(Path::new("/Volumes/Work/Keiki.app"), writable),
             None
         );
         assert_eq!(
-            mac_bundle_blocker(Path::new("/Applications/Zeron.app"), read_only),
+            mac_bundle_blocker(Path::new("/Applications/Keiki.app"), read_only),
             Some(UpdateBlocker::NotWritable(PathBuf::from("/Applications")))
         );
     }

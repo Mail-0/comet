@@ -1,10 +1,10 @@
-; Zeron for Windows — per-user installer (Inno Setup 6).
+; Keiki for Windows — per-user installer (Inno Setup 6).
 ;
 ; Built by scripts/package-windows.ps1, which passes the version, the package
 ; architecture, and the staged portable directory:
 ;   ISCC.exe /DAppVersion=0.2.97 /DArch=x86_64 /DPackageDir=<stage> /DOutputDir=<out> zeron.iss
 ;
-; Installs into %LOCALAPPDATA%\Programs\Zeron without elevation, like VS
+; Installs into %LOCALAPPDATA%\Programs\Keiki without elevation, like VS
 ; Code's user setup: the directory stays writable by its user, so the in-app
 ; updater (crates/update/src/windows.rs) can replace zeron.exe in place. The
 ; staged directory already carries zeron-update.json, which marks the install
@@ -41,16 +41,16 @@
 ; crates/update/src/windows.rs refreshes DisplayVersion under this key after
 ; in-app updates.
 AppId={{AD5DEC34-E254-467B-8F24-8127EBAF4DA6}
-AppName=Zeron
+AppName=Keiki
 AppVersion={#AppVersion}
-AppVerName=Zeron {#AppVersion}
-AppPublisher=Zeron
+AppVerName=Keiki {#AppVersion}
+AppPublisher=Keiki
 AppPublisherURL=https://zeron.sh
 AppSupportURL=https://github.com/zeronsh/zeron/issues
 AppUpdatesURL=https://github.com/zeronsh/zeron/releases
 VersionInfoVersion={#FileVersion}
 PrivilegesRequired=lowest
-DefaultDirName={autopf}\Zeron
+DefaultDirName={autopf}\Keiki
 DisableProgramGroupPage=yes
 DisableDirPage=auto
 DisableReadyPage=yes
@@ -58,14 +58,14 @@ ArchitecturesAllowed={#ArchAllowed}
 ArchitecturesInstallIn64BitMode={#ArchAllowed}
 MinVersion=10.0
 OutputDir={#OutputDir}
-OutputBaseFilename=zeron-{#AppVersion}-windows-{#Arch}-setup
+OutputBaseFilename=keiki-{#AppVersion}-windows-{#Arch}-setup
 SetupIconFile=zeron.ico
 UninstallDisplayIcon={app}\zeron.exe
-UninstallDisplayName=Zeron
+UninstallDisplayName=Keiki
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
-; A running Zeron is closed through the Restart Manager before its files are
+; A running Keiki is closed through the Restart Manager before its files are
 ; replaced; the updated app starts again from the finish page.
 CloseApplications=yes
 RestartApplications=no
@@ -85,19 +85,19 @@ Source: "{#PackageDir}\beta\*"; DestDir: "{app}\beta"; Flags: ignoreversion recu
 #endif
 
 [Icons]
-Name: "{autoprograms}\Zeron"; Filename: "{app}\zeron.exe"
-Name: "{autodesktop}\Zeron"; Filename: "{app}\zeron.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Keiki"; Filename: "{app}\zeron.exe"
+Name: "{autodesktop}\Keiki"; Filename: "{app}\zeron.exe"; Tasks: desktopicon
 
 [Registry]
 ; zeron:// conversation links — the scheme macOS registers in Info.plist and
 ; Linux in zeron.desktop.
-Root: HKCU; Subkey: "Software\Classes\zeron"; ValueType: string; ValueName: ""; ValueData: "URL:Zeron"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\zeron"; ValueType: string; ValueName: ""; ValueData: "URL:Keiki"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\zeron"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\zeron\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\zeron.exe"",0"
 Root: HKCU; Subkey: "Software\Classes\zeron\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\zeron.exe"" ""%1"""
 
 [Run]
-Filename: "{app}\zeron.exe"; Description: "{cm:LaunchProgram,Zeron}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\zeron.exe"; Description: "{cm:LaunchProgram,Keiki}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Leftovers of in-app updates (crates/update/src/windows.rs).

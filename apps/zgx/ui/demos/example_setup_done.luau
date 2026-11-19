@@ -30,13 +30,13 @@ end
 return {
 	id = "ex_setup_done",
 	title = "You're all set",
-	about = "The ending of this device's setup: the look, sync, GitHub (signed in only) and the agents, a line each, anything skipped saying where it waits; then Add a project (or I'll do this later), or Start using Zeron when projects came with the account.",
+	about = "The ending of this device's setup: the look, sync, GitHub (signed in only) and the agents, a line each, anything skipped saying where it waits; then Add a project (or I'll do this later), or Start using Keiki when projects came with the account.",
 	demo = function()
 		local function view(account: string): Node
 			local inside = account == "in"
 			local rows: { Node } = {
 				fact("Appearance", function()
-					return "Dark · Zeron"
+					return "Dark · Keiki"
 				end),
 				fact("Sync", function()
 					return if inside then "On" else "Only on this Mac"
@@ -57,7 +57,7 @@ return {
 				end, kit.quiet { label = "I'll do this later" }),
 				continue = {
 					label = function()
-						return if projects() then "Start using Zeron" else "Add a project"
+						return if projects() then "Start using Keiki" else "Add a project"
 					end,
 				},
 				kit.form {

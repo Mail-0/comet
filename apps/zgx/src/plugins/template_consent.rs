@@ -307,7 +307,7 @@ fn host(
 
 fn said(error: &str) -> String {
     match error {
-        "offline" | "closed" => "Zeron isn't running right now. Try again in a moment.".into(),
+        "offline" | "closed" => "Keiki isn't running right now. Try again in a moment.".into(),
         other => other.to_string(),
     }
 }

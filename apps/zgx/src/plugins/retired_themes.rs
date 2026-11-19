@@ -60,7 +60,7 @@ pub fn written_by_zeron(templates: &Path, id: &str) -> Option<String> {
     let base = format!("theme-{key}");
     let at_its_id = id == base || id.strip_prefix(&format!("{base}-")).is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
     let palette = std::fs::read_to_string(dir.join(FILE)).ok().and_then(|t| zeron_theme::luau_data::parse(&t));
-    (at_its_id && manifest["author"] == "Zeron" && palette.is_some()).then(|| key.to_string())
+    (at_its_id && manifest["author"] == "Keiki" && palette.is_some()).then(|| key.to_string())
 }
 
 /// What `retire` did: the theme the window was moved off (its key), and the

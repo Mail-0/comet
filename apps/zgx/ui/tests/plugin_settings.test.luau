@@ -1,5 +1,5 @@
 -- A plugin's settings (screens/plugins/settings): a page of its own in
--- Settings, under "Plugins" ahead of the "Zeron" group, while it's on;
+-- Settings, under "Plugins" ahead of the "Keiki" group, while it's on;
 -- drawn by Zeron from what it declares; what's set goes to the host and
 -- stays (turned off and on again too); a setting never set follows its
 -- default as the plugin changes it; Settings search finds them; and the
@@ -64,12 +64,12 @@ test("a plugin's page is listed under Plugins while it's on, and goes when it's 
 	app:command("plugin_on")
 	app:frames(20)
 	expect(app:has(TAB)).to_be(true)
-	-- Under its own heading, with its tile, ahead of the "Zeron" group
+	-- Under its own heading, with its tile, ahead of the "Keiki" group
 	-- (About and updates stay last).
 	local nav = app:tree(NAV)
 	local heading = nav:find('text "Plugins"', 1, true)
 	local tab = nav:find('tab "Greeter"', 1, true) or 0
-	local zeron = nav:find('text "Zeron"', 1, true) or 0
+	local zeron = nav:find('text "Keiki"', 1, true) or 0
 	local about = nav:find('tab "About & updates"', 1, true) or 0
 	expect(heading ~= nil and heading < tab and tab < zeron and zeron < about).to_be(true)
 	expect(app:tree(TAB)).to_contain('text "G"')
@@ -233,7 +233,7 @@ test("a status the plugin reports is drawn beside the control, and cleared", fun
 	expect(app:tree("#setting-keys")).never.to_contain('"Set up"')
 end)
 
-test("permission rows are Zeron's own plugins' alone, every word Zeron's", function()
+test("permission rows are Keiki's own plugins' alone, every word Keiki's", function()
 	local app = greeter(open())
 	-- Greeter isn't Zeron's: its declared Screen Recording row isn't there.
 	expect(app:tree(PAGE)).never.to_contain("Screen Recording")
@@ -251,7 +251,7 @@ test("permission rows are Zeron's own plugins' alone, every word Zeron's", funct
 	expect(rec).to_contain('"Allow Screen Recording"')
 	expect(app:tree("#setting-accessibility")).to_contain('"Granted"')
 	expect(app:tree("#setting-accessibility")).never.to_contain("Check again")
-	expect(app:tree(PAGE)).to_contain("macOS asks for these for the app that opened Zeron")
+	expect(app:tree(PAGE)).to_contain("macOS asks for these for the app that opened Keiki")
 	-- Asking: macOS's prompt, then System Settings.
 	app:click('#setting-screen-recording >> role:button "Allow Screen Recording"')
 	app:frames(10)
@@ -282,7 +282,7 @@ test("Check again asks the host afresh", function()
 	expect(app:tree("#setting-screen-recording")).never.to_contain("Check again")
 end)
 
-test("a page says the plugin's own intro under its title, or Zeron's line", function()
+test("a page says the plugin's own intro under its title, or Keiki's line", function()
 	local app = greeter(open())
 	expect(app:tree(PAGE)).to_contain("Settings for the Greeter plugin.")
 	app:command("snapper_on")
@@ -408,7 +408,7 @@ test("a plugin's wallpaper going off falls back to Appearance's choice, and anot
 	expect(line(app, "From Parallax scenes.")).never.to_be("")
 end)
 
-test("a plugin's page says Unverified at its top right when Zeron can't vouch for who made it", function()
+test("a plugin's page says Unverified at its top right when Keiki can't vouch for who made it", function()
 	local app = greeter(open())
 	expect(app:has(`{PAGE} >> "Unverified"`)).to_be(false)
 	app:command("greeter_unverified")

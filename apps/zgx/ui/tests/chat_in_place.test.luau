@@ -665,7 +665,7 @@ test("a send that wasn't delivered says so, and sends again", function()
 	expect(app:state("calls")).to_contain("retry:s1:lost1")
 end)
 
-test("no byline over a reply; its time and Copy show under it on hover, as Zeron's", function()
+test("no byline over a reply; its time and Copy show under it on hover, as Keiki's", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	open(app, "s6")

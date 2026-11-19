@@ -62,7 +62,7 @@ fn zeron_s_shortcuts_survive_plugins_coming_and_going() {
     let builtins = ["git", "github", "parallax-scenes"];
     let builtin_items: Vec<super::Item> = builtins.iter().map(|id| builtin(id)).collect();
     let (app, _heard) = shell_with(builtin_items.clone(), world(json!({ "viewer": "ada" })));
-    assert_eq!(app.error(), None, "the shell with Zeron's plugins failed");
+    assert_eq!(app.error(), None, "the shell with Keiki's plugins failed");
     let desktop = Desktop::new();
     let bar = desktop.bar();
     let mut w = Window::serve(&bar, app, Role::Bar);
@@ -176,8 +176,8 @@ fn zeron_s_shortcuts_survive_plugins_coming_and_going() {
 
         assert!(desktop.refusals.borrow().is_empty(), "step {step}: a bar refused: {:?} ({})", desktop.refusals.borrow(), at());
         let wrong = unreached(&mut w, &desktop, &expected);
-        assert!(wrong.is_empty(), "step {step}, Zeron's:\n{}\n({})", wrong.join("\n"), at());
-        assert!(w.app.host.run_command("shell.toggle_sidebar") && w.app.host.run_command("shell.toggle_sidebar"), "step {step}: Zeron's commands run");
+        assert!(wrong.is_empty(), "step {step}, Keiki's:\n{}\n({})", wrong.join("\n"), at());
+        assert!(w.app.host.run_command("shell.toggle_sidebar") && w.app.host.run_command("shell.toggle_sidebar"), "step {step}: Keiki's commands run");
 
         // The live test plugins' own keys: the first to ask has each, and
         // never one of Zeron's or one no menu can name.

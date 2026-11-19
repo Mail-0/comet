@@ -29,22 +29,22 @@ local function search(app: any, text: string)
 	app:frames(30)
 end
 
-test("the palette finds Reload Zeron by reload, restart and relaunch", function()
+test("the palette finds Reload Keiki by reload, restart and relaunch", function()
 	local app = open()
 	search(app, "reload")
-	expect(app:has('#palette-list >> role:option "Reload Zeron"')).to_be(true)
+	expect(app:has('#palette-list >> role:option "Reload Keiki"')).to_be(true)
 	expect(app:has('#palette-list >> role:option "Reload interface"')).to_be(true)
 	for _, word in { "restart", "relaunch" } do
 		search(app, word)
-		expect(app:has('#palette-list >> role:option "Reload Zeron"')).to_be(true)
+		expect(app:has('#palette-list >> role:option "Reload Keiki"')).to_be(true)
 	end
 end)
 
-test("picking Reload Zeron asks the host to relaunch the app", function()
+test("picking Reload Keiki asks the host to relaunch the app", function()
 	local app = open()
-	search(app, "Reload Zeron")
+	search(app, "Reload Keiki")
 	expect(asked(app, "app.relaunch")).to_be(false)
-	app:click('#palette-list >> role:option "Reload Zeron"')
+	app:click('#palette-list >> role:option "Reload Keiki"')
 	app:frames(20)
 	expect(asked(app, "app.relaunch")).to_be(true)
 	expect(asked(app, "app.reload_interface")).to_be(false)

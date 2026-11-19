@@ -1,6 +1,6 @@
 name: zgx beta
 
-# Zeron's beta channel: the next Zeron app, built as release.yml builds a
+# Keiki's beta channel: the next Keiki app, built as release.yml builds a
 # stable one (zgx-build.yml: apps/zgx with the engine from this same commit
 # inside, on macOS, Linux and Windows). The point of a beta is to test what's
 # next, the engine too. Testers keep their data and device; the app updates
@@ -97,7 +97,7 @@ jobs:
       # and files, for going back, are beside it.
       windows-feed: https://zeron.sh/releases
 
-  # The GitHub pre-release: never the latest release (Zeron's updater and
+  # The GitHub pre-release: never the latest release (Keiki's updater and
   # download links follow releases/latest), with the beta's manifest.
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/beta-v')
@@ -122,7 +122,7 @@ jobs:
           for platform in linux-x86_64.tar.gz linux-aarch64.tar.gz \
               macos-arm64.dmg macos-arm64-app.tar.gz \
               windows-x86_64.zip windows-x86_64-setup.exe; do
-            test -f "dist/zeron-$VERSION-$platform" \
+            test -f "dist/keiki-$VERSION-$platform" \
               || { echo "missing artifact for $VERSION: $platform"; exit 1; }
           done
           # crates/update's Manifest: the beta's version, the engine it
@@ -142,7 +142,7 @@ jobs:
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         id: draft
         with:
-          name: Zeron ${{ needs.version.outputs.version }}
+          name: Keiki ${{ needs.version.outputs.version }}
           prerelease: true
           draft: true
           make_latest: "false"
@@ -153,10 +153,10 @@ jobs:
             dist/*
             beta-manifest.json
           body: |
-            Zeron ${{ needs.version.outputs.version }}, a beta of the next Zeron app.
+            Keiki ${{ needs.version.outputs.version }}, a beta of the next Keiki app.
 
-            - It replaces Zeron and keeps your Zeron: the same data, account and device.
-            - Once installed, it updates from the beta channel. To go back, turn off **Get beta updates** in Settings → About & updates; Zeron then installs the latest stable release.
+            - It replaces Keiki and keeps your Keiki: the same data, account and device.
+            - Once installed, it updates from the beta channel. To go back, turn off **Get beta updates** in Settings → About & updates; Keiki then installs the latest stable release.
             - macOS 13 or later on Apple silicon; Linux x86_64 and aarch64 (run `install.sh` from the tarball); Windows x86_64 (the installer or the zip).
       - name: publish the draft (a prerelease, never the latest)
         env:

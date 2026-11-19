@@ -85,7 +85,7 @@ test("a chat's subagents run in the Running tray, and a row opens its subagent",
 	expect(app:error()).to_be(nil)
 end)
 
-test("child chats a Zeron chat started run in the Subagents tray, as subagents do; the person's own side chats don't", function()
+test("child chats a Keiki chat started run in the Subagents tray, as subagents do; the person's own side chats don't", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	app:command("go_s2")
@@ -118,7 +118,7 @@ test("child chats a Zeron chat started run in the Subagents tray, as subagents d
 	expect(app:error()).to_be(nil)
 end)
 
-test("child chats a Zeron chat started share the tray with the agent's own subagents", function()
+test("child chats a Keiki chat started share the tray with the agent's own subagents", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	app:command("go_s2")

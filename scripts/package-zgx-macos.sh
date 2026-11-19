@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Zeron.app, stable or beta: the zgx interface (apps/zgx, built with its
-# `beta` feature, which makes it the Zeron app) as the Zeron app itself —
+# Keiki.app, stable or beta: the zgx interface (apps/zgx, built with its
+# `beta` feature, which makes it the Keiki app) as the Keiki app itself —
 # the same bundle id, name, signing,
-# entitlements and `zeron://` scheme as the old app's Zeron.app — with
+# entitlements and `zeron://` scheme as the old app's Keiki.app — with
 # the engine it's given inside, built from the same commit, so a tester keeps
-# Zeron.app's data and device:
+# Keiki.app's data and device:
 #
-#   target/package-zgx/Zeron.app
+#   target/package-zgx/Keiki.app
 #     Contents/MacOS/zeron           the zgx interface and `zeron`'s command
 #                                    line (crates/cli; the engine's commands
 #                                    run in the helper beside it)
 #     Contents/MacOS/Zeron Engine    the engine, signed here
 #     Contents/Resources/ui, plugins-builtin, zeron.icns, licenses
-#   target/package-zgx/zeron-<version>-macos-<arch>.dmg
-#   target/package-zgx/zeron-<version>-macos-<arch>-app.tar.gz  (the updater's)
+#   target/package-zgx/keiki-<version>-macos-<arch>.dmg
+#   target/package-zgx/keiki-<version>-macos-<arch>-app.tar.gz  (the updater's)
 #
 # Usage: ZGX_VERSION=0.2.139 ZGX_ENGINE=<engine> scripts/package-zgx-macos.sh
 #   ZGX_VERSION         the workspace version (a stable release, release.yml)
 #                       or `<workspace version>-beta.<n>` (a beta of the next
 #                       release, zgx-beta.yml)
-#   ZGX_ENGINE          the engine: a built binary, a Zeron.app, its app tarball, or
+#   ZGX_ENGINE          the engine: a built binary, a Keiki.app, its app tarball, or
 #                       its `Zeron Engine` binary; built with LUAU_CXXFLAGS=-DNDEBUG
 #                       (checked), which a stable release from before that isn't
 #   ZGX_BIN             the interface, built already (with --features beta and
@@ -47,22 +47,22 @@ NUMBER="${BASH_REMATCH[3]}"
 [[ "$CORE" == "$WORKSPACE" ]] || die "ZGX_VERSION $VERSION isn't the workspace's $WORKSPACE or a beta of it"
 ARCH="$(uname -m)"
 OUT_DIR="$ROOT/target/package-zgx"
-APP="$OUT_DIR/Zeron.app"
-DMG="$OUT_DIR/zeron-$VERSION-macos-$ARCH.dmg"
-APP_TARBALL="$OUT_DIR/zeron-$VERSION-macos-$ARCH-app.tar.gz"
+APP="$OUT_DIR/Keiki.app"
+DMG="$OUT_DIR/keiki-$VERSION-macos-$ARCH.dmg"
+APP_TARBALL="$OUT_DIR/keiki-$VERSION-macos-$ARCH-app.tar.gz"
 ENTITLEMENTS="$ROOT/dist/macos/Zeron.entitlements"
 read -r -a CARGO_EXTRA <<<"${CARGO_FLAGS:-}"
 mkdir -p "$OUT_DIR"
 
 # The engine: the binary given, or the one in a bundle or tarball.
 ENGINE_SRC="${ZGX_ENGINE:-}"
-[[ -n "$ENGINE_SRC" ]] || die "ZGX_ENGINE: a built engine, a Zeron.app, its app tarball or its Zeron Engine"
+[[ -n "$ENGINE_SRC" ]] || die "ZGX_ENGINE: a built engine, a Keiki.app, its app tarball or its Zeron Engine"
 ENGINE_BIN="$ENGINE_SRC"
 if [[ "$ENGINE_SRC" == *.tar.gz ]]; then
   UNPACK="$OUT_DIR/.stable"
   rm -rf "$UNPACK" && mkdir -p "$UNPACK"
   tar -xzf "$ENGINE_SRC" -C "$UNPACK"
-  ENGINE_SRC="$UNPACK/Zeron.app"
+  ENGINE_SRC="$UNPACK/Keiki.app"
 fi
 [[ -d "$ENGINE_SRC" ]] && ENGINE_BIN="$ENGINE_SRC/Contents/MacOS/Zeron Engine"
 [[ -x "$ENGINE_BIN" ]] || die "no engine at $ENGINE_BIN"
@@ -113,7 +113,7 @@ rm -rf "$APP" "$DMG" "$APP_TARBALL"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 755 "$ZGX_BIN" "$APP/Contents/MacOS/zeron"
 install -m 755 "$ENGINE_BIN" "$APP/Contents/MacOS/Zeron Engine"
-# Zeron.app's Info.plist, as the old app's, with this one's versions: the
+# Keiki.app's Info.plist, as the old app's, with this one's versions: the
 # short version stays numeric (a beta's is the next release's), the engine
 # its own (crates/update `bundle_engine_version`), and zgx's floor macOS 13
 # (Ghostty's).
@@ -137,7 +137,7 @@ plutil -replace LSMinimumSystemVersion -string "13.0" "$PLIST"
 plutil -convert xml1 "$PLIST"
 plutil -lint "$PLIST" >/dev/null
 
-# The scripts and Zeron's own plugins (read where they lie: templates and
+# The scripts and Keiki's own plugins (read where they lie: templates and
 # plugins live in the data dir). Not zgx's generated types or the tests.
 rsync -a --exclude '.zgx/' --exclude '/tests/' --exclude '.lock' --exclude '.DS_Store' \
   "$ROOT/apps/zgx/ui/" "$APP/Contents/Resources/ui/"
@@ -154,7 +154,7 @@ cp "$ROOT/assets/fonts/licenses/"* "$ROOT/apps/zgx/fonts/"*-OFL.txt "$APP/Conten
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/LICENSE" "$APP/Contents/Resources/licenses/"
 cp "$ROOT/crates/voice/NOTICE.md" "$APP/Contents/Resources/licenses/parakeet-v3.txt"
 
-# Zeron's icon.
+# Keiki's icon.
 "$ROOT/scripts/macos-app-icon.sh" "$APP/Contents/Resources"
 
 # Signed inside out: the engine (its identifier), then the bundle that seals
@@ -184,8 +184,8 @@ if $NOTARIZE; then
   xcrun stapler staple "$APP"
 fi
 
-# The updater's artifact (crates/update `stage_mac_app` unpacks Zeron.app).
-tar -czf "$APP_TARBALL" -C "$OUT_DIR" Zeron.app
+# The updater's artifact (crates/update `stage_mac_app` unpacks Keiki.app).
+tar -czf "$APP_TARBALL" -C "$OUT_DIR" Keiki.app
 echo "packaged: $APP_TARBALL"
 echo "size: $(du -sh "$APP" | cut -f1) ($(du -sk "$APP" | cut -f1) KB) · interface $(du -h "$APP/Contents/MacOS/zeron" | cut -f1) · engine $(du -h "$APP/Contents/MacOS/Zeron Engine" | cut -f1)"
 
@@ -201,7 +201,7 @@ BG_TIFF="$OUT_DIR/dmg-background.tiff"
 tiffutil -cathidpicheck "$ROOT/dist/macos/dmg-background.png" \
   "$ROOT/dist/macos/dmg-background@2x.png" -out "$BG_TIFF" >/dev/null 2>&1
 
-VOLUME="Zeron${NUMBER:+ Beta}" APP="$APP" DMG="$DMG" BG_TIFF="$BG_TIFF" python3 - <<'PY'
+VOLUME="Keiki${NUMBER:+ Beta}" APP="$APP" DMG="$DMG" BG_TIFF="$BG_TIFF" python3 - <<'PY'
 import os
 import dmgbuild
 
@@ -225,7 +225,7 @@ dmgbuild.build_dmg(
         "window_rect": ((200, 120), (660, 400)),
         "icon_size": 104,
         "text_size": 12,
-        "icon_locations": {"Zeron.app": (165, 195), "Applications": (495, 195)},
+        "icon_locations": {"Keiki.app": (165, 195), "Applications": (495, 195)},
     },
 )
 PY

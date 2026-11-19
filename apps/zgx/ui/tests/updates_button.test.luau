@@ -88,7 +88,7 @@ test("the list goes by device, and offers what each row can do", function()
 	expect(app:has('"Offline"')).to_be(true)
 end)
 
-test("another device's Zeron says when it updates there, and what stopping costs", function()
+test("another device's Keiki says when it updates there, and what stopping costs", function()
 	local app = open({
 		{
 			id = "mac:zeron",
@@ -119,7 +119,7 @@ test("another device's Zeron says when it updates there, and what stopping costs
 	app:click("#updates-button")
 	app:frames(10)
 	expect(app:has('"1.0 → 1.1 · update from that device"')).to_be(true)
-	expect(app:has('role:button "Update · Zeron"')).to_be(true)
+	expect(app:has('role:button "Update · Keiki"')).to_be(true)
 end)
 
 test("Update all says what it will do first, and what it can't reach", function()
@@ -169,7 +169,7 @@ test("a device that says it can't update from here says why, and offers what to 
 	app:click("#updates-button")
 	app:frames(10)
 	expect(app:has('"It was started by hand"')).to_be(true)
-	expect(app:has('role:button "Copy command · Zeron"')).to_be(true)
+	expect(app:has('role:button "Copy command · Keiki"')).to_be(true)
 end)
 
 test("an update waiting says why in the engine's words, or its own", function()
@@ -194,7 +194,7 @@ test("a Mac another device updated offers to reopen on the new version", functio
 	app:frames(10)
 	app:click("#updates-button")
 	app:frames(20)
-	expect(app:has('role:button "Restart · Zeron"')).to_be(true)
+	expect(app:has('role:button "Restart · Keiki"')).to_be(true)
 end)
 
 test("the list scrolls under the head, which stays and takes its own presses", function()

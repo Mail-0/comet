@@ -29,7 +29,7 @@ end
 local GIVES = {
 	{ "On every device", "Pick up a chat on your phone or another computer, right where you left it." },
 	{ "Run agents anywhere", "Start work on any of your machines from whichever one you're at." },
-	{ "Zeron Cloud", "Hand chats to cloud machines that keep going while your computer sleeps." },
+	{ "Keiki Cloud", "Hand chats to cloud machines that keep going while your computer sleeps." },
 }
 
 -- Your devices (fictional): this Mac, a Linux box, a phone.

@@ -147,7 +147,7 @@ try {
     $engineText = $null
     $out = Join-Path $root 'target/package'
     $arch = Get-WindowsPackageArch $built
-    $stage = Join-Path $out "zeron-$version-windows-$arch"
+    $stage = Join-Path $out "keiki-$version-windows-$arch"
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -LiteralPath $built -Destination (Join-Path $stage 'zeron.exe')
@@ -183,7 +183,7 @@ try {
         "/DOutputDir=$([IO.Path]::GetFullPath($out))" `
         ([IO.Path]::GetFullPath((Join-Path $root 'dist/windows/zeron.iss')))
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
-    $setup = Join-Path $out "zeron-$version-windows-$arch-setup.exe"
+    $setup = Join-Path $out "keiki-$version-windows-$arch-setup.exe"
     if (-not (Test-Path -LiteralPath $setup)) { throw "Installer not produced: $setup" }
     if (-not $beta) {
         $file = Split-Path "$stage.exe" -Leaf

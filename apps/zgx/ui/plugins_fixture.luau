@@ -218,7 +218,7 @@ ui.command {
 	run = function()
 		local n = find("notes-tool")
 		n.status = "broken"
-		n.error = "Its manifest asks for a permission Zeron doesn't know: teleport"
+		n.error = "Its manifest asks for a permission Keiki doesn't know: teleport"
 		publish()
 	end,
 }
@@ -288,7 +288,7 @@ ui.command {
 }
 ui.command {
 	id = "builtin",
-	title = "Zeron's own GitHub arrives",
+	title = "Keiki's own GitHub arrives",
 	run = function()
 		local p = plugin("github", "GitHub", "zeron", "on", { permissions = { "ui.add", "github" } })
 		local any: any = p

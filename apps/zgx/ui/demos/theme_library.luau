@@ -62,7 +62,7 @@ end
 return {
 	id = "theme-library",
 	title = "Themes",
-	about = "The palettes a window can wear: Zeron's built in, a template's own, and VS Code themes you import (a theme's .json, comments allowed, or an extension's folder), mapped by the shipping app's importer.",
+	about = "The palettes a window can wear: Keiki's built in, a template's own, and VS Code themes you import (a theme's .json, comments allowed, or an extension's folder), mapped by the shipping app's importer.",
 	demo = function(): Node
 		return ui.column {
 			w_full = true,

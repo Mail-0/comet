@@ -144,7 +144,7 @@ do
 	-- at rest, and a side chat the person started.
 	ui.command {
 		id = "child_chats",
-		title = "s2 has child chats: two a Zeron chat started, one the person did",
+		title = "s2 has child chats: two a Keiki chat started, one the person did",
 		run = function()
 			local now = table.clone(sessions.now:peek() :: any)
 			local children = table.clone(now.children or {})

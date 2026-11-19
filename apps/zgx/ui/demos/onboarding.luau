@@ -28,7 +28,7 @@ return {
 					p = "$space.6",
 					onboarding.Hero {
 						art = ui.svg { src = "assets/icons/ui/zeron-logo.svg", w = 46, h = 46, tint = "$text.primary" },
-						title = "Welcome to Zeron",
+						title = "Welcome to Keiki",
 						body = "Every agent you use, on every machine you have, in one place.",
 						foot = ui.text { "Already set up on another Mac? Sign in", text_size = "$font.size.sm", color = "$text.tertiary" },
 						Button { "Get started", size = "lg", w = 280, Icon { name = "arrow-right" } },
@@ -46,7 +46,7 @@ return {
 						end,
 						count = 4,
 						title = "Which agents do you use?",
-						body = "Zeron finds the ones installed here. Pick any to set up now; the rest can wait.",
+						body = "Keiki finds the ones installed here. Pick any to set up now; the rest can wait.",
 					},
 					kit.row(
 						Button {

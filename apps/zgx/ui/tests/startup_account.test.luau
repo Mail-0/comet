@@ -4,7 +4,7 @@
 -- host calls answered by ui/settings_stub.luau.
 
 local SIDE = "#shell-sidebar"
-local SIGNED_OUT_PAGE = "Sign in to show up as yourself across Zeron."
+local SIGNED_OUT_PAGE = "Sign in to show up as yourself across Keiki."
 
 local function open(command: string): any
 	local app = mount("shell_fixture.luau")

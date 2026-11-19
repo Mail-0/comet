@@ -99,7 +99,7 @@ fn key(on: &On, item: &super::Item) -> String {
 
 /// `text` shown as a plugin's words: one line of what prints, no
 /// direction overrides or invisible marks (words that read as Zeron's own,
-/// "✓ Zeron", among them), at most `most` characters.
+/// "✓ Keiki", among them), at most `most` characters.
 fn plain(text: &str, most: usize) -> String {
     let mut out: String = text
         .chars()
@@ -436,7 +436,7 @@ fn review_params(device: Option<&str>, id: &str, hash: &str) -> Json {
 
 fn said(error: &str, on: &On) -> String {
     match (error, on) {
-        ("offline" | "closed", _) => "Zeron isn't running right now. Try again in a moment.".into(),
+        ("offline" | "closed", _) => "Keiki isn't running right now. Try again in a moment.".into(),
         (e, Some((_, name))) if remote::unreachable(e) => format!("Can't reach {name} right now. Try again once it's online."),
         (other, _) => other.to_string(),
     }
@@ -447,13 +447,13 @@ mod tests {
     use super::*;
 
     /// R27: a plugin's name, version and tools' words can't pass for
-    /// Zeron's own on the sheet (a version reading "✓ Zeron", a name
+    /// Zeron's own on the sheet (a version reading "✓ Keiki", a name
     /// turned around by a direction override, a page of words).
     #[test]
     fn a_plugin_s_words_come_to_the_sheet_bounded_and_plain() {
         let item = json!({
             "name": "Focus\u{202E}nori\u{200B}\n\tTimer",
-            "version": "✓ Zeron verified",
+            "version": "✓ Keiki verified",
             "description": "x".repeat(5000),
             "tools": [{ "name": "count", "description": format!("Count.\u{2066}{}", "y".repeat(900)) }],
             "digest_diff": { "tools_added": [{ "name": "pwn", "description": "z".repeat(900) }], "tools_changed": [] },

@@ -164,7 +164,7 @@ local verdict = if #result.failed == 0
 return {
 	id = "syntax",
 	title = "Syntax highlighting",
-	about = "Code coloured as it's typed: every language Zeron shows, incremental line by line.",
+	about = "Code coloured as it's typed: every language Keiki shows, incremental line by line.",
 	demo = function(): Node
 		return ui.column {
 			gap = "$space.4",
