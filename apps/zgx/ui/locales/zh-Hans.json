@@ -1849,7 +1849,7 @@
       },
       "website": {
         "label": "网站",
-        "terms": "网站 主页 zeron.sh home page"
+        "terms": "网站 主页 onkeiki.com home page"
       },
       "copy_version": {
         "label": "拷贝版本信息",
@@ -2439,7 +2439,6 @@
         "reconnecting": "正在重新连接…"
       },
       "update_notice": "更新通知",
-      "star": "在 GitHub 上加星标",
       "copied": "已拷贝{what}",
       "menu": {
         "sections": "分区",

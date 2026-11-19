@@ -47,6 +47,7 @@ pub const BLOCKED: &[&str] = &[
     "terminal.write",
     "terminal.command",
     "account.",
+    "keiki.",
     "plugins.install",
     // (Deciding on and signing plugins are the consent window's alone, a
     // host of their own: never the main window's to refuse.)
@@ -574,7 +575,7 @@ mod tests {
         set(None);
         assert!(refuse("terminal.start").is_ok(), "nothing in preview: all allowed");
         set(Some(Preview { id: "agent".into(), name: "Agent's".into() }));
-        for action in ["terminal.start", "terminal.write", "account.sign_out", "account.choose_org", "plugins.install", "templates.use", "files.write", "chat.send", "chat.respond", "chat.retry", "chat.queue_edit", "chat.queue_finish", "chat.configure", "files.open_external", "projects.github_repos", "projects.picture_size", "projects.keep_icon", "projects.icon_file", "projects.forget_icon"] {
+        for action in ["terminal.start", "terminal.write", "account.sign_out", "account.choose_org", "keiki.call", "keiki.sidebar", "keiki.conversation", "plugins.install", "templates.use", "files.write", "chat.send", "chat.respond", "chat.retry", "chat.queue_edit", "chat.queue_finish", "chat.configure", "files.open_external", "projects.github_repos", "projects.picture_size", "projects.keep_icon", "projects.icon_file", "projects.forget_icon"] {
             assert!(refuse(action).is_err(), "{action}");
         }
         for action in ["files.read", "files.list", "chat.open", "appearance", "templates.review", "sessions.seen"] {

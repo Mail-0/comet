@@ -14,7 +14,8 @@ if ui.shared("window", "onboarding"):peek() == "main" then
 	-- Plugins: their page in Settings, and what they're shown of Zeron.
 	require("@app/screens/plugins")
 	local shell = require("@app/screens/shell")
-	return shell()
+	local gate = require("@app/screens/shell/keiki_gate")
+	return gate(shell)
 end
 
 local onboarding = require("@app/screens/onboarding")

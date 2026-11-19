@@ -388,7 +388,7 @@ return function(): Node
 			was_signed_in = true
 		elseif state == "signed_out" and was_signed_in then
 			was_signed_in = false
-			ui.invoke("app.onboard")
+			if not ui.shared("keiki.available", false):peek() then ui.invoke("app.onboard") end
 		end
 	end)
 

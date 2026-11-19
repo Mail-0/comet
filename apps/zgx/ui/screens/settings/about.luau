@@ -407,7 +407,7 @@ function M.view(): Node
 				}),
 				row("website", {
 					label = ui.t("settings.about.website.label"),
-					description = "zeron.sh",
+					description = "onkeiki.com",
 					on_click = function()
 						host.invoke("open_url", M.WEBSITE)
 					end,

@@ -1849,7 +1849,7 @@
       },
       "website": {
         "label": "Website",
-        "terms": "zeron.sh home page"
+        "terms": "onkeiki.com home page"
       },
       "copy_version": {
         "label": "Copy version info",
@@ -2439,7 +2439,6 @@
         "reconnecting": "Reconnecting…"
       },
       "update_notice": "The update notice",
-      "star": "Star on GitHub",
       "copied": "{what} copied",
       "menu": {
         "sections": "Sections",

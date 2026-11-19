@@ -32,6 +32,9 @@ local control = require("@ds/control")
 local locale = require("@ds/locale")
 local ds_session_row = require("@ds/session_row")
 local activity = require("@app/screens/shell/activity")
+local keiki = require("@account/keiki")
+local KeikiSidebar = require("@app/screens/shell/keiki_sidebar")
+local KeikiAccount = require("@app/screens/shell/keiki_account")
 
 export type Props = {
 	collapsed: State<boolean>,
@@ -494,6 +497,7 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 		end
 	end
 	for _, c in now.chats do
+		if keiki.bound(c.id) then continue end
 		if just and not (just_group and c.project and by[c.project] == just_group) then
 			continue
 		end
@@ -676,13 +680,6 @@ local function user(): User
 	return { name = locale.s("shell.sidebar.local") }
 end
 
--- What stands over you at the foot: the engine's update notice (C's
--- screens/engine/update: nothing unless this app's engine is out of date
--- and busy, or someone else's is; mounted always, as an idle engine of
--- ours is restarted from it), then Star on GitHub. (The list's gap between
--- them only while the notice says something: an empty one is no height and
--- takes no gap.)
-local star: () -> Node
 -- What the connection line says (production's connection pill: no
 -- surface, a faint caption; the amber dot when offline or a change wasn't
 -- saved, the working ring while reconnecting). Healthy: nothing.
@@ -704,10 +701,6 @@ local function connection_line(): Node
 			id = "connection-line",
 			w_full = true,
 			shrink = 0,
-			-- (Its dot on the foot's left edge: Star on GitHub's glyph's, the
-			-- filter's and the empty list's words'. Its words on Star on
-			-- GitHub's: the dot or the ring in a slot as wide as the star,
-			-- as far from them.)
 			px = "$space.2",
 			pb = "$space.2",
 			gap = "$zeron.space.tight",
@@ -739,84 +732,13 @@ local function connection_line(): Node
 end
 
 local function foot_notes(): Node
-	local notice_h = ui.use_state(0)
 	return ui.column {
-		w_full = true,
-		shrink = 0,
+		w_full = true, shrink = 0,
 		connection_line(),
-		ui.div {
-			w_full = true,
-			on_resize = function(size)
-				if notice_h:peek() ~= size.h then
-					notice_h:set(size.h)
-				end
-			end,
-			boundary.screen(boundary.named("shell.boundary.screen.update_notice"), "@app/screens/engine/update", function(update): Node
-				return update.Notice()
-			end, { pass = true }),
-		},
-		ui.div {
-			w_full = true,
-			mt = function(): any
-				return if notice_h:get() > 0 then "$zeron.list.gap" else 0
-			end,
-			star(),
-		},
+		boundary.screen(boundary.named("shell.boundary.screen.update_notice"), "@app/screens/engine/update", function(update): Node
+			return update.Notice()
+		end, { pass = true }),
 	}
-end
-
--- "Star on GitHub", over you at the foot, until it's put away (its × or
--- following it), and then never again on this Mac: Zeron's, to where its
--- landing page links.
-local REPO = "https://github.com/zeronsh/comet"
-local starred = ui.persist("shell_star_banner_dismissed", false)
-function star(): Node
-	local function away()
-		starred:set(true)
-	end
-	return ui.show(
-		function(): boolean
-			return not starred:get()
-		end,
-		-- A chip of the accent, a row's corner: its × as far from the chip's
-		-- edge at the end as from its top and foot, concentric.
-		ui.row {
-			id = "star-banner",
-			role = "link",
-			label = ui.t("shell.sidebar.star"),
-			w_full = true,
-			-- As tall as a row (you, under it).
-			h = ui.raw(30, "a sidebar row's height (ds/sidebar's SLOT)"),
-			shrink = 0,
-			pl = "$space.2",
-			-- (Its × as far in from the end as from the top: (30 − 22) / 2.)
-			pr = "$space.1",
-			gap = "$zeron.space.tight",
-			items = "center",
-			rounded = "$radius.lg",
-			bg = "$zeron.tone.accent.wash",
-			hover = { bg = "$zeron.tone.accent.edge" },
-			color = "$zeron.tone.accent.ink",
-			cursor = "pointer",
-			on_click = function()
-				ui.invoke("open_url", REPO)
-				away()
-			end,
-			-- A link's menu (ds/links): Open, as the click; Copy link.
-			context_menu = require("@ds/links").outside_menu(function(): string
-				return REPO
-			end, function()
-				ui.invoke("open_url", REPO)
-				away()
-			end),
-			ui.div { shrink = 0, y = 0.5, ds.Icon { name = "star-bold", size = 12 } },
-			ui.text { ui.t("shell.sidebar.star"), grow = 1, min_w = 0, text_size = "$font.size.xs", weight = "$font.weight.medium" },
-			ui.div {
-				theme = { zeron = { icon_button = { radius = control.nest("$radius.lg", "$space.1") } } },
-				ds.IconButton { icon = "close", label = ui.t("common.dismiss"), tooltip = locale.s("common.dismiss"), size = "sm", tone = "quiet", on_click = away },
-			},
-		}
-	)
 end
 
 -- Renaming a session: which, and the name being typed.
@@ -900,7 +822,7 @@ local M = {}
 M.user = user
 M.account = {
 	on_user = function()
-		route.settings("profile")
+		if keiki.available:peek() then KeikiAccount.open:set(true) else route.settings("profile") end
 	end,
 	user_open = function(): boolean
 		local c = route.current:get()
@@ -1616,7 +1538,7 @@ M.Sidebar = ui.component(function(props: Props): Node
 		end,
 		notice = if props.island
 			then nil
-			else ui.column { w_full = true, gap = "$zeron.list.gap", project_filter(), filter_notice() },
+			else ui.column { w_full = true, gap = "$zeron.list.gap", KeikiSidebar(), project_filter(), filter_notice() },
 		tip = if props.island then nil else foot_notes(),
 		-- (The rail has no list to scroll, and its own folds.)
 		offset = if props.island then nil else shared.offset,
@@ -1658,6 +1580,7 @@ M.Sidebar = ui.component(function(props: Props): Node
 		-- (That gap's top moves the window, as the bar beside it does.)
 		ui.div { absolute = true, left = 0, top = 0, w = ui.raw(5, "the window's gap"), h = ui.raw(42, "the top bar"), window_drag = true },
 		bar,
+		KeikiAccount.menu(),
 		rename_dialog(),
 		delete_dialog(),
 		sleep_dialog(),

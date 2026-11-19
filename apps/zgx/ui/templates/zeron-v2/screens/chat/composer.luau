@@ -39,6 +39,8 @@ local mentions = require("@ds/composer_mentions")
 local Draft = require("@ds/draft_text")
 local Invocations = require("@app/screens/chat/invocations")
 local Completions = require("@app/screens/chat/completions")
+local keiki = require("@account/keiki")
+local KeikiQuestions = require("@app/screens/chat/keiki_questions")
 local ZeronCommands = require("@app/screens/chat/zeron_commands")
 -- (Loaded with the chat page: captures land on its composer.)
 local Appshots = require("@app/screens/chat/appshots")
@@ -49,7 +51,8 @@ local DOCK: SpringOptions = { stiffness = 730, damping = 54 }
 -- transcript's column (Settings' "Conversation width"), as Zeron's
 -- composer lines up with the conversation over it (its edges on the
 -- column's).
-local FOOT = require("@app/screens/chat/dock").GAP
+local Dock = require("@app/screens/chat/dock")
+local FOOT = Dock.GAP
 
 -- What a new chat starts with: what was last chosen on the new-chat page
 -- (its settings, its own: a chat shown or made never changes them), kept
@@ -882,6 +885,7 @@ local function Composer(): Node
 	end)
 
 	local function send(text: string)
+		if keiki.opening:peek() then return end
 		-- Editing a queued message: Send saves it.
 		if editing:peek() then
 			end_edit("commit")
@@ -1167,6 +1171,11 @@ local function Composer(): Node
 	end, "main")
 
 	local composer_sizes = ui.state("chat_composer_sizes", nil :: ds.ComposerSizes?)
+	local question_height = ui.state("keiki.question_height", 0)
+	ui.effect(function()
+		local sizes = composer_sizes:get()
+		shared.dock_h:set((if sizes then sizes.presented else Dock.REST) + question_height:get())
+	end)
 	local function composer(): Node
 		return ds.Composer {
 			dictation = dictation,
@@ -1175,9 +1184,7 @@ local function Composer(): Node
 				if sizes.context == snap:peek() and sizes.ready and not sizes.settling then
 					place_snap:set(false)
 				end
-				if math.abs(shared.dock_h:peek() - sizes.presented) > 0.01 then
-					shared.dock_h:set(sizes.presented)
-				end
+
 			end,
 			-- Its measures, fold and open tray kept across a reload, so it
 			-- is laid out as it was from the first frame.
@@ -1300,6 +1307,7 @@ local function Composer(): Node
 			end,
 			drop_overlay = false,
 			on_send = send,
+			can_send = function() return not keiki.opening:peek() end,
 			on_stop = function()
 				local id = session_id:peek()
 				if id then
@@ -1432,6 +1440,7 @@ local function Composer(): Node
 				own_notice:set(nil)
 			end,
 			disabled = function(): boolean
+				if keiki.opening:get() then return true end
 				local s = store.session:get()
 				local id = session_id:get()
 				return id ~= nil and s ~= nil and s.id == id and (s.state == "missing" or s.state == "offline")
@@ -1497,11 +1506,11 @@ local function Composer(): Node
 	end)
 	local rest_tall = ui.computed(function(): number?
 		local sizes = composer_sizes:get()
-		return if sizes then sizes.rest else nil
+		return if sizes then sizes.rest + question_height:get() else nil
 	end)
 	local function presented_height(): number
 		local sizes = composer_sizes:get()
-		return if sizes then sizes.presented else shared.dock_h:get()
+		return if sizes then sizes.presented + question_height:get() else shared.dock_h:get()
 	end
 	-- Where it stands: mid-page on a new chat (centred under the title bar),
 	-- else docked at the foot (0), as laid out now.
@@ -1714,7 +1723,7 @@ local function Composer(): Node
 				-- under it, and so is this.)
 				ui.show(function(): boolean
 					return not route.needs_project:get() and route.current:get().name ~= "plugin"
-				end, composer()),
+				end, ui.column { w_full = true, KeikiQuestions(function() return session_id:get() end, question_height), composer() }),
 			},
 		},
 		-- Files carried over the chat (the page or the composer): all of it

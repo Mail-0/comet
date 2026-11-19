@@ -666,16 +666,19 @@ test("the composer is made once: the sessions arriving, changing and growing lea
 	expect(`field @{field()}`).to_be(`field @{first}`)
 end)
 
-test("signed out, the foot says Local; Star on GitHub shows over it until put away", function()
+test("signed out, the foot says Local without a promotional banner", function()
 	local app = open()
 	expect(app:has(`{SIDE} >> "Local"`)).to_be(true)
-	expect(app:has(`{SIDE} >> #star-banner`)).to_be(true)
-	-- (Over you at the foot.)
-	expect(top_of(app, SIDE, "Star on GitHub") < top_of(app, SIDE, "Local")).to_be(true)
-	app:click(`#star-banner >> role:button "Dismiss"`)
-	app:frames(20)
 	expect(app:has(`{SIDE} >> #star-banner`)).to_be(false)
-	expect(app:state("shell_star_banner_dismissed")).to_be(true)
+end)
+
+test("an empty Activity view shows one empty state without an empty shelf heading", function()
+	local app = open()
+	app:set_state("screens/shell/activity.luau::shell_sidebar_activity", true)
+	app:command("fixture.no_sessions")
+	app:frames(30)
+	expect(app:has("#sidebar-empty")).to_be(true)
+	expect(app:has('~"Activity"')).to_be(false)
 end)
 
 -- A node's rectangle (its first line in the tree under `scope`): x, y, w, h.

@@ -353,7 +353,7 @@ test("a tab let go off the strip goes back to its place", function()
 	local app = all_open()
 	app:frames(20)
 	local was = box(app, "#session-tab-a2").x
-	app:drag("#session-tab-a2", "#star-banner")
+	app:drag("#session-tab-a2", '#shell-sidebar >> role:button "New chat"')
 	app:frames(60)
 	expect(math.abs(box(app, "#session-tab-a2").x - was) <= 0.5).to_be(true)
 	expect(box(app, "#session-tab-a1").x < was).to_be(true)

@@ -24,6 +24,7 @@ local LinkChips = require("@app/screens/chat/link_chips")
 local LinkMenu = require("@app/screens/chat/link_menu")
 local Find = require("@app/screens/chat/find")
 local boundary = require("@app/screens/shell/boundary")
+local keiki = require("@account/keiki")
 
 -- The pictures replies show, read from the open chat's folder on its device.
 local pictures = ReplyImages.for_session(function(): any
@@ -129,6 +130,15 @@ local function Session(id: Id?): Node
 		end)
 	end)
 	local offset = shared.offset
+	local previous_offset = T.PAST_END
+	local previous_chat: string? = nil
+	ui.effect(function()
+		local chat = which()
+		local at = offset:get()
+		local up = chat == previous_chat and at < previous_offset and previous_offset < T.PAST_END / 2
+		previous_chat, previous_offset = chat, at
+		if keiki.bound(chat) and up and at <= 80 then keiki.older(chat :: string) end
+	end)
 	local room = Dock.room(function(): number
 		return shared.dock_h:get()
 	end)
@@ -258,6 +268,17 @@ local function Session(id: Id?): Node
 				min_h = 0,
 				-- Under the composer, to its footer's line.
 				pb = Dock.page_pad(),
+				ui.show(function() return keiki.bound(which()) end, ui.column {
+					w_full = true,
+					ui.show(function() local d = keiki.conversation:get(); return d ~= nil and d.error ~= nil end,
+						ds.EmptyState { icon = "wifi-off", title = "Could not refresh conversation", size = "sm",
+							body = "Check your connection and try again.", action = { label = "Retry conversation", on_click = keiki.retry_conversation } }),
+					ui.show(function() local s = keiki.history:get()[which()]; return s ~= nil and (s.loading or s.error ~= nil or s.before ~= nil) end,
+						ds.Button { label = function() local s = keiki.history:get()[which()]; return if s and s.loading then "Loading older history…" elseif s and s.error then "Retry history" else "Load older history" end,
+							tone = "ghost", size = "sm", disabled = function() local s = keiki.history:get()[which()]; return s ~= nil and s.loading == true end,
+							on_click = function() local chat = which(); local s = keiki.history:peek()[chat]; if chat then keiki.older(chat, s == nil or s.before == nil) end end,
+							ui.text { function() local s = keiki.history:get()[which()]; return if s and s.loading then "Loading older history…" elseif s and s.error then "Retry history" else "Load older history" end } }),
+				}),
 				ui.column {
 					w_full = true,
 					grow = 1,

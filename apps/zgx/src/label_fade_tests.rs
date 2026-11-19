@@ -101,11 +101,10 @@ fn words_x(app: &mut TestApp, id: &str) -> f32 {
     panic!("{id} says nothing")
 }
 
-/// Under Star on GitHub, the connection line's words start where the
-/// banner's do, whichever glyph leads them (they stood 5 to the left after
-/// the offline dot, on them after the reconnecting ring).
+/// The connection line's words stay aligned across connection states.
 #[test]
 fn the_foot_s_words_share_one_edge() {
+    let mut edge = None;
     for state in [
         "connection_offline",
         "connection_unsaved",
@@ -114,13 +113,8 @@ fn the_foot_s_words_share_one_edge() {
         let mut app = mount();
         assert!(app.host.run_command(state));
         app.frames(30);
-        let (line, star) = (
-            words_x(&mut app, "connection-line"),
-            words_x(&mut app, "star-banner"),
-        );
-        assert!(
-            (line - star).abs() < 0.5,
-            "{state}: the line's words at {line}, Star on GitHub's at {star}"
-        );
+        let line = words_x(&mut app, "connection-line");
+        let expected = *edge.get_or_insert(line);
+        assert!((line - expected).abs() < 0.5, "{state}: {line} != {expected}");
     }
 }

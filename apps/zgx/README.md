@@ -68,15 +68,36 @@ too. Signed out, or new, it's the intro and setup again.
 
 ### The engine
 
-Sign-in, Your agents and Connect GitHub are the engine's, over its local
-IPC: the engine keeps the session (zgx keeps none of its own), finds the
-agents and runs their sign-ins, and runs GitHub's device flow. zgx uses
-the staging engine, port 27871 with its data in `~/.zeron-staging`
-(`scripts/staging-app.sh`'s): one already running is used as it is,
-otherwise zgx starts `target/debug/zeron-engine` from this checkout's root
-(`cargo build -p zeron --bin zeron-engine` there first), detached, against
-zgx's edge and sign-in client. Signing in restarts it once, to sync. Never
-the production engine: port 27654 and `~/.comet-native` are refused.
+Keiki sign-in, organization selection, and agent conversations come from
+the engine over local IPC. The engine owns OAuth and OS-keyring credentials;
+Luau never receives tokens. The workspace stays Local under `~/.keiki`.
+An already-running engine is reused; otherwise zgx starts
+`target/debug/zeron-engine` from this checkout (`cargo build -p zeron --bin
+zeron-engine` first). `KEIKI_API_URL` selects the Keiki service, defaulting
+to `https://onkeiki.com`. Local GitHub source control still uses `gh`.
+
+The main window requires Keiki sign-in and an organization. The account
+button opens its organization picker. Groups contain agents, whose conversations
+load in pages of 50; ungrouped agents and Local chats have separate sections.
+Opening a conversation reuses its bound chat and imports its history.
+While it opens, the previous composer's draft stays put and cannot be sent.
+Scroll up to load older history (or use **Load older history**). The existing composer
+sends, steers, and stops the local stream. Bound questions sit above the composer,
+with their measured height reserved by the transcript, and are read-only:
+**Reply in composer** focuses the composer, not an answer/resume endpoint.
+Once no longer pending they collapse to chips. Dashboard-thread Copilot chats
+remain independent. Polling and RPC details: `docs/reference/keiki-conversations.md`
+at the repository root.
+
+For a headed smoke check without a live account, run
+`python3 tests/keiki_server.py --port 8765`, point `KEIKI_API_URL` at
+`http://127.0.0.1:8765`, and give the app an isolated `HOME`, engine data
+directory, and Secret Service session. Use the real **Sign in to Keiki** button:
+the fixture verifies discovery, dynamic registration, PKCE, and the loopback
+callback. It serves grouped agents, imported history, a paced AG-UI reply, and
+a pending question. It accepts only fake credentials and binds only to loopback.
+Do not run the fixture against your everyday keyring. UI regressions run with
+`zgx test ui` (focused: `zgx test ui 'Keiki '`); run this separately from Rust tests.
 
 ```sh
 ZERON_ZGX_ENGINE_PORT=27881 ZERON_ZGX_ENGINE_DATA=/tmp/zgx-engine \

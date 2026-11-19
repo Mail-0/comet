@@ -203,6 +203,7 @@ export type Props = {
 	reach: State<string?>?,
 	reach_default: (() -> string?)?,
 	on_send: ((text: string) -> ())?,
+	can_send: (() -> boolean)?,
 	on_stop: (() -> ())?,
 	-- A bare Escape no one else took (no mention list, question or
 	-- dictation): true if it did something with it.
@@ -1253,6 +1254,9 @@ return ui.component(function(props: Props): Node
 		value:set("")
 	end
 	local function send()
+		if props.can_send and not props.can_send() then
+			return
+		end
 		if spoken and spoken.before_send() then
 			return
 		end
