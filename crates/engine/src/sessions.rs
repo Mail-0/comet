@@ -335,7 +335,7 @@ struct Inner {
     titles: OnceLock<crate::titles::TitleGenerator>,
     generated_images: OnceLock<(crate::uploads::Uploads, std::path::PathBuf)>,
     /// [`crate::Repos::scratch_root`]; bare tests fall back to
-    /// `~/.zeron/scratch`.
+    /// `~/.keiki/scratch`.
     scratch_root: OnceLock<std::path::PathBuf>,
     /// Fired with `(chat_id, cwd)` when a user prompt starts a turn (fresh
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
@@ -1209,7 +1209,7 @@ impl SessionsEngine {
             .scratch_root
             .get()
             .cloned()
-            .unwrap_or_else(|| crate::repos::home_dir().join(".zeron").join("scratch"));
+            .unwrap_or_else(|| crate::repos::home_dir().join(".keiki").join("scratch"));
         request.cwd = crate::repos::resolve_chat_cwd(&request.cwd, &scratch_root)
             .map_err(EngineError::Other)?;
         // Native-only catalog entries have no portable file fallback. Reject

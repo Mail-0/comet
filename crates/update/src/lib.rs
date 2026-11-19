@@ -10,7 +10,7 @@
 //! releases published before the manifest existed.
 //!
 //! Install kinds and their update paths:
-//! - **Managed** (`~/.zeron/app/<ver>` + `current` symlink — the curl|sh
+//! - **Managed** (`~/.keiki/app/<ver>` + `current` symlink — the curl|sh
 //!   installer and the Linux tarball's `install.sh`): download the headless
 //!   tarball into a new versioned dir, then restart into a trial of it that
 //!   moves the symlink only once it has proved it's ready ([`transaction`]).
@@ -569,7 +569,7 @@ fn release_base(edge_url: &str) -> anyhow::Result<String> {
 /// How this binary was installed — decides the update path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallKind {
-    /// `~/.zeron/app/<ver>/zeron` behind the `current` symlink
+    /// `~/.keiki/app/<ver>/zeron` behind the `current` symlink
     /// (curl|sh installer, the Linux tarball's `install.sh`, or a previous
     /// `zeron update`).
     Managed { app_root: PathBuf },
@@ -959,7 +959,7 @@ fn detect_install_from_for_os(exe: &Path, home: Option<&Path>, os: &str) -> Inst
     }
     if let Some(home) = home {
         // `current_exe` resolves the `current` symlink to the versioned dir.
-        let app_root = home.join(".zeron").join("app");
+        let app_root = home.join(".keiki").join("app");
         if exe.starts_with(&app_root) {
             return InstallKind::Managed { app_root };
         }
@@ -2966,7 +2966,7 @@ mod tests {
 
     fn managed() -> InstallKind {
         InstallKind::Managed {
-            app_root: PathBuf::from("/home/me/.zeron/app"),
+            app_root: PathBuf::from("/home/me/.keiki/app"),
         }
     }
 
@@ -3526,12 +3526,12 @@ mod tests {
     fn install_kind_detection() {
         assert_eq!(
             detect_install_from_for_os(
-                Path::new("/home/u/.zeron/app/0.1.1/zeron"),
+                Path::new("/home/u/.keiki/app/0.1.1/zeron"),
                 Some(Path::new("/home/u")),
                 "linux",
             ),
             InstallKind::Managed {
-                app_root: PathBuf::from("/home/u/.zeron/app")
+                app_root: PathBuf::from("/home/u/.keiki/app")
             }
         );
         assert_eq!(

@@ -4,7 +4,7 @@
 //! Repos are device-local (paths differ per machine), so the known set is a plain
 //! JSON list (`{data_dir}/repos.json`) — no sync. Existing repos can live anywhere
 //! the user points us; cloned/created ones land in `{data_dir}/repos`. Worktrees are
-//! created under `~/.zeron/worktrees/<repoName>/<worktreeName>` (NOT the data
+//! created under `~/.keiki/worktrees/<repoName>/<worktreeName>` (NOT the data
 //! dir — worktrees are user-facing working checkouts), with an auto-generated name +
 //! matching `zeron/<name>` branch. Device preferences can choose another root;
 //! `ZERON_WORKTREES_DIR` takes precedence over those preferences.
@@ -173,7 +173,7 @@ impl Repos {
     }
 
     /// Where projectless chats' folders live on this host: the engine data
-    /// dir's `scratch` (`~/.zeron/scratch` for the default data dir), as
+    /// dir's `scratch` (`~/.keiki/scratch` for the default data dir), as
     /// t3code keeps its under `~/.t3/scratch`.
     pub(crate) fn scratch_root(&self) -> PathBuf {
         self.inner.data_dir.join("scratch")
@@ -184,13 +184,13 @@ impl Repos {
     }
 
     /// Device preferences live in `data_dir`. New worktrees use the custom
-    /// location or `~/.zeron/worktrees`; a nonempty `$ZERON_WORKTREES_DIR`
+    /// location or `~/.keiki/worktrees`; a nonempty `$ZERON_WORKTREES_DIR`
     /// overrides both (including test isolation).
     pub fn new(data_dir: &Path, device_id: &str) -> Self {
         Self::with_worktree_preferences(
             data_dir,
             device_id,
-            home_dir().join(".zeron").join("worktrees"),
+            home_dir().join(".keiki").join("worktrees"),
             std::env::var_os("ZERON_WORKTREES_DIR")
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),

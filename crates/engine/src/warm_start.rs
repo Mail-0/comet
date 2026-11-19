@@ -448,7 +448,7 @@ impl SessionsEngine {
             .scratch_root
             .get()
             .cloned()
-            .unwrap_or_else(|| crate::repos::home_dir().join(".zeron").join("scratch"))
+            .unwrap_or_else(|| crate::repos::home_dir().join(".keiki").join("scratch"))
     }
 
     /// Stops the warm start once its lease runs out unrenewed.

@@ -55,7 +55,7 @@ use std::time::{Duration, Instant};
 
 /// The production engine's data dirs, relative to home: today's and the one
 /// it was renamed from in 0.2.0.
-const PRODUCTION_DATA: &[&str] = &[".zeron", ".comet-native"];
+const PRODUCTION_DATA: &[&str] = &[".keiki", ".zeron", ".comet-native"];
 
 /// The ports the production engine serves: Zeron's, and the one Zeron v3's
 /// Windows install serves beside it.
@@ -474,12 +474,12 @@ mod tests {
         let home = Path::new("/Users/someone");
         let edge = "https://staging.zeron.sh";
         assert!(config_of(&[("ZERON_ZGX_ENGINE_PORT", "27654")], home, None, edge).is_err());
-        assert!(config_of(&[("ZERON_ZGX_ENGINE_DATA", "~/.zeron")], home, None, edge).is_err());
+        assert!(config_of(&[("ZERON_ZGX_ENGINE_DATA", "~/.keiki")], home, None, edge).is_err());
         assert!(config_of(&[("ZERON_ZGX_ENGINE_DATA", "~/.comet-native")], home, None, edge).is_err());
         assert!(config_of(&[("ZERON_ZGX_ENGINE_PORT", "27655")], home, None, edge).is_err());
         // Asked for by name, it's allowed.
-        let production = config_of(&[("ZERON_ZGX_ENGINE_PORT", "27655"), ("ZERON_ZGX_ENGINE_DATA", "~/.zeron"), ("ZERON_ZGX_ENGINE_PRODUCTION", "1")], home, None, edge).unwrap();
-        assert_eq!((production.port, production.data_dir.clone()), (27655, home.join(".zeron")));
+        let production = config_of(&[("ZERON_ZGX_ENGINE_PORT", "27655"), ("ZERON_ZGX_ENGINE_DATA", "~/.keiki"), ("ZERON_ZGX_ENGINE_PRODUCTION", "1")], home, None, edge).unwrap();
+        assert_eq!((production.port, production.data_dir.clone()), (27655, home.join(".keiki")));
         // Windows' own place for it, which no HOME moves.
         if cfg!(windows) {
             let local = [("LOCALAPPDATA", r"C:\Users\someone\AppData\Local"), ("ZERON_ZGX_ENGINE_DATA", r"C:\Users\someone\AppData\Local\Zeron")];
@@ -506,7 +506,7 @@ mod tests {
         let home = Path::new("/Users/someone");
         let prod = crate::auth::production();
         let beta = config_of(&[], home, Some(&exe), &prod.edge).unwrap();
-        assert_eq!((beta.port, beta.data_dir.clone()), (27654, home.join(".zeron")));
+        assert_eq!((beta.port, beta.data_dir.clone()), (27654, home.join(".keiki")));
         assert_eq!(beta.startable(), Some(macos.join("Zeron Engine").as_path()));
         assert_eq!((beta.edge.as_str(), beta.client.as_str(), beta.callback_port), (prod.edge.as_str(), prod.client.as_str(), 27641));
         assert!(beta.follows_bundle());

@@ -234,13 +234,13 @@ fn render_systemd_unit(exe: &Path, env: &[(String, String)]) -> String {
         unit.push_str(&format!("Environment=\"{key}={value}\"\n"));
     }
     unit.push_str(&format!(
-        "ExecStart={} headless\nRestart=on-failure\nRestartSec=5\nEnvironmentFile=-%h/.zeron/env\n\n[Install]\nWantedBy=default.target\n",
+        "ExecStart={} headless\nRestart=on-failure\nRestartSec=5\nEnvironmentFile=-%h/.keiki/env\n\n[Install]\nWantedBy=default.target\n",
         systemd_exec_path(exe)
     ));
     unit
 }
 
-/// The ExecStart binary path. An exe under `~/.zeron/app/` came from the
+/// The ExecStart binary path. An exe under `~/.keiki/app/` came from the
 /// curl|sh installer, whose upgrades relink `app/current` — point the unit at
 /// the symlink (as the installer's own unit does) so it never pins one version.
 /// (`current_exe` resolves symlinks, so the versioned dir is what we see here.)
@@ -250,10 +250,10 @@ fn systemd_exec_path(exe: &Path) -> String {
 
 fn exec_path_for(exe: &Path, home: Option<&Path>) -> String {
     let installed = home
-        .map(|home| home.join(".zeron/app"))
+        .map(|home| home.join(".keiki/app"))
         .is_some_and(|app_root| exe.starts_with(app_root));
     if installed {
-        "%h/.zeron/app/current/zeron".to_string()
+        "%h/.keiki/app/current/zeron".to_string()
     } else {
         format!("{}", exe.display())
     }
@@ -397,7 +397,7 @@ mod tests {
         assert!(unit.contains("Restart=on-failure"));
         assert!(!unit.contains("session.json"));
         assert!(!unit.contains("ConditionPathExists"));
-        assert!(unit.contains("EnvironmentFile=-%h/.zeron/env"));
+        assert!(unit.contains("EnvironmentFile=-%h/.keiki/env"));
         assert!(unit.contains("WantedBy=default.target"));
     }
 
@@ -419,10 +419,10 @@ mod tests {
         // the versioned dir): the unit must point back at the symlink.
         assert_eq!(
             exec_path_for(
-                Path::new("/home/u/.zeron/app/0.3.0/zeron"),
+                Path::new("/home/u/.keiki/app/0.3.0/zeron"),
                 Some(Path::new("/home/u")),
             ),
-            "%h/.zeron/app/current/zeron"
+            "%h/.keiki/app/current/zeron"
         );
         // Source build: literal path.
         assert_eq!(
