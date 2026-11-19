@@ -3143,7 +3143,10 @@ impl AuthRpc {
 impl RpcService for AuthRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         match method {
-            methods::AUTH_STATUS => Ok(RpcReply::Stream(watch_stream(self.auth.watch_state()))),
+            methods::AUTH_STATUS => {
+                let _ = self.auth.access_token().await;
+                Ok(RpcReply::Stream(watch_stream(self.auth.watch_state())))
+            }
             methods::SIGN_IN => {
                 // `{screenHint?, fresh?}`; absent (the desktop app's `{}`),
                 // the hosted page opens as it always has.

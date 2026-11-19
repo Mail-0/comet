@@ -161,6 +161,34 @@ fn auth(server: &Server, saved: bool) -> (Auth, Arc<MemoryStore>, CopilotCredent
 }
 
 #[tokio::test]
+async fn the_initial_status_restores_secure_credentials_before_publishing_the_gate() {
+    use futures::StreamExt;
+    use zeron_rpc::{RpcReply, RpcService};
+
+    for mode in ["empty", "saved", "rejected"] {
+        let server = Server::start(|_| match mode {
+            "saved" => vec![
+                Reply::ok("POST", "/oauth/token", tokens("restored-access", "rotated")),
+                Reply::ok("GET", "/api/webapp/auth/session", account(Some("org-1"), json!([]))),
+            ],
+            "rejected" => vec![Reply::error("POST", "/oauth/token", 400)],
+            _ => vec![],
+        }).await;
+        let (auth, store, holder) = auth(&server, mode != "empty");
+        let rpc = crate::rpc::AuthRpc::new(auth);
+        let RpcReply::Stream(mut stream) = rpc.handle("AuthStatus", json!({})).await.unwrap() else {
+            panic!("AuthStatus must remain a watch stream");
+        };
+        let snapshot = stream.next().await.unwrap();
+        assert_eq!(snapshot["state"], if mode == "saved" { "signedIn" } else { "signedOut" });
+        assert_eq!(store.load().unwrap().is_some(), mode == "saved");
+        assert_eq!(holder.snapshot().is_some(), mode == "saved");
+        if mode == "saved" { assert_eq!(snapshot["user"]["id"], "user@example.test"); }
+        server.done.await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn browser_sign_in_restores_account_switches_org_refreshes_and_signs_out() {
     let orgs = json!([{"id": "org-1", "name": "First"}, {"id": "org-2", "name": "Second"}]);
     let server = Server::start(|url| {
