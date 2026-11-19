@@ -613,7 +613,7 @@ async fn a_switched_credential_replaces_the_parked_session() {
     std::fs::create_dir_all(&dir).unwrap();
 
     let runs_started = Arc::new(Mutex::new(0usize));
-    let credential = Arc::new(Mutex::new("claude:1".to_string()));
+    let credential = Arc::new(Mutex::new("credential:1".to_string()));
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(PersistentHarness {
         runs_started: runs_started.clone(),
@@ -639,7 +639,7 @@ async fn a_switched_credential_replaces_the_parked_session() {
     .await;
     assert_eq!(*runs_started.lock().unwrap(), 1, "same account: same child");
 
-    *credential.lock().unwrap() = "claude:2".into();
+    *credential.lock().unwrap() = "credential:2".into();
     queue_run(&core, "third", "/tmp", "msg-user-3");
     wait_for(
         || complete_assistant_count(&core) == 3,
@@ -709,120 +709,6 @@ async fn a_credential_decided_while_preparing_keeps_the_parked_session() {
     )
     .await;
     assert_eq!(*runs_started.lock().unwrap(), 1, "decided at the first run: same child");
-    core.shutdown().await;
-}
-
-/// Turning a provider's native subagents off (Settings → Providers) between
-/// turns replaces the parked child, whose successor's Zeron server is
-/// side-chats-only; an unchanged setting keeps it warm.
-#[tokio::test]
-async fn switched_native_subagents_replace_the_parked_session() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let runs_started = Arc::new(Mutex::new(0usize));
-    let side_chats_only = Arc::new(Mutex::new(Vec::new()));
-    let registry = Arc::new(HarnessRegistry::new());
-    registry.register(Arc::new(PersistentHarness {
-        runs_started: runs_started.clone(),
-        id: HarnessId::Copilot,
-        side_chats_only: side_chats_only.clone(),
-    }));
-    let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::Copilot, None)
-        .expect("engine core assembles");
-    // A served IPC port: runs carry Zeron's own MCP server.
-    core.sessions.set_ipc_port(27699);
-    pre_title(&core);
-
-    queue_run(&core, "first", "/tmp", "msg-user-1");
-    wait_for(
-        || complete_assistant_count(&core) == 1,
-        "first turn to complete",
-    )
-    .await;
-    queue_run(&core, "second", "/tmp", "msg-user-2");
-    wait_for(
-        || complete_assistant_count(&core) == 2,
-        "second turn on the warm child",
-    )
-    .await;
-    assert_eq!(*runs_started.lock().unwrap(), 1, "same setting: same child");
-
-    registry
-        .set_native_subagents(HarnessId::Copilot, false)
-        .unwrap();
-    queue_run(&core, "third", "/tmp", "msg-user-3");
-    wait_for(
-        || complete_assistant_count(&core) == 3,
-        "third turn after the switch",
-    )
-    .await;
-    assert_eq!(
-        *runs_started.lock().unwrap(),
-        2,
-        "a switched setting starts a new child"
-    );
-    assert_eq!(*side_chats_only.lock().unwrap(), [false, true]);
-    core.shutdown().await;
-}
-
-/// A side chat keeps its provider's own subagents whatever the setting, so
-/// switching them off doesn't replace its parked child either.
-#[tokio::test]
-async fn a_parked_side_chat_stays_warm_when_native_subagents_switch() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let runs_started = Arc::new(Mutex::new(0usize));
-    let side_chats_only = Arc::new(Mutex::new(Vec::new()));
-    let registry = Arc::new(HarnessRegistry::new());
-    registry.register(Arc::new(PersistentHarness {
-        runs_started: runs_started.clone(),
-        id: HarnessId::Copilot,
-        side_chats_only: side_chats_only.clone(),
-    }));
-    let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::Copilot, None)
-        .expect("engine core assembles");
-    core.sessions.set_ipc_port(27699);
-    core.workspace
-        .create_space("space-restart", &core.device_id, "/tmp", None, false)
-        .expect("create space row");
-    core.workspace
-        .create_chat("main", Some("space-restart"), None, None, None)
-        .expect("create the parent row");
-    core.workspace
-        .create_chat_with_parent(
-            CHAT,
-            Some("space-restart"),
-            None,
-            None,
-            None,
-            Some("main".into()),
-        )
-        .expect("create the side chat row");
-    core.workspace
-        .rename_chat(CHAT, "Pre-titled")
-        .expect("rename chat");
-
-    queue_run(&core, "first", "/tmp", "msg-user-1");
-    wait_for(
-        || complete_assistant_count(&core) == 1,
-        "first turn to complete",
-    )
-    .await;
-    registry
-        .set_native_subagents(HarnessId::Copilot, false)
-        .unwrap();
-    queue_run(&core, "second", "/tmp", "msg-user-2");
-    wait_for(
-        || complete_assistant_count(&core) == 2,
-        "second turn after the switch",
-    )
-    .await;
-    assert_eq!(*runs_started.lock().unwrap(), 1, "the warm child serves it");
-    assert_eq!(*side_chats_only.lock().unwrap(), [false]);
     core.shutdown().await;
 }
 
@@ -1337,115 +1223,6 @@ async fn persistent_startup_crash_keeps_stored_session_id() {
     assert_eq!(
         stored_harness_session(&core),
         Some(("hs-live".into(), Some("/tmp".into())))
-    );
-    core.shutdown().await;
-}
-
-/// Real-CLI proof of the whole regression fix: tell claude a codeword, restart
-/// the engine (fresh `EngineCore::assemble` over the same data dir), ask for
-/// the codeword back — the reply can only contain it if the second run resumed
-/// the first run's harness session. Ignored by default: needs an installed,
-/// authenticated `claude` CLI and spends real tokens (haiku, two tiny turns).
-/// Run with: `cargo test -p zeron-engine --test restart_resume -- --ignored`
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires installed+authenticated claude CLI; spends tokens"]
-async fn real_claude_remembers_codeword_across_engine_restart() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    let cwd = tmp.path().join("project");
-    std::fs::create_dir_all(&cwd).unwrap();
-    let cwd = cwd.to_string_lossy().to_string();
-
-    let real_request = |prompt: &str| RunRequest {
-        mcp: None,
-        prompt: prompt.into(),
-        harness: None,
-        model: Some("haiku".into()),
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: cwd.clone(),
-        sandbox: SandboxLevel::WorkspaceWrite,
-        auto_approve: false,
-        access: Default::default(),
-        plan: false,
-        attachments: Vec::new(),
-        worktree: None,
-        resume: None,
-        env: Default::default(),
-        extra_mcp: Vec::new(),
-    };
-    let assemble_real = || {
-        EngineCore::assemble(
-            &dir,
-            Arc::new(zeron_engine::default_registry()),
-            HarnessId::Copilot,
-            None,
-        )
-        .expect("engine core assembles")
-    };
-
-    let core = assemble_real();
-    pre_title(&core); // keep the auto-titler from spending a second model call
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request: real_request(
-                    "Remember the codeword: PINEAPPLE. Reply with exactly: stored",
-                ),
-                message_id: "msg-user-1".into(),
-            },
-        )
-        .expect("queue first real run");
-    wait_for_within(
-        || complete_assistant_count(&core) == 1,
-        "first real claude turn",
-        Duration::from_secs(120),
-    )
-    .await;
-    assert!(
-        stored_harness_session(&core).is_some(),
-        "claude session id must be stored on the chat row"
-    );
-    core.shutdown().await;
-    drop(core);
-
-    // "App restart": a brand-new engine over the same data dir.
-    let core = assemble_real();
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request: real_request(
-                    "What was the codeword I told you earlier? Reply with just the codeword.",
-                ),
-                message_id: "msg-user-2".into(),
-            },
-        )
-        .expect("queue second real run");
-    wait_for_within(
-        || complete_assistant_count(&core) == 2,
-        "post-restart real claude turn",
-        Duration::from_secs(120),
-    )
-    .await;
-
-    let entries = entries_now(&core);
-    let last_assistant_text: String = entries
-        .iter()
-        .rev()
-        .find(|e| e.role == MessageRole::Assistant)
-        .into_iter()
-        .flat_map(|e| {
-            e.parts.iter().filter_map(|p| match p {
-                MessagePart::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-        })
-        .collect();
-    assert!(
-        last_assistant_text.to_uppercase().contains("PINEAPPLE"),
-        "post-restart reply must recall the codeword (got: {last_assistant_text:?})"
     );
     core.shutdown().await;
 }

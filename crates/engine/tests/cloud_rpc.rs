@@ -107,7 +107,7 @@ async fn cloud_rpcs_without_an_edge_are_unavailable_and_offline() {
         .unwrap();
     assert!(!vault.available);
 
-    // Credential uploads refuse before anything starts (no browser, no CLI).
+    // Retired credential uploads are not registered.
     for method in [methods::VAULT_CONNECT_CODEX, methods::VAULT_CONNECT_CLAUDE] {
         let error = client
             .call(
@@ -117,7 +117,7 @@ async fn cloud_rpcs_without_an_edge_are_unavailable_and_offline() {
             .await
             .unwrap_err()
             .to_string();
-        assert!(error.contains("signed-in"), "{method}: {error}");
+        assert!(error.contains("unknown method"), "{method}: {error}");
     }
     assert!(
         client
@@ -404,11 +404,7 @@ fn cloud_edge(request: &str, body: &str) -> (u16, String) {
         if !MODELS_UP.load(std::sync::atomic::Ordering::SeqCst) {
             return (503, r#"{"error":"unavailable"}"#.into());
         }
-        return (
-            200,
-            r#"{"models":{"claude-code":[{"id":"cloud-opus","label":"Cloud Opus","reasoningLevels":["low","high","ultrathink"],"options":[]}],"codex":[{"id":"cloud-codex","label":"Cloud Codex","reasoningLevels":["low"],"options":[]}]}}"#
-                .into(),
-        );
+        return (200, r#"{"models":{"copilot":[{"id":"cloud-copilot","label":"Copilot","reasoningLevels":[],"options":[]}]}}"#.into());
     }
     if request.starts_with("GET ") && request.contains("/github/repos") {
         return (
@@ -769,8 +765,7 @@ async fn catalogs_for_cloud_devices_are_answered_here() {
     });
     let client = memory_client(core.rpc_service());
 
-    // Harnesses for any Cloud device: Codex and Claude Code, both usable
-    // there, without dialing anything (no peer links exist here).
+    // Copilot is the only Cloud harness; discovery does not dial a peer.
     for target in ["cloud-acct", "cloud-s-chat-1"] {
         let harnesses: Vec<serde_json::Value> = client
             .call_as(
@@ -780,11 +775,7 @@ async fn catalogs_for_cloud_devices_are_answered_here() {
             .await
             .unwrap();
         let ids: Vec<&str> = harnesses.iter().filter_map(|h| h["id"].as_str()).collect();
-        assert_eq!(ids.len(), 2, "{harnesses:?}");
-        assert!(
-            ids.contains(&"codex") && ids.contains(&"claude-code"),
-            "{ids:?}"
-        );
+        assert_eq!(ids, ["copilot"], "{harnesses:?}");
         assert!(harnesses.iter().all(|h| h["installed"] == true));
     }
     let refused = client
@@ -795,39 +786,33 @@ async fn catalogs_for_cloud_devices_are_answered_here() {
         .await
         .unwrap_err();
     assert!(
-        refused.to_string().contains("Codex and Claude Code only"),
+        refused.to_string().contains("Copilot only"),
         "{refused}"
     );
 
-    // Models for a chat on a session machine (asleep, or gone): Cloud's, as
-    // the edge lists them, whatever this computer has installed or signed in.
-    // Nothing dials the machine.
-    for (target, harness, id) in [
-        ("cloud-s-chat-1", "codex", "cloud-codex"),
-        ("cloud-s-chat-1", "claude-code", "cloud-opus"),
-        ("cloud-acct", "claude-code", "cloud-opus"),
-    ] {
+    for target in ["cloud-s-chat-1", "cloud-acct"] {
         let models: Vec<serde_json::Value> = client
             .call_as(
                 methods::LIST_MODELS,
-                serde_json::json!({ "targetDeviceId": target, "harness": harness }),
+                serde_json::json!({ "targetDeviceId": target, "harness": "copilot" }),
             )
             .await
             .unwrap();
-        let ids: Vec<&str> = models.iter().filter_map(|m| m["id"].as_str()).collect();
-        assert_eq!(ids, [id], "{target} {harness}");
+        assert_eq!(
+            models.iter().map(|m| m["id"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["cloud-copilot"]
+        );
     }
-    // The edge out of reach: the last list read.
     MODELS_UP.store(false, std::sync::atomic::Ordering::SeqCst);
     let kept: Vec<serde_json::Value> = client
         .call_as(
             methods::LIST_MODELS,
-            serde_json::json!({ "targetDeviceId": "cloud-s-chat-1", "harness": "codex" }),
+            serde_json::json!({ "targetDeviceId": "cloud-s-chat-1", "harness": "copilot" }),
         )
         .await
         .unwrap();
     MODELS_UP.store(true, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(kept[0]["id"], "cloud-codex");
+    assert_eq!(kept[0]["id"], "cloud-copilot");
     assert!(
         seen.lock()
             .unwrap()
@@ -938,7 +923,7 @@ async fn provider_switch_is_refused_for_a_host_that_cannot_switch() {
                 chat,
                 None,
                 Some(&device),
-                Some(serde_json::from_value(config("claude-code")).unwrap()),
+                Some(serde_json::from_value(config("copilot")).unwrap()),
                 Some(cwd.clone()),
             )
             .unwrap();
@@ -949,15 +934,15 @@ async fn provider_switch_is_refused_for_a_host_that_cannot_switch() {
             serde_json::json!({ "op": "setChatConfig", "chatId": chat, "config": config(harness) }),
         )
     };
-    let refused = switch("old-host-chat", "codex")
+    let refused = switch("old-host-chat", "mock")
         .await
         .unwrap_err()
         .to_string();
     assert!(refused.contains("newer Zeron"), "{refused}");
     // The same provider (a model or effort change) still goes through.
-    switch("old-host-chat", "claude-code").await.unwrap();
+    switch("old-host-chat", "copilot").await.unwrap();
     // This engine hosts its own chats and switches them.
-    switch("own-chat", "codex").await.unwrap();
+    switch("own-chat", "mock").await.unwrap();
     core.shutdown().await;
 }
 

@@ -2438,7 +2438,7 @@ async fn mcp_standalone_session_executes_on_the_selected_device() {
     let dirs = tempfile::tempdir().unwrap();
     let a = assemble(&dirs.path().join("a"), "device-a");
     // Mock is deliberately disabled in production catalogs. Offer a scripted
-    // Codex adapter on B so MCP exercises normal availability validation.
+    // Copilot adapter on B so MCP exercises normal availability validation.
     let remote_dir = dirs.path().join("b");
     std::fs::create_dir_all(&remote_dir).unwrap();
     std::fs::write(remote_dir.join("device-id"), "device-b").unwrap();
@@ -2446,8 +2446,8 @@ async fn mcp_standalone_session_executes_on_the_selected_device() {
     let remote_store = zeron_sync::DocsStore::open(profile.store_root()).unwrap();
     let b = EngineCore::assemble_with_profile(
         profile,
-        registry_for(HarnessId::Mock),
-        HarnessId::Mock,
+        registry_for(HarnessId::Copilot),
+        HarnessId::Copilot,
         None,
     )
     .unwrap();
@@ -2513,7 +2513,7 @@ async fn mcp_standalone_session_executes_on_the_selected_device() {
     tools
         .call(
             "list_models",
-            json!({"device":"device-b", "harness":"codex"}),
+            json!({"device":"device-b", "harness":"copilot"}),
         )
         .await
         .unwrap();
@@ -2522,7 +2522,7 @@ async fn mcp_standalone_session_executes_on_the_selected_device() {
             "create_chat",
             json!({
                 "kind":"chat", "device":"device-b", "project":project,
-                "harness":"codex", "title":"Remote MCP session", "prompt":"execute on B",
+                "harness":"copilot", "title":"Remote MCP session", "prompt":"execute on B",
                 "wait":true, "timeout_secs":30
             }),
         )

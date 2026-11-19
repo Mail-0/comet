@@ -1218,7 +1218,7 @@ impl EngineRpc {
                 };
                 if !crate::registry::CLOUD_HARNESS_IDS.contains(&p.harness) {
                     return Some(Err(RpcError::Failed(
-                        "Cloud runs Codex and Claude Code only".into(),
+                        "Cloud runs Copilot only".into(),
                     )));
                 }
                 // What Cloud's machines run: the edge's list (the last one read,

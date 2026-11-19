@@ -280,7 +280,7 @@ async fn switching_provider_drops_the_foreign_resume_id_and_replays_the_history_
     );
     assert_eq!(
         rig.row().harness_session_harness.as_deref(),
-        Some("claude-code")
+        Some("copilot")
     );
 
     // Same provider again: resumes its own session, still unwrapped.
@@ -328,13 +328,13 @@ async fn switching_provider_drops_the_foreign_resume_id_and_replays_the_history_
         .collect();
     assert_eq!(
         ids,
-        vec![(Some("claude-code".to_string()), Some("codex".to_string()))]
+        vec![(Some("copilot".to_string()), Some("mock".to_string()))]
     );
     assert_eq!(
         rig.row().harness_session_id.as_deref(),
         Some("codex-session")
     );
-    assert_eq!(rig.row().harness_session_harness.as_deref(), Some("codex"));
+    assert_eq!(rig.row().harness_session_harness.as_deref(), Some("mock"));
 
     // The seam sits above the message that triggered the switch.
     let entries = rig.entries();
@@ -730,8 +730,8 @@ async fn a_switched_side_chat_counts_only_its_own_seams() {
                 id: "switch:1".into(),
                 from: "Claude".into(),
                 to: "Codex".into(),
-                from_harness: Some("claude-code".into()),
-                to_harness: Some("codex".into()),
+                from_harness: Some("copilot".into()),
+                to_harness: Some("mock".into()),
             },
         ),
         (

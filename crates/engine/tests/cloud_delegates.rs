@@ -139,7 +139,7 @@ async fn a_cloud_machine_starts_delegates_of_its_own_chat() {
             methods::MUTATE,
             serde_json::json!({
                 "op": "createChat", "chatId": "child", "parentChatId": "main", "cloud": true,
-                "config": { "harness": "codex", "sandbox": "workspace-write" },
+                "config": { "harness": "copilot", "sandbox": "workspace-write" },
             }),
         )
         .await
@@ -163,7 +163,7 @@ async fn a_cloud_machine_starts_delegates_of_its_own_chat() {
     let body: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body["chatId"], "child");
     assert_eq!(body["parentChatId"], "main");
-    assert_eq!(body["config"]["harness"], "codex");
+    assert_eq!(body["config"]["harness"], "copilot");
     assert!(
         body.get("repo").is_none() && body.get("spaceId").is_none(),
         "{body}"
