@@ -32,7 +32,7 @@ fn read_json(path: &Path) -> Json {
 /// The built-in theme key folder `id` in `templates` held, if Zeron wrote
 /// it: a real folder at `theme-<key>` (or `theme-<key>-N`, where yours had
 /// that id) holding exactly its manifest and `theme.luau`, both regular
-/// files; the manifest marked with the key and by Zeron; the palette data,
+/// files; the manifest marked with the key and by Keiki or Zeron; the palette data,
 /// not code.
 pub fn written_by_zeron(templates: &Path, id: &str) -> Option<String> {
     let dir = templates.join(id);
@@ -60,7 +60,7 @@ pub fn written_by_zeron(templates: &Path, id: &str) -> Option<String> {
     let base = format!("theme-{key}");
     let at_its_id = id == base || id.strip_prefix(&format!("{base}-")).is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
     let palette = std::fs::read_to_string(dir.join(FILE)).ok().and_then(|t| zeron_theme::luau_data::parse(&t));
-    (at_its_id && manifest["author"] == "Keiki" && palette.is_some()).then(|| key.to_string())
+    (at_its_id && matches!(manifest["author"].as_str(), Some("Keiki" | "Zeron")) && palette.is_some()).then(|| key.to_string())
 }
 
 /// What `retire` did: the theme the window was moved off (its key), and the
@@ -134,6 +134,21 @@ mod tests {
             &format!(r#"{{ "id": "{id}", "name": "{key}", "description": "Its colours on Zeron's interface.", "author": "Zeron", "version": "0.2.131", "zeron_version": "0.2.131", "builtin_theme": "{key}" }}"#),
         );
         write(templates, &format!("{id}/theme.luau"), "-- Its colours.\nreturn {\n\tname = \"Theme\",\n\tdark = { background = \"#282828\" },\n}\n");
+    }
+
+    #[test]
+    fn a_keiki_written_theme_is_retired_too() {
+        let d = dir("keiki");
+        let t = d.join("templates");
+        zeron_s(&t, "theme-ayu", "ayu");
+        let path = t.join("theme-ayu/zeron-template.json");
+        let mut manifest = read_json(&path);
+        manifest["author"] = Json::String("Keiki".into());
+        std::fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let retired = retire(&t, &d);
+        assert_eq!(retired, Retired { moved_from: None, removed: vec!["theme-ayu".into()] });
+        assert!(!t.join("theme-ayu").exists());
+        assert_eq!(retire(&t, &d), Retired::default());
     }
 
     #[test]

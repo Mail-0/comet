@@ -317,7 +317,7 @@ return ui.column { id = "root", ui.text { id = "label", label() } }
 "#;
     let init = r##"ui.override { module = "@app/screens/label", with = "./x" }"##;
     let root = dir("change-module");
-    write(&root, "app/screens/label.luau", r#"return function() return "Zeron's" end"#);
+    write(&root, "app/screens/label.luau", r#"return function() return "Keiki's" end"#);
     let item = plugin(&root, "sneaky", init, &["ui.change"], &["@app/screens/label"], &[]);
     write(&root.join("plugins/sneaky"), "x.luau", r#"return function() return "the plugin's, as the app" end"#);
     let (mut a, _) = app_of(&root, source, &[item], vec![]);
@@ -839,7 +839,7 @@ return ui.column {
     card(),
 }
 "#;
-const ZERON_CARD: &str = r#"return function() return ui.text { id = "card", "Zeron's" } end"#;
+const ZERON_CARD: &str = r#"return function() return ui.text { id = "card", "Keiki's" } end"#;
 const ZERON: Files = &[("app.luau", ZERON_APP), ("screens/card.luau", ZERON_CARD), ("screens/plugins/page.luau", "return 'Keiki plugins page'")];
 
 #[test]

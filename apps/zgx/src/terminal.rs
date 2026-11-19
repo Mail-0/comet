@@ -940,7 +940,7 @@ mod tests {
         assert_eq!(quote_posix("a b'c"), "'a b'\\''c'");
         // Paths with spaces, each platform's way (both checked everywhere).
         assert_eq!(quote_posix("/Users/Some One/Keiki.app/zeron-zgx"), "'/Users/Some One/Keiki.app/zeron-zgx'");
-        assert_eq!(quote_windows(r"C:\Program Files\Keiki\zeron.exe"), r#""C:\Program Files\Zeron\zeron.exe""#);
+        assert_eq!(quote_windows(r"C:\Program Files\Keiki\zeron.exe"), r#""C:\Program Files\Keiki\zeron.exe""#);
         // A folder's trailing backslash must not escape the closing quote.
         assert_eq!(quote_windows(r"C:\Users\me\AppData\Local\Keiki\"), r#""C:\Users\me\AppData\Local\Keiki\\""#);
         assert_eq!(quote_windows(r#"{"chatId":"c1"}"#), r#""{\"chatId\":\"c1\"}""#);

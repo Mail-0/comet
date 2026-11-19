@@ -1161,7 +1161,8 @@ mod tests {
         assert_eq!((id.as_str(), name.as_str()), ("t-copy", "Tidy copy"));
         assert_eq!(new_id(&t, "My Dark  Theme!"), "my-dark-theme");
         assert_eq!(new_id(&t, "T"), "template-t");
-        assert_eq!(new_id(&t, "Keiki"), "template-zeron");
+        assert_eq!(new_id(&t, "Zeron"), "template-zeron");
+        assert_eq!(new_id(&t, "Keiki"), "keiki");
         assert_eq!(new_id(&t, "  "), "template");
         std::fs::create_dir_all(t.join("airy")).unwrap();
         assert_eq!(new_id(&t, "Airy"), "airy-2");

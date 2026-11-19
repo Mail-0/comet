@@ -433,13 +433,13 @@ fn a_sessions_copy_menu_copies_and_says_so() {
     app.frames(20);
     app.click("role:menuitem \"Copy\"");
     assert!(app.wait_until(|app| app.find("role:menuitem \"Harness session ID\"").is_some()), "the submenu:\n{}", app.tree());
-    assert!(app.find("role:menuitem \"Codex conversation link\"").is_some(), "a Codex thread's link");
+    assert!(app.find("role:menuitem \"Codex conversation link\"").is_none(), "no retired provider link");
     app.frames(20);
-    app.click("role:menuitem \"Codex conversation link\"");
+    app.click("role:menuitem \"Harness session ID\"");
     // (A menu's item acts after its flash, on the clock.)
     app.wait_until(|app| !app.desktop.as_ref().unwrap().clipboard().is_empty());
-    assert_eq!(app.desktop.as_ref().unwrap().clipboard(), "codex://threads/th%207%2Fa", "its id encoded, as production's");
-    assert!(app.wait_until(|app| app.find("\"Codex conversation link copied\"").is_some()), "said so");
+    assert_eq!(app.desktop.as_ref().unwrap().clipboard(), "th 7/a", "its harness session id");
+    assert!(app.wait_until(|app| app.find("\"Harness session ID copied\"").is_some()), "said so");
     // Another without a harness id (a window of its own): none offered.
     let mut app = TestApp::with_desktop(|runtime| ScriptHost::new(runtime, path.clone()));
     app.ui.scene.borrow_mut().resize(W, H);
