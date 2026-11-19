@@ -1172,10 +1172,12 @@ local function Composer(): Node
 
 	local composer_sizes = ui.state("chat_composer_sizes", nil :: ds.ComposerSizes?)
 	local question_height = ui.state("keiki.question_height", 0)
-	ui.effect(function()
-		local sizes = composer_sizes:get()
-		shared.dock_h:set((if sizes then sizes.presented else Dock.REST) + question_height:get())
-	end)
+	local function update_dock_height()
+		local sizes = composer_sizes:peek()
+		local height = (if sizes then sizes.presented else Dock.REST) + question_height:peek()
+		if math.abs(shared.dock_h:peek() - height) > 0.01 then shared.dock_h:set(height) end
+	end
+	ui.effect(function() question_height:get(); update_dock_height() end)
 	local function composer(): Node
 		return ds.Composer {
 			dictation = dictation,
@@ -1184,7 +1186,7 @@ local function Composer(): Node
 				if sizes.context == snap:peek() and sizes.ready and not sizes.settling then
 					place_snap:set(false)
 				end
-
+				update_dock_height()
 			end,
 			-- Its measures, fold and open tray kept across a reload, so it
 			-- is laid out as it was from the first frame.

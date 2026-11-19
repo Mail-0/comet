@@ -16,4 +16,10 @@ ds.Composer = function(props: any): Node
 	return Composer(props)
 end
 
+if ui.shared("fixture_dock_v2", false):peek() then
+	ds.setup()
+	local chat = require("@app/screens/chat")
+	chat.Composer = require("@app/templates/zeron-v2/screens/chat/composer")
+end
+
 return require("./chat_fixture")

@@ -1,5 +1,5 @@
-test("a Local composer's measured height reaches the transcript in the same callback", function()
-	local app = mount("composer_dock_timing_fixture.luau")
+local function measured(fixture: string)
+	local app = mount(fixture)
 	app:resize(960, 700)
 	app:frames(40)
 	expect((app:state("fixture_dock_checks") or 0) > 0).to_be(true)
@@ -14,4 +14,12 @@ test("a Local composer's measured height reaches the transcript in the same call
 	expect(app:state("fixture_dock_checks") > checked).to_be(true)
 	expect(app:state("fixture_stale_dock")).to_be(0)
 	expect(app:error()).to_be(nil)
+end
+
+test("a Local composer's measured height reaches the transcript in the same callback", function()
+	measured("composer_dock_timing_fixture.luau")
+end)
+
+test("a single-page composer's measured height reaches the transcript in the same callback", function()
+	measured("composer_dock_timing_v2_fixture.luau")
 end)
