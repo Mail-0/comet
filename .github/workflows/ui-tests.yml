@@ -35,6 +35,8 @@ jobs:
       - uses: ./.github/actions/linux-ci
         with:
           rust-cache: core
+          apt-cache: core-dbus
+          apt-packages: libdbus-1-dev pkg-config
           save-rust-cache: 'true'
       - name: Harness, engine, sync, update, doc, preview, MCP and voice protocol tests
         run: scripts/ci/test-core.sh

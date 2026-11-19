@@ -24,6 +24,8 @@ jobs:
       - uses: ./.github/actions/linux-ci
         with:
           rust-cache: core # saved by core-tests (ci.yml); same dependency graph
+          apt-cache: core-dbus
+          apt-packages: libdbus-1-dev pkg-config
       - name: Every zeron-engine test binary
         run: cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast -p zeron-engine --tests
 

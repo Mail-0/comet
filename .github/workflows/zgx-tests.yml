@@ -116,7 +116,7 @@ jobs:
           bash scripts/ci/apt-install.sh
           libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxcb1-dev
           libx11-xcb-dev libfontconfig1-dev libfreetype-dev libasound2-dev libvulkan-dev
-          pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+          pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev libdbus-1-dev
           mesa-vulkan-drivers
       # (mesa-vulkan-drivers: lavapipe, a Vulkan device on the CPU, so agent
       # visuals' shaders and scenes render here as on a machine with a GPU;
