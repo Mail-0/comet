@@ -1065,6 +1065,14 @@ ui.command {
 		publish()
 	end,
 }
+ui.command {
+	id = "archive_only_keiki",
+	title = "Only a Keiki conversation is archived",
+	run = function()
+		model.archived = { { id = "keiki-bound-demo", title = "Keiki archived conversation", device = "mac", updated = NOW, created = NOW, agent = "copilot" } }
+		publish()
+	end,
+}
 -- Thousands archived (Settings → Archived builds what it shows): `Chat <n>`,
 -- each seventh with no project nor a device still known, so nothing under
 -- its name. (Kept across a reload, as the host's sessions are.)

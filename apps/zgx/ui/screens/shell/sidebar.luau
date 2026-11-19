@@ -324,6 +324,7 @@ local shelf = ui.computed(function(): { any }
 	local names = devices()
 	local out = {}
 	for _, c in sessions.archived:get() do
+		if keiki.bound(c.id) then continue end
 		table.insert(out, {
 			id = c.id,
 			title = c.title,

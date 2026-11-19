@@ -806,6 +806,18 @@ test("the sidebar's foot says what's wrong with the connection, as production's 
 	expect(says()).to_be(nil)
 end)
 
+test("Keiki archives stay out of the Local archived shelf without removing Local archives", function()
+	local app = open()
+	app:command("archive_only_keiki")
+	app:set_state("screens/shell/sidebar.luau::shell_sidebar_show_archived", true)
+	app:frames(30)
+	expect(node(app, "#sidebar", "button", "Archived")).to_be_nil()
+	app:command("archive_many")
+	app:frames(30)
+	expect(node(app, "#sidebar", "button", "Archived")).never.to_be_nil()
+	expect(node(app, "#sidebar", "button", "Keiki archived conversation")).to_be_nil()
+end)
+
 test("the Archived shelf shows as asked: ten, then twenty-five more a time", function()
 	local app = open()
 	local function rows(): number
