@@ -207,6 +207,7 @@ fn made_answer(name: &str) -> Option<String> {
 }
 
 type Log = Rc<RefCell<Vec<String>>>;
+type OrgReply = Rc<RefCell<Option<Result<Value, String>>>>;
 
 /// The scripts: this checkout's `ui/`, or `ZERON_ZGX_TEST_UI`'s (another
 /// copy, to see the test fail on code from before a fix).
@@ -225,10 +226,17 @@ fn mount(window: &'static str, step: &'static str, log: &Log) -> TestApp {
 /// `mount`, with the window's layout inspector as a desktop window has it
 /// (`inspector`), else none.
 fn mount_with(window: &'static str, step: &'static str, log: &Log, inspector: Option<&Inspector>) -> TestApp {
+    mount_with_org_reply(window, step, log, inspector, None)
+}
+
+fn mount_with_org_reply(window: &'static str, step: &'static str, log: &Log, inspector: Option<&Inspector>, org_reply: Option<OrgReply>) -> TestApp {
     let log = log.clone();
     let build = move |runtime: &Runtime| {
         let host = ScriptHost::new(runtime, ui_dir().join("app.luau"));
         host.shared("window", window);
+        if window == "main" {
+            host.shared("account", Value::from_json(r#"{"state":"signed_in","env":"keiki","organization_id":"org-test","user":{"id":"test-user","email":"ada@example.com","first_name":"Ada"}}"#).unwrap());
+        }
         host.shared("onboarding.start", step);
         // Setup's window as the host shows it once the intro is over.
         host.shared("onboarding.arrived", true);
@@ -249,6 +257,7 @@ fn mount_with(window: &'static str, step: &'static str, log: &Log, inspector: Op
         }
         for &name in CALLS {
             let log = log.clone();
+            let org_reply = org_reply.clone();
             let answer = ANSWERS
                 .iter()
                 .find(|(n, _)| *n == name)
@@ -259,7 +268,16 @@ fn mount_with(window: &'static str, step: &'static str, log: &Log, inspector: Op
             host.async_action(name, move |_| {
                 log.borrow_mut().push(name.to_owned());
                 let answer = answer.clone();
-                async move { Ok(answer) }
+                let reply = if name == "account.orgs" {
+                    org_reply.as_ref().map(|reply| reply.borrow().clone())
+                } else { None };
+                async move {
+                    match reply {
+                        Some(Some(reply)) => reply,
+                        Some(None) => std::future::pending().await,
+                        None => Ok(answer),
+                    }
+                }
             });
         }
         host
@@ -434,6 +452,38 @@ fn a_reload_of_setup_moves_and_fetches_nothing() {
         }
     }
     assert!(failed.is_empty(), "{}", failed.join("\n\n"));
+}
+
+#[test]
+fn organization_setup_keeps_answers_and_resumes_a_pending_retry_on_reload() {
+    let log: Log = Rc::default();
+    let reply: OrgReply = Rc::new(RefCell::new(Some(Ok(Value::from_json("[]").unwrap()))));
+    let mut app = mount_with_org_reply("onboarding", "org", &log, None, Some(reply.clone()));
+    app.frames(30);
+    let rows = Value::from_json(r#"[{"id":"one","organization_id":"one","name":"First team"},{"id":"two","organization_id":"two","name":"Second team"}]"#).unwrap();
+    for (answer, expected) in [
+        (Ok(rows.clone()), "Second team"),
+        (Err("offline".to_owned()), "Keiki can't be reached right now."),
+    ] {
+        *reply.borrow_mut() = Some(answer);
+        app.click("role:button \"Try again\"");
+        app.frames(20);
+        assert!(app.tree().contains(expected), "{}", app.tree());
+        let reads = log.borrow().iter().filter(|name| *name == "account.orgs").count();
+        app.host.reload().unwrap();
+        app.frames(30);
+        assert_eq!(log.borrow().iter().filter(|name| *name == "account.orgs").count(), reads);
+        assert!(app.tree().contains(expected), "{}", app.tree());
+    }
+    *reply.borrow_mut() = None;
+    app.click("role:button \"Try again\"");
+    app.frames(10);
+    assert!(app.tree().contains("Loading organizations"), "{}", app.tree());
+    *reply.borrow_mut() = Some(Ok(rows));
+    app.host.reload().unwrap();
+    app.frames(30);
+    assert!(app.tree().contains("Second team"), "{}", app.tree());
+    assert!(!app.tree().contains("Loading organizations"), "{}", app.tree());
 }
 
 /// A launch with devtools (`--inspect`, as the main window runs while it's

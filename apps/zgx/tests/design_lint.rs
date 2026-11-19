@@ -66,6 +66,9 @@ fn mount(entry: &str, shared: &[(&'static str, &'static str)]) -> TestApp {
         for (key, value) in &shared {
             host.shared(key, *value);
         }
+        if shared.contains(&("window", "main")) {
+            host.shared("account", Value::from_json(r#"{"state":"signed_in","env":"keiki","organization_id":"org-test","user":{"id":"test-user","email":"ada@example.com","first_name":"Ada"}}"#).unwrap());
+        }
         host.shared("onboarding.arrived", true);
         for name in actions() {
             host.action(name.clone(), |_| {});

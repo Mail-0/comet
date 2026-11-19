@@ -5,11 +5,12 @@ local account = require("@app/screens/shell/keiki_account")
 return function(content: () -> Node): Node
 	local main = ui.computed(function(): boolean return auth.signed_in:get() and auth.account:get().organization_id ~= nil end)
 	local started = ui.state("keiki.gate.started", main:peek())
+	local shell = if main:peek() then content() else nil
 	ui.effect(function() if main:get() then started:set(true) end end)
 	return ui.column { w_full = true, h_full = true,
 		ui.presence(function() return started:get() end, function(ready: boolean)
 			if not ready then return ui.div {} end
-			return ui.show(function() return main:get() end, content())
+			return ui.show(function() return main:get() end, shell or content())
 		end),
 		ui.show(function() return not main:get() end, ui.presence(function()
 		return if auth.signed_in:get() then "org" else "gate"
