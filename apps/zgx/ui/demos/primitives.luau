@@ -101,34 +101,15 @@ return {
 			page("ex_signin", "Sign in", function()
 				return require("@demos/example_signin")
 			end),
-			page("ex_username", "Claim your username", function()
-				return require("@demos/example_username")
-			end),
-			page("ex_card", "Your card", function()
-				return require("@demos/example_card")
-			end),
-			page("ex_org_name", "Name your organization", function()
-				return require("@demos/example_org_name")
-			end),
-			page("ex_invite", "Invite your teammates", function()
-				return require("@demos/example_invite")
-			end),
 			page("ex_orgs", "Choose an organization", function()
 				return require("@demos/example_orgs")
 			end),
 			page("ex_done", "All set", function()
 				return require("@demos/example_done")
 			end),
-			-- This device's setup (onboarding.rs: Appearance, Sync, GitHub
-			-- when signed in, Providers, then the ending).
+			-- This device's setup.
 			page("ex_appearance", "Make it yours", function()
 				return require("@demos/example_appearance")
-			end),
-			page("ex_sync", "Sync your work", function()
-				return require("@demos/example_sync")
-			end),
-			page("ex_github", "Connect GitHub", function()
-				return require("@demos/example_github")
 			end),
 			page("ex_setup_done", "You're all set", function()
 				return require("@demos/example_setup_done")

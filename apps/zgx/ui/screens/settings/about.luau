@@ -27,8 +27,8 @@ local M = {}
 M.ID = "about"
 M.TITLE = "About & updates"
 
-M.RELEASES = "https://github.com/zeronsh/comet/releases"
-M.WEBSITE = "https://zeron.sh"
+M.RELEASES = "https://github.com/Mail-0/comet/releases"
+M.WEBSITE = "https://onkeiki.com"
 
 search.index(M.ID, ui.t("settings.about.title"), ui.t("settings.about.terms"), {
 	{ key = "version", title = ui.t("settings.about.version.label"), terms = ui.t("settings.about.version.terms") },

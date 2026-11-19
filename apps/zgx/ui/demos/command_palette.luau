@@ -44,8 +44,8 @@ local PROJECTS = {
 	{ name = "landing", hue = "pink" },
 	{ name = "zeron-edge", hue = "emerald" },
 }
-local DEVICES = { "MacBook Pro", "devbox", "studio", "Cloud" }
-local AGENTS = { "claude", "openai", "claude", "cursor", "grok", "claude", "openai" }
+local DEVICES = { "MacBook Pro", "devbox", "studio" }
+local AGENTS = { "copilot" }
 local VERBS = { "Fix", "Port", "Speed up", "Rename", "Test", "Tidy", "Profile", "Split", "Document", "Retry", "Cache", "Stream" }
 local THINGS = {
 	"the presence badge",
@@ -60,7 +60,7 @@ local THINGS = {
 	"terminal resize",
 	"plan mode approvals",
 	"iOS fold layout",
-	"WorkOS webhook",
+	"Keiki sign-in",
 	"markdown tables",
 	"voice stage",
 	"Tailscale MTU",
@@ -256,7 +256,7 @@ local function reviews_page(): CommandPalette.Page
 end
 
 local COMMANDS: { Item } = {
-	{ id = "a-new", label = "New chat", section = "Actions", icon = "pen-new-square", shortcut = "cmd+n", keywords = "session start", run = say("Started a new chat"), alt = { label = "New chat in Cloud", run = say("Started a new chat in Cloud") } },
+	{ id = "a-new", label = "New chat", section = "Actions", icon = "pen-new-square", shortcut = "cmd+n", keywords = "session start", run = say("Started a new chat") },
 	{ id = "a-project", label = "New project", section = "Actions", icon = "folder", shortcut = "cmd+shift+n", keywords = "add folder repository", run = say("Opened New project") },
 	{
 		id = "a-model",

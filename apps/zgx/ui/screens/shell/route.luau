@@ -574,19 +574,11 @@ function M.take_device(): string?
 	return nil
 end
 
--- Where a new chat in `project` on `device` can start, as the composer's
--- picker allows (a project is a folder on one device): one of Cloud's
--- machines is Cloud (screens/chat/where's CLOUD, which keeps a project
--- Cloud can open); a computer the project isn't on, the same project there
+-- Where a new chat in `project` on `device` can start: the same project there
 -- (its repository, its name or its path), else none: the composer picks
 -- one there (as the panel home's side chats' "+" does).
 local function placed(project: string?, device: string): (string?, string)
 	local now = sessions.now:peek()
-	for _, d in now.devices do
-		if d.id == device and d.cloud then
-			return project, "cloud"
-		end
-	end
 	local p = project_of(project)
 	if p == nil or p.device == device then
 		return project, device

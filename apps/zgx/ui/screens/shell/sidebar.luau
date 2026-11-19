@@ -235,7 +235,7 @@ end
 
 -- A device's id by the name its group shows (ds.Sidebar groups by name):
 -- the project's own device where it's named so, else the first of yours
--- named so, else one of Cloud's; nil for none (Unknown device).
+-- named so; nil for none (Unknown device).
 local function device_named(name: string, project: string?): string?
 	local now = sessions.now:peek()
 	local own: string? = nil
@@ -244,19 +244,17 @@ local function device_named(name: string, project: string?): string?
 			own = p.device
 		end
 	end
-	local first, cloud = nil :: string?, nil :: string?
+	local first = nil :: string?
 	for _, d in now.devices do
 		if d.name == name then
 			if d.id == own then
 				return d.id
-			elseif d.cloud then
-				cloud = cloud or d.id
-			else
+			elseif not d.cloud then
 				first = first or d.id
 			end
 		end
 	end
-	return first or cloud
+	return first
 end
 
 -- The sessions as the sidebar groups them: under each project (in the
@@ -669,8 +667,7 @@ local function user(): User
 		-- (No first name: the email, unless addresses are hidden on screen.)
 		local fallback = if PrivateText.hidden:get() then locale.s("shell.sidebar.you") else u.email
 		-- (Your photo: Settings → Profile's, kept from the last time it was heard.)
-		local settings_store: any = boundary.load("@app/screens/settings/store")
-		local avatar = if settings_store then settings_store.photo_file(settings_store.photo()) else ""
+		local avatar = ""
 		return { id = u.id, name = if name and name ~= "" then name else fallback, avatar = if avatar ~= "" then avatar else nil }
 	end
 	if auth.state:get() == "restoring" then

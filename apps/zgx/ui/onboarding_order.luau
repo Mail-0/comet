@@ -1,20 +1,6 @@
--- Setup's order, run inside a mounted app (the test VM has `ui` only
--- there): the scenarios of tests/onboarding_order.test.luau, and what
--- failed, one line each, in #result ("ok" when nothing did). Here, beside
--- app.luau, as a mounted script loads modules from its own directory down.
-
+-- Setup navigation with only Keiki sign-in, local appearance, and org selection.
 local state = require("@screens/onboarding/state")
 local actions = require("@screens/onboarding/actions")
-local api = require("@account/api")
-
--- Zeron isn't here (a test host has no `account.*`): what setup tells it
--- goes nowhere.
-local function nowhere(): any
-	return { after = function() end }
-end
-api.onboarded = nowhere :: any
-api.choose_org = nowhere :: any
-
 local failures: { string } = {}
 local current = ""
 
@@ -57,194 +43,48 @@ local function test(name: string, body: () -> ())
 	end
 end
 
-type Run = {
-	path: string,
-	name_done: boolean?,
-	org_done: boolean?,
-	org_admin: boolean?,
-	passed: { string }?,
-}
-
--- A run, as `signed_in` (or `skip_sign_in`) leaves it once Zeron answered.
-local function run(r: Run): string
-	state.path:set(r.path :: any)
-	state.name_done:set(r.name_done == true)
-	state.org_done:set(r.org_done == true)
-	state.org_admin:set(r.org_admin == true)
-	state.claimed:set(false)
-	state.device_done:set({})
+local function start(org_done: boolean, appearance_done: boolean): string
+	state.path:set("signed_in")
+	state.org_done:set(org_done)
+	state.device_done:set(if appearance_done then { appearance = true } else {})
 	state.step:set("signin")
-	actions.start_run(r.passed or {})
+	actions.start_run({})
 	return state.step:peek()
 end
 
--- Every step Continue visits from `from` up to done.
-local function forward(from: string): { string }
-	state.step:set(from :: any)
-	local seen = { from }
-	for _ = 1, 12 do
-		if state.step:peek() == "done" then
-			break
-		end
-		actions.next()
-		table.insert(seen, state.step:peek())
-	end
-	return seen
-end
-
--- Every step Back visits from `from` until it stops.
-local function backward(from: string): { string }
-	state.step:set(from :: any)
-	local seen = { from }
-	for _ = 1, 12 do
-		local before = state.step:peek()
-		actions.back()
-		if state.step:peek() == before then
-			break
-		end
-		table.insert(seen, state.step:peek())
-	end
-	return seen
-end
-
-test("a new account opens on the look and goes through every step", function()
-	expect(run { path = "signed_in" }).to_be("appearance")
-	expect(forward("appearance")).to_equal({ "appearance", "username", "card", "org", "invite", "github", "done" })
-end)
-
-test("a new account goes back past its username and organization, never to Sign in", function()
-	run { path = "signed_in" }
-	-- (Made in the run: what naming it leaves.)
-	actions.org_made("org_test", "Halcyon Labs")
-	expect(backward("done")).to_equal({ "done", "github", "invite", "card", "appearance" })
-end)
-
-test("claiming a username goes to the card, making an organization to inviting", function()
-	run { path = "signed_in" }
-	state.step:set("username")
-	actions.claimed_username({} :: any)
-	expect(state.step:peek()).to_be("card")
-	state.step:set("org")
-	actions.org_made("org_test", "Halcyon Labs")
-	expect(state.step:peek()).to_be("invite")
+test("a first Keiki sign-in visits appearance and organization selection", function()
+	expect(start(false, false)).to_be("appearance")
+	expect(state.order()).to_equal({ "signin", "appearance", "org", "done" })
 	actions.next()
-	expect(state.step:peek()).to_be("github")
-end)
-
-test("an account with a username and its own organization still invites", function()
-	expect(run { path = "signed_in", name_done = true, org_done = true, org_admin = true }).to_be("appearance")
-	expect(forward("appearance")).to_equal({ "appearance", "card", "invite", "github", "done" })
-	expect(backward("done")).to_equal({ "done", "github", "invite", "card", "appearance" })
-end)
-
-test("a member of someone else's organization passes over inviting", function()
-	run { path = "signed_in", name_done = true, org_done = true, org_admin = false }
-	expect(forward("card")).to_equal({ "card", "github", "done" })
-	expect(backward("github")).to_equal({ "github", "card", "appearance" })
-end)
-
-test("a returning account opens on its first page left, and Continue goes through every step from there", function()
-	-- (The card and inviting finished before: the user's case.)
-	local first = run {
-		path = "signed_in",
-		name_done = true,
-		org_done = true,
-		org_admin = true,
-		passed = { "appearance", "card", "invite" },
-	}
-	expect(first).to_be("github")
-	expect(backward("github")).to_equal({ "github", "invite", "card", "appearance" })
-	expect(forward("appearance")).to_equal({ "appearance", "card", "invite", "github", "done" })
-end)
-
-test("a page finished on this computer counts at the start too", function()
-	state.path:set("signed_in")
-	state.name_done:set(true)
-	state.org_done:set(true)
-	state.org_admin:set(true)
-	state.device_done:set({ appearance = true })
-	state.step:set("signin")
-	actions.start_run({})
-	expect(state.step:peek()).to_be("card")
-	expect(backward("card")).to_equal({ "card", "appearance" })
-end)
-
-test("the username turning out to be had moves on to the card", function()
-	run { path = "signed_in" }
-	state.step:set("username")
-	actions.has_username()
-	expect(state.step:peek()).to_be("card")
-end)
-
-test("the organization turning out to be had moves on by its role", function()
-	run { path = "signed_in", name_done = true }
-	state.step:set("org")
-	actions.work_in({ id = "o", organization_id = "o", name = "Halcyon Labs", role = "admin" })
+	expect(state.step:peek()).to_be("org")
 	actions.next()
-	expect(state.step:peek()).to_be("invite")
-	run { path = "signed_in", name_done = true }
-	state.step:set("org")
-	actions.work_in({ id = "o", organization_id = "o", name = "Halcyon Labs", role = "member" })
+	expect(state.step:peek()).to_be("done")
+	actions.back()
+	expect(state.step:peek()).to_be("org")
+	actions.back()
+	expect(state.step:peek()).to_be("appearance")
+	actions.back()
+	expect(state.step:peek()).to_be("appearance")
+end)
+
+test("an existing active organization skips only its picker", function()
+	expect(start(true, false)).to_be("appearance")
+	expect(state.order()).to_equal({ "signin", "appearance", "done" })
 	actions.next()
-	expect(state.step:peek()).to_be("github")
+	expect(state.step:peek()).to_be("done")
 end)
 
-test("without an account: the look, the agents, done, and back to Sign in", function()
-	expect(run { path = "skipped" }).to_be("appearance")
-	expect(forward("appearance")).to_equal({ "appearance", "done" })
-	expect(backward("done")).to_equal({ "done", "appearance", "signin" })
+test("local appearance completion survives a later sign-in", function()
+	expect(start(false, true)).to_be("org")
+	expect(start(true, true)).to_be("done")
 end)
 
-test("an account that finished every page opens on done, and Back still works", function()
-	local first = run {
-		path = "signed_in",
-		name_done = true,
-		org_done = true,
-		org_admin = true,
-		passed = { "appearance", "card", "invite", "github" },
-	}
-	expect(first).to_be("done")
-	expect(backward("done")).to_equal({ "done", "github", "invite", "card", "appearance" })
+test("sign-out always returns to the Keiki sign-in gate", function()
+	start(true, true)
+	actions.signed_out()
+	expect(state.step:peek()).to_be("signin")
+	expect(state.order()).to_equal({ "signin" })
+	expect(state.org_done:peek()).to_be(false)
 end)
 
-test("the dots count every step and never move", function()
-	run { path = "signed_in" }
-	local _, all = state.position("appearance")
-	expect(all).to_be(7)
-	run { path = "signed_in", name_done = true, org_done = true, org_admin = false, passed = { "appearance", "card" } }
-	local n, count = state.position("github")
-	expect(count).to_be(7)
-	expect(n).to_be(6)
-	run { path = "skipped" }
-	local _, few = state.position("appearance")
-	expect(few).to_be(2)
-	local last = state.position("done")
-	expect(last).to_be(2)
-end)
-
-test("someone who already had Keiki is welcomed with only their username and card", function()
-	state.welcome = true
-	-- No username yet, whatever else their account had finished.
-	expect(run { path = "signed_in", passed = { "appearance", "org", "invite", "github" } }).to_be("username")
-	expect(forward("username")).to_equal({ "username", "card", "done" })
-	-- (Back doesn't return to claiming a username, as in every run, nor to Sign in.)
-	expect(backward("card")).to_equal({ "card" })
-	local _, count = state.position("username")
-	expect(count).to_be(3)
-	-- Claiming one goes to the card.
-	state.step:set("username")
-	actions.claimed_username({} :: any)
-	expect(state.step:peek()).to_be("card")
-	-- A username had: its card.
-	expect(run { path = "signed_in", name_done = true }).to_be("card")
-	-- Both finished before: straight to the end.
-	expect(run { path = "signed_in", name_done = true, passed = { "card" } }).to_be("done")
-	-- Not signed in after all (a session gone): the usual way, for them.
-	expect(run { path = "skipped" }).to_be("appearance")
-	state.welcome = false
-end)
-
-return ui.text {
-	id = "result",
-	if #failures == 0 then "ok" else table.concat(failures, "\n"),
-}
+return ui.text { id = "result", if #failures == 0 then "ok" else table.concat(failures, "\n") }

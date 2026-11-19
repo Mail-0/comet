@@ -151,7 +151,6 @@ pub fn install(host: &ScriptHost) {
         "agents.add_key",
         "agents.rename",
         "agents.set_key",
-        "agents.cloud_key",
     ] {
         host.async_action(action, move |_| async move {
             match action {
@@ -161,11 +160,10 @@ pub fn install(host: &ScriptHost) {
                 "agents.add_key" => refuse("agents.add_key"),
                 "agents.rename" => refuse("agents.rename"),
                 "agents.set_key" => refuse("agents.set_key"),
-                "agents.cloud_key" => refuse("agents.cloud_key"),
                 _ => refuse(action),
             }?;
             Err::<Value, String>(
-                "Copilot uses Keiki sign-in, which is not available in this build yet".into(),
+                "Copilot uses Keiki sign-in. Open Account in Settings.".into(),
             )
         });
     }

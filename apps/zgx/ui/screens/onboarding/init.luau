@@ -1,26 +1,11 @@
--- Onboarding: a step at a time in setup's window (ds.Onboarding.Frame),
--- each step its own module with its footer, the numbered ones with their
--- dots. Two ways through (state.PATHS): signed in, the look, the account's
--- name and card, naming its organization and inviting to it, GitHub and
--- the agents; without an
--- account, the look and the agents. Sign-in opens both, and You're all set
--- ends them. A session that was kept starts on the look, an account that
--- already has its username passes over claiming one (its card still
--- shows), and one already in an organization works in it, past naming one
--- (and inviting, unless it's its own).
-
 local ds = require("@ds")
 local Onboarding = ds.Onboarding
 local state = require("@self/state")
 local actions = require("@self/actions")
 local signin = require("@self/signin")
 local auth = require("@account/auth")
-local username = require("@self/username")
-local card = require("@self/card")
 local appearance = require("@self/appearance")
 local org = require("@self/org")
-local invite = require("@self/invite")
-local github = require("@self/github")
 local done = require("@self/done")
 
 -- The ways back and on. (The dots are the frame's, drawn once over every
@@ -70,36 +55,13 @@ local STEPS: { [state.Step]: () -> Node } = {
 			says = function()
 				return auth.says(auth.failure:get())
 			end,
-			on_skip = actions.skip_sign_in,
 		})
 	end,
 	appearance = function()
 		return appearance(nav("appearance") :: any)
 	end,
-	username = function()
-		local n = nav("username")
-		return username {
-			step = n.step,
-			count = n.count,
-			on_back = actions.back,
-			on_not_now = actions.finish,
-			on_claimed = actions.claimed_username,
-			on_has_one = actions.has_username,
-			on_signed_out = actions.signed_out,
-		}
-	end,
-	card = function()
-		local n = nav("card")
-		return card { step = n.step, count = n.count, on_back = actions.back, on_continue = actions.next }
-	end,
 	org = function()
 		return org(nav("org") :: any)
-	end,
-	invite = function()
-		return invite(nav("invite") :: any)
-	end,
-	github = function()
-		return github(nav("github") :: any)
 	end,
 	done = function()
 		return done(nav("done") :: any)

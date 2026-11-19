@@ -75,12 +75,13 @@ pub fn complete_if_needed(argv: &[String]) -> Result<(), Failed> {
 
 /// The error in words, its causes included.
 fn complete(directory: &Path) -> Result<Completion, String> {
+    let feed = zeron_update::release_feed_url().ok_or("Keiki releases are not configured")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
     runtime
-        .block_on(windows::complete_install(zeron_cli::DEFAULT_EDGE_URL, directory, APP_VERSION))
+        .block_on(windows::complete_install(&feed, directory, APP_VERSION))
         .map_err(|error| format!("{error:#}"))
 }
 

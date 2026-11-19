@@ -36,20 +36,16 @@ local function scene(slug: string, back: string, ...: string): { ds.CardLayer }
 	return layers
 end
 
--- Twelve members: a number (the directory counts from one; there were 1,373
--- members on Oct 28, 2026), the day they joined, and the one badge really
--- issued, Cloud Tester, on two of them. Names are made up; the cards carry
--- no tagline or caption, only what a member has. (Until the directory
--- serves real ones.)
-local CLOUD_TESTER: ds.CardBadge = { label = "Cloud Tester", style = "outline" }
+-- Illustrative profiles for the sign-in artwork.
+local COPILOT: ds.CardBadge = { label = "Copilot", style = "outline" }
 M.MEMBERS = {
 	noor = { number = 8, name = "Noor", since = "Sep 14, 2023", layers = scene("kelp", "back", "mid", "near", "detail"), holo = "starlight" },
 	graham = { number = 51, name = "Graham", since = "Oct 4, 2023", layers = scene("violet-dusk", "sky", "far", "near"), holo = "aurora" },
 	lin = { number = 117, name = "Lin", since = "Jan 12, 2024", layers = scene("dunes", "sky", "detail", "far", "near"), holo = "starlight" },
-	ada = { number = 182, name = "Ada", since = "Mar 3, 2024", layers = scene("aurora", "sky", "far", "near"), holo = "secret", badges = { CLOUD_TESTER } },
+	ada = { number = 182, name = "Ada", since = "Mar 3, 2024", layers = scene("aurora", "sky", "far", "near"), holo = "secret", badges = { COPILOT } },
 	mateo = { number = 233, name = "Mateo", since = "Apr 21, 2024", layers = scene("forest", "back", "mid", "near", "detail"), holo = "reverse" },
 	theo = { number = 306, name = "Theo", since = "Jun 18, 2024", layers = scene("blossom", "sky", "far", "near", "detail"), holo = "reverse" },
-	priya = { number = 418, name = "Priya", since = "Aug 2, 2024", layers = scene("lighthouse", "sky", "far", "near"), holo = "glyph", badges = { CLOUD_TESTER } },
+	priya = { number = 418, name = "Priya", since = "Aug 2, 2024", layers = scene("lighthouse", "sky", "far", "near"), holo = "glyph", badges = { COPILOT } },
 	yuki = { number = 589, name = "Yuki", since = "Oct 7, 2024", layers = scene("bamboo", "back", "mid", "near", "detail"), holo = "aurora" },
 	elif = { number = 744, name = "Elif", since = "Dec 1, 2024", layers = scene("ravine", "back", "mid", "near", "detail"), holo = "glyph" },
 	kofi = { number = 965, name = "Kofi", since = "Mar 9, 2025", layers = scene("violet-dusk", "sky", "far", "near"), holo = "secret" },
@@ -65,9 +61,9 @@ local MEMBERS = M.MEMBERS
 -- (Messages: they follow the language chosen.)
 local TITLE = ui.t("onboarding.signin.title")
 local LINES = {
-	ui.t("onboarding.signin.lines.phone"),
-	ui.t("onboarding.signin.lines.machines"),
-	ui.t("onboarding.signin.lines.cloud"),
+	ui.t("onboarding.signin.lines.local"),
+	ui.t("onboarding.signin.lines.copilot"),
+	ui.t("onboarding.signin.lines.organizations"),
 }
 
 -- The words' column, no narrower than the title's widest word at display
@@ -251,7 +247,7 @@ function M.screen(props: Props?): Node
 				end
 			end,
 		},
-		aside = Onboarding.Quiet { label = ui.t("onboarding.skip_for_now") :: any, on_click = p.on_skip },
+		aside = if p.on_skip then Onboarding.Quiet { label = ui.t("onboarding.skip_for_now") :: any, on_click = p.on_skip } else nil,
 		continue = {
 			label = function()
 				local s = status:get()

@@ -145,7 +145,7 @@ impl Desktop {
                 Err(error) => eprintln!("zeron-zgx: updates: couldn't leave the beta channel: {error}"),
             }
         }
-        let edge = crate::auth::endpoint().edge;
+        let edge = zeron_update::release_feed_url()?;
         let checker = {
             let _runtime = tokio().enter();
             Updater::spawn_desktop(edge.clone())
@@ -349,7 +349,8 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             }
             // A development build: the public stable feed, beside the
             // engine's own report.
-            let manifest = on_tokio(async { zeron_update::fetch_latest_on(zeron_cli::DEFAULT_EDGE_URL, Channel::Stable).await })
+            let feed = zeron_update::release_feed_url().ok_or("Keiki releases are not configured")?;
+            let manifest = on_tokio(async move { zeron_update::fetch_latest_on(&feed, Channel::Stable).await })
                 .await
                 .ok_or("failed")?
                 .map_err(|err| feed_outcome(&format!("{err:#}")))?;

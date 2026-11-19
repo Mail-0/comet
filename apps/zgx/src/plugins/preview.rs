@@ -80,8 +80,6 @@ pub const BLOCKED: &[&str] = &[
     "agents.set_key",
     // (An API key, and what an agent's keys are called.)
     "agents.add_key",
-    // (The API key every Cloud machine's agent uses, kept by the vault.)
-    "agents.cloud_key",
     "agents.rename",
     "agents.sign_in",
     "agents.sign_out",
@@ -92,18 +90,12 @@ pub const BLOCKED: &[&str] = &[
     "sessions.remove_device",
     "projects.clone",
     "projects.delete",
-    "github.disconnect",
-    "github.forget",
+    "projects.github_repos",
+    "projects.picture_size",
+    "projects.keep_icon",
+    "projects.icon_file",
+    "projects.forget_icon",
     "engine.restart",
-    "billing.checkout",
-    // (Each runs a machine, or says which one new chats run on: credits.)
-    "cloud.wake",
-    "cloud.sleep",
-    "cloud.retry",
-    "cloud.set_machine",
-    // (What a Cloud chat reaches: the person's own choice.)
-    "cloud.set_reach",
-    "cloud.set_session_reach",
 ];
 
 pub fn blocked(action: &str) -> bool {
@@ -582,7 +574,7 @@ mod tests {
         set(None);
         assert!(refuse("terminal.start").is_ok(), "nothing in preview: all allowed");
         set(Some(Preview { id: "agent".into(), name: "Agent's".into() }));
-        for action in ["terminal.start", "terminal.write", "account.sign_out", "account.delete", "plugins.install", "templates.use", "files.write", "chat.send", "chat.respond", "chat.retry", "chat.queue_edit", "chat.queue_finish", "chat.configure", "files.open_external", "github.forget", "github.disconnect"] {
+        for action in ["terminal.start", "terminal.write", "account.sign_out", "account.choose_org", "plugins.install", "templates.use", "files.write", "chat.send", "chat.respond", "chat.retry", "chat.queue_edit", "chat.queue_finish", "chat.configure", "files.open_external", "projects.github_repos", "projects.picture_size", "projects.keep_icon", "projects.icon_file", "projects.forget_icon"] {
             assert!(refuse(action).is_err(), "{action}");
         }
         for action in ["files.read", "files.list", "chat.open", "appearance", "templates.review", "sessions.seen"] {
@@ -826,7 +818,7 @@ return ui.column {{
             assert!(!app.text("out").contains("is a preview"), "{action} without a preview: {}", app.text("out"));
             assert_eq!(app.error(), None, "{action}");
         }
-        for action in ["github.disconnect", "sessions.delete", "plugins.set_off"] {
+        for action in ["projects.forget_icon", "sessions.delete", "plugins.set_off"] {
             set(Some(sleek()));
             assert!(refuse(action).is_err(), "{action}");
             set(None);

@@ -17,8 +17,8 @@
 --                                       shipping app finds it: `done` with a
 --                                       file here, or nil
 --   projects.upload_icon(path, crop)    the square `crop` ({ x, y, side },
---                                       pixels) of a picture, kept by the
---                                       edge: a promise of its https URL
+--                                       pixels) of a picture, kept locally:
+--                                       a promise of its file path
 --   projects.forget_icon(url)           one of those, let go of (replaced)
 --   projects.icon_file(url)             an uploaded picture's file here (a
 --                                       promise; nil when it can't be had)
@@ -40,6 +40,10 @@ local function with(device: string, extra: { [string]: any }): { [string]: any }
 		arg[k] = v
 	end
 	return arg
+end
+
+function M.github_repos(query: string, limit: number): any
+	return ui.call("projects.github_repos", { query = query, limit = limit })
 end
 
 function M.folders(device: string, path: string?): any
@@ -73,16 +77,16 @@ function M.artwork(p: { id: string, device: string, path: string }, done: (src: 
 	end)
 end
 function M.upload_icon(path: string, crop: { x: number, y: number, side: number }): any
-	return ui.call("account.upload_image", { path = path, x = crop.x, y = crop.y, side = crop.side })
+	return ui.call("projects.keep_icon", { path = path, x = crop.x, y = crop.y, side = crop.side })
 end
 function M.forget_icon(url: string)
-	ui.call("account.delete_image", { url = url }):after(function() end, function() end)
+	ui.invoke("projects.forget_icon", { path = url })
 end
 function M.icon_file(url: string): any
-	return ui.call("account.photo_file", { url = url })
+	return ui.call("projects.icon_file", { path = url })
 end
 function M.picture_size(path: string): any
-	return ui.call("account.photo_size", { path = path })
+	return ui.call("projects.picture_size", { path = path })
 end
 
 return M

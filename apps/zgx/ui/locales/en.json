@@ -2770,9 +2770,9 @@
     "signin": {
       "title": "Welcome\nto Keiki",
       "lines": {
-        "phone": "Pick up any chat on your phone.",
-        "machines": "Run agents on any of your machines.",
-        "cloud": "Hand a chat to Keiki Cloud and walk away."
+        "local": "Keep your chats and files on this computer.",
+        "copilot": "Use Keiki Copilot with your Keiki account.",
+        "organizations": "Switch Keiki organizations without moving your local workspace."
       },
       "waiting": "Finish signing in in your browser.",
       "failed": "Couldn't sign in. Nothing was changed.",

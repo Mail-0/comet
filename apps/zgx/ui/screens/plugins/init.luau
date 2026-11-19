@@ -127,7 +127,7 @@ ui.effect(function()
 	put(out.profile, {
 		id = id or ui.null,
 		name = me.name or (if user then user.first_name else nil) or ui.null,
-		username = store.username:get() or ui.null,
+		username = ui.null,
 		email = me.email or (if user then user.email else nil) or ui.null,
 	})
 	if out.profile_id:peek() ~= id then

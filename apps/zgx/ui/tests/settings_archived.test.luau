@@ -137,11 +137,11 @@ test("its menu opens it, restores it, or deletes it once asked", function()
 	expect(app:has(DELETE_ONE)).to_be(true)
 end)
 
-test("Delete all names how many and their Cloud machines, and deletes those still archived", function()
+test("Delete all names the local archived sessions and deletes those still archived", function()
 	local app = open()
 	app:click("#archived-delete-all")
 	app:frames(30)
-	expect(app:has(`{DELETE_ALL} >> "37 archived sessions, and 2 Cloud machines, will be permanently deleted. This can’t be undone."`)).to_be(
+	expect(app:has(`{DELETE_ALL} >> "37 archived sessions will be permanently deleted. This can’t be undone."`)).to_be(
 		true
 	)
 	-- One restored on another device meanwhile: it stays.
@@ -160,11 +160,11 @@ test("Delete all names how many and their Cloud machines, and deletes those stil
 	expect(app:has("#archived-delete-all")).to_be(false)
 end)
 
-test("Delete all's line for one session on Cloud", function()
+test("Deleting a historical Cloud session only promises to delete its local archive", function()
 	local app = open("archived_one_cloud")
 	app:click("#archived-delete-all")
 	app:frames(30)
-	expect(app:has(`{DELETE_ALL} >> "1 archived session and its Cloud machine will be permanently deleted. This can’t be undone."`)).to_be(
+	expect(app:has(`{DELETE_ALL} >> "1 archived session will be permanently deleted. This can’t be undone."`)).to_be(
 		true
 	)
 end)

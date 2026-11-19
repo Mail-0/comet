@@ -1,4 +1,4 @@
-//! Zeron's interface in zgx, starting with onboarding: the intro plays over
+//! Keiki's interface in zgx, starting with onboarding: the intro plays over
 //! the desktop (zgx's `agents_intro`), then setup opens in a window of its
 //! own.
 //!
@@ -21,7 +21,7 @@
 //!
 //! Run: cargo run --release -- [intro | onboarding | main | gallery] [--inspect]
 //! `ZERON_ZGX_STEP=<step>` starts onboarding at a step (signin, appearance,
-//! username, card, org, invite, github, providers, done).
+//! org, done).
 //! `ZERON_ZGX_REPLAY=1` shows every page, as if none were finished.
 //! `--inspect` (or `ZGX_INSPECT_SOCKET=1`) serves devtools to `zgx inspect`.
 
@@ -35,7 +35,6 @@ mod appshots;
 mod auth;
 mod carried_settings;
 mod chat;
-mod cloud;
 mod dev;
 mod dictation;
 mod completion;
@@ -46,7 +45,6 @@ mod editor_menu;
 mod favicons;
 mod files;
 mod fonts;
-mod github;
 mod haptics;
 mod heap;
 mod images;
@@ -320,7 +318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Where a launch opens (`opening`). Asking for `intro` still plays it.
     if matches!(screen, Screen::Intro) && !asked_for_intro {
-        let session = auth::session_exists();
+        let session = auth::has_local_installation();
         match opening(session, session && finished_setup_before(), welcomed(), onboarded()) {
             Opening::Intro => {}
             Opening::Welcome => WELCOME.store(true, std::sync::atomic::Ordering::Relaxed),
@@ -823,15 +821,10 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
     mermaid::install(&host);
     // A slider's detents tapped under the trackpad (src/haptics.rs).
     haptics::install(&host);
-    // The engine's account (src/auth.rs), this Mac's agents (src/agents.rs)
-    // and GitHub for Cloud (src/github.rs): every window but the intro's.
+    // The engine's account and this computer's agents: every window but the intro's.
     if entry != "intro.luau" {
         auth::install(cx, &host);
         agents::install(&host);
-        github::install(cx, &host);
-        // Cloud and Billing (src/cloud.rs): Settings' pages, the new chat's
-        // Cloud choice.
-        cloud::install(cx, &host);
         // The sessions behind the main window (src/sessions.rs).
         sessions::install(cx, &host);
         // What there is to update, on every device (src/updates.rs).

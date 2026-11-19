@@ -30,10 +30,7 @@ local route = require("@app/screens/shell/route")
 local art = require("@app/screens/shell/art")
 local shared = require("@app/screens/chat/shared")
 local sessions = require("@account/sessions")
-local cloud = require("@account/cloud")
 local LinkNotice = require("@app/screens/chat/link_notice")
-local CloudTray = require("@app/screens/chat/cloud_tray")
-local CloudMachine = require("@app/screens/chat/cloud_machine")
 local files = require("@app/screens/files/api")
 local Where = require("@app/screens/chat/where")
 local Warm = require("@app/screens/chat/warm")
@@ -192,9 +189,6 @@ local function Composer(): Node
 	local checkout = ui.state("chat_checkout", "worktree" :: string?)
 	local branch = ui.state("chat_branch", nil :: string?)
 	local project = ui.state("chat_project", nil :: string?)
-	-- On Cloud, what a new chat's machine reaches (nil: the account's
-	-- default, Settings → Cloud). Each new chat starts from the default.
-	local reach = ui.state("chat_reach", nil :: string?)
 	local locals: { [string]: State<any> } =
 		{ model = model, effort = effort, fast = fast, options = options, access = access, plan = plan }
 
@@ -446,23 +440,14 @@ local function Composer(): Node
 			store.catalog_on(d)
 		end
 	end)
-	-- A new chat moved onto Cloud runs only the agents Cloud has accounts
-	-- for: a model it doesn't run gives way to Cloud's first, as the
-	-- shipping app drops one on the switch. So does one the last new chat
-	-- used that its device doesn't offer (once all its agents have said: a
-	-- model still on its way isn't dropped), so a chat isn't made on a
-	-- device for an agent it doesn't have.
+	-- Choose a model after this device's catalog arrives.
 	ui.effect(function()
 		local cat = store.catalog:get()
 		if session_id:get() ~= nil then
 			return
 		end
 		local d = run_device()
-		if d == Where.CLOUD then
-			if (cat :: any).device ~= Where.CLOUD then
-				return
-			end
-		elseif (cat :: any).complete ~= true or not shows_catalog_of(d) then
+		if (cat :: any).complete ~= true or not shows_catalog_of(d) then
 			return
 		end
 		local picked = model:peek()
@@ -582,27 +567,6 @@ local function Composer(): Node
 		local s = open()
 		return if s and s.tasks then s.tasks else {}
 	end)
-	-- Its Cloud machine, on a chat that has one: its state and its alert.
-	local machine = CloudTray.bind {
-		chat = function(): string?
-			return session_id:get()
-		end,
-		device = function(): string?
-			local s = open()
-			return s and s.device
-		end,
-		running = function(): boolean
-			local s = open()
-			return s ~= nil and s.running == true
-		end,
-		-- A send on its way: its machine coming up is said in the
-		-- transcript, under it.
-		sending = function(): boolean
-			return CloudMachine.sending_last(store.messages)
-		end,
-	}
-	-- A line above it: one of its own (a send that failed), else the
-	-- session's.
 	local own_notice = ui.state("chat_own_notice", nil :: any)
 	-- Its own goes as the chat changes (kept: a reload isn't a change).
 	local notice_for = ui.state("chat_notice_for", "?")
@@ -644,7 +608,6 @@ local function Composer(): Node
 		end
 		return LinkNotice.of {
 			connection = sessions.connection:get(),
-			cloud = machine.cloud_link(Draft.has_text(shared.text) or #shared.cargo:get() > 0 or #queue:get() > 0),
 			host_unreachable = host_unreachable,
 			host = host,
 			intent = Draft.has_text(shared.text) or #shared.cargo:get() > 0 or #queue:get() > 0,
@@ -1067,70 +1030,19 @@ local function Composer(): Node
 			return
 		end
 		local plan = where.plan()
-		-- (`why`: what to say instead, a Cloud chat's reason in words.)
+		-- (`why`: what to say instead.)
 		local failed = function(why: string?)
 			own_notice:set { tone = "danger", text = why, key = if why then nil else "chat.composer.didnt_start", dismissable = true }
 			if shared.text:peek() == "" then
 				shared.text:set(text_out)
 			end
 		end
-		-- On Cloud, as the shipping app starts one: the chat opens at once
-		-- under the id it's made with, your message in it, sending, and its
-		-- machine starting under that (a tool row, as the machine's own setup
-		-- steps are); Cloud makes it meanwhile, and the message goes once it
-		-- has. Refused, back to the new chat with the words and why.
-		if plan.cloud then
-			warm.stop()
-			local chat_id = store.new_id()
-			req.project = plan.project
-			req.device = plan.device
-			req.branch = plan.branch
-			req.session = chat_id
-			req.fresh = true
-			req.message_id = store.new_id()
-			req.worktree = plan.worktree
-			T.sent_here(req.message_id :: string)
-			own_notice:set(nil)
-			store.creating(req)
-			store.open(chat_id)
-			-- (Down with its prompt: the dock's one slide.)
-			slide_to = chat_id
-			route.open_session(chat_id)
-			sessions
-				.create({ id = chat_id, project = plan.project, branch = plan.branch, cloud = true, reach = reach:peek() })
-				:after(function(made: any)
-					local cwd = if type(made) == "table" then made.cwd else nil
-					req.cwd = if type(cwd) == "string" and cwd ~= "" then cwd else nil
-					-- (The next new chat starts from the default again.)
-					reach:set(nil)
-					store.created(chat_id)
-					store.send(req):after(function() end, function(_e: any) end)
-				end, function(e: any)
-					local why = if type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
-						then e.message
-						else nil
-					store.create_failed(chat_id)
-					-- Still on it: back to the new chat, where the words and
-					-- why are said. (Gone to another chat meanwhile, that
-					-- chat's composer is left alone.)
-					if route.current:peek().name == "session" and route.current:peek().session == chat_id then
-						route.new_chat(plan.project)
-						-- (Said once the new chat is back: a chat moving
-						-- clears the composer's own line.)
-						ui.after(0, function()
-							failed(why)
-						end)
-					end
-				end)
-			return
-		end
 		own_notice:set { key = "chat.composer.starting", spinner = true }
 		-- Made where the project is (or on the device chosen), then its first
 		-- message run there, as the shipping app starts one (the send sets
 		-- its config: the model, effort, access and plan chosen here): in
 		-- the project's folder, the worktree its ref is checked out in, or a
-		-- new worktree off that ref (screens/chat/where's plan). On Cloud, made
-		-- there: the run goes in its machine's checkout, named as it's made.
+		-- new worktree off that ref (screens/chat/where's plan).
 		req.project = plan.project
 		req.device = plan.device
 		req.branch = plan.branch
@@ -1144,19 +1056,15 @@ local function Composer(): Node
 				device = if plan.project then nil else plan.device,
 				branch = plan.branch,
 				cwd = if plan.worktree then nil else plan.cwd,
-				cloud = plan.cloud,
 			})
 			:after(function(made: any)
-				local id = if plan.cloud and type(made) == "table" then made.id else made
+				local id = made
 				if type(id) ~= "string" then
 					if warmed then
 						store.unwarm(warmed)
 					end
 					failed()
 					return
-				end
-				if plan.cloud then
-					plan.cwd = if type(made.cwd) == "string" and made.cwd ~= "" then made.cwd else nil
 				end
 				req.session = id
 				req.fresh = true
@@ -1183,11 +1091,7 @@ local function Composer(): Node
 				if warmed then
 					store.unwarm(warmed)
 				end
-				-- (A Cloud chat's reason is said in words; an outcome word isn't.)
-				local why = if plan.cloud and type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
-					then e.message
-					else nil
-				failed(why)
+				failed()
 			end)
 	end
 
@@ -1245,13 +1149,9 @@ local function Composer(): Node
 				on = d.name
 			end
 		end
-		-- On Cloud: its machine's session (a side chat shares its parent's).
-		local machine = if cloud.on_device((s :: any).device) then cloud.session_for(s.id, (s :: any).device) else nil
 		return {
 			device = on,
 			name = name,
-			cloud = cloud.on_device((s :: any).device),
-			reach = if machine then machine.reach else nil,
 			worktree = path ~= nil and s.cwd ~= nil and s.cwd ~= path,
 			project = project,
 			hue = if project and s.project then (route.look(s.project) or { hue = route.hue(s.project) }).hue else nil,
@@ -1373,16 +1273,6 @@ local function Composer(): Node
 			branches = where.branches,
 			branches_empty = where.branches_empty,
 			branch_fixed = branch_fixed,
-			-- (Only ever the person's: the engine takes it from this app alone.)
-			on_reach = function(r: string)
-				local s = open()
-				local machine = if s then cloud.session_for(s.id, (s :: any).device) else nil
-				if machine then
-					cloud.set_session_reach(machine.chat, r)
-				end
-			end,
-			reach = reach,
-			reach_default = cloud.reach,
 			cargo = shared.cargo,
 			on_remove_cargo = shared.remove_cargo,
 			on_attach = function()
@@ -1541,11 +1431,6 @@ local function Composer(): Node
 			on_dismiss_notice = function()
 				own_notice:set(nil)
 			end,
-			-- (The only notice with an action: a sleeping machine's Wake.)
-			on_notice_action = machine.wake,
-			alerts = machine.alerts,
-			on_alert_action = machine.on_alert,
-			on_dismiss_alert = machine.dismiss,
 			disabled = function(): boolean
 				local s = store.session:get()
 				local id = session_id:get()

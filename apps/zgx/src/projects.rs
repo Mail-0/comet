@@ -26,6 +26,18 @@ use zgx_script::{ScriptHost, Value};
 use crate::{auth::text, engine};
 
 pub fn install(host: &ScriptHost) {
+    host.async_action("projects.github_repos", |arg| async move {
+        crate::plugins::preview::refuse("projects.github_repos")?;
+        let params = json!({
+            "query": field(&arg, "query"),
+            "limit": arg.field("limit").and_then(Value::as_f64).unwrap_or(10.0) as u32,
+        });
+        let found = engine::get().call("ListGithubRepos", params).await?;
+        let repos: Vec<Json> = found["repos"].as_array().into_iter().flatten().map(|r| json!({
+            "name": r["fullName"], "private": r["private"], "clone_url": r["cloneUrl"],
+        })).collect();
+        Ok(value(&json!(repos)))
+    });
     host.async_action("projects.folders", |arg| async move {
         let mut params = json!({});
         if let Some(path) = field(&arg, "path") {

@@ -9,7 +9,6 @@
 ui.theme.strict("warn")
 local ds = require("@ds")
 ds.setup()
-require("./cloud_stub")
 local store = require("@app/screens/chat/store")
 local route = require("@app/screens/shell/route")
 local chat = require("@app/screens/chat")

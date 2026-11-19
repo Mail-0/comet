@@ -7,12 +7,12 @@
 -- percentage in the field (which puts it back), the ⋯ menu's zoom and
 -- inspector, and a file the page can't show says so. Settings on the shell
 -- in ui/shell_fixture.luau (signed in as Ada: her profile is
--- `zeron-user_ada`); the tab on the panel in ui/panel_fixture.luau, its page
+-- `zeron-ada@example.net`); the tab on the panel in ui/panel_fixture.luau, its page
 -- stood in for (signed out: `zeron-local`).
 
 local PAGE = "#settings-page"
 local NAV = "#settings-nav"
-local ADA = "zeron-user_ada"
+local ADA = "zeron-ada@example.net"
 
 local function shows(app: any, scope: string, text: string): boolean
 	return app:tree(scope):find(text, 1, true) ~= nil

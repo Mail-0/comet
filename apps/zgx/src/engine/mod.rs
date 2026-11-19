@@ -79,12 +79,6 @@ pub struct Engine {
     config: Result<Config, manager::Refusal>,
     /// The connection, while there is one.
     rpc: RefCell<Option<Rpc>>,
-    /// Its engine's workspace (`local`, `synced`, `development`), once asked.
-    scope: RefCell<Option<String>>,
-    /// Whether its session is signed in, as the account last heard.
-    signed_in: Cell<bool>,
-    /// A restart asked of this connection's engine (once each).
-    restarting: Cell<bool>,
     listeners: RefCell<Vec<Listener>>,
     /// An engine has answered in this run.
     answered: Cell<bool>,
@@ -152,18 +146,16 @@ impl Drop for Supervising {
 
 impl Engine {
     fn new() -> Self {
-        let account = crate::auth::endpoint();
-        let config = Config::from_env(&account.edge, &account.client, account.port);
+        let config = Config::from_env();
         match &config {
             Ok(config) => eprintln!("zeron-zgx: engine: {}", config.describe()),
-            Err(why) => eprintln!("zeron-zgx: engine: refused ({why}); nothing that needs it works"),
+            Err(why) => {
+                eprintln!("zeron-zgx: engine: refused ({why}); nothing that needs it works")
+            }
         }
         Self {
             config,
             rpc: RefCell::default(),
-            scope: RefCell::default(),
-            signed_in: Cell::new(false),
-            restarting: Cell::new(false),
             listeners: RefCell::default(),
             answered: Cell::new(false),
             down_since: Cell::new(Instant::now()),
@@ -183,7 +175,10 @@ impl Engine {
     /// token): for a helper process of this app's own that talks to it
     /// directly (src/terminal.rs's bridge).
     pub fn ipc_endpoint(&self) -> Option<(u16, std::path::PathBuf)> {
-        self.config.as_ref().ok().map(|c| (c.port, c.data_dir.clone()))
+        self.config
+            .as_ref()
+            .ok()
+            .map(|c| (c.port, c.data_dir.clone()))
     }
 
     /// How this app reaches and starts its engine (none: refused).
@@ -236,18 +231,27 @@ impl Engine {
     /// `listener` hears when no connection comes to be said as unreachable,
     /// for a screen that shows it to read [`Engine::unreachable`] again.
     pub fn on_unreachable(&self, listener: impl Fn() + 'static) {
-        self.unreachable_listeners.borrow_mut().push(Rc::new(listener));
+        self.unreachable_listeners
+            .borrow_mut()
+            .push(Rc::new(listener));
     }
 
     /// Whether no connection is to be said as "can't reach the engine". (With
     /// a connection, it's not asked.)
     pub fn unreachable(&self) -> bool {
-        says_unreachable(self.config.is_err(), self.answered.get(), self.can_start(), self.down_since.get().elapsed())
+        says_unreachable(
+            self.config.is_err(),
+            self.answered.get(),
+            self.can_start(),
+            self.down_since.get().elapsed(),
+        )
     }
 
     /// Whether this app can start an engine, should none answer.
     pub fn can_start(&self) -> bool {
-        self.config.as_ref().is_ok_and(|config| config.startable().is_some())
+        self.config
+            .as_ref()
+            .is_ok_and(|config| config.startable().is_some())
     }
 
     /// The connection, waiting up to `wait` for one.
@@ -298,54 +302,6 @@ impl Engine {
         rpc.call(method, params).await
     }
 
-    /// What the account heard of the session: the engine starts again if
-    /// its workspace no longer follows it (see [`manager::needs_restart`]).
-    pub fn session(&self, signed_in: bool) {
-        self.signed_in.set(signed_in);
-        self.follow_session();
-    }
-
-    /// Whether this device keeps its chats local while signed in.
-    pub fn keeps_chats_local(&self) -> bool {
-        self.data_dir().is_some_and(|dir| zeron_proto::keeps_chats_local(&dir))
-    }
-
-    /// Keep this device's chats local while signed in, or sync them again:
-    /// saved for the engine's next start, and the engine started again now
-    /// if its workspace no longer follows (see [`manager::needs_restart`]).
-    pub fn keep_chats_local(&self, on: bool) -> Result<(), String> {
-        let dir = self.data_dir().ok_or("offline")?;
-        zeron_proto::set_keep_chats_local(&dir, on).map_err(|error| error.to_string())?;
-        self.follow_session();
-        Ok(())
-    }
-
-    fn follow_session(&self) {
-        let scope = self.scope.borrow().clone();
-        let keep_local = self.keeps_chats_local();
-        if self.restarting.get() || !manager::needs_restart(scope.as_deref(), self.signed_in.get(), keep_local) {
-            return;
-        }
-        let Some(rpc) = self.rpc.borrow().clone() else {
-            return;
-        };
-        self.restarting.set(true);
-        if keep_local {
-            eprintln!("zeron-zgx: engine: chats kept on this device; starting it again on the local workspace");
-        } else {
-            eprintln!("zeron-zgx: engine: signed in on a local workspace; starting it again to sync");
-        }
-        self.spawn(async move {
-            // It answers, then stops; the connection ends and a new engine
-            // is started in its place.
-            if let Err(error) = rpc.call("StopEngine", json!({})).await
-                && error != "closed"
-            {
-                eprintln!("zeron-zgx: engine: didn't stop: {error}");
-            }
-        });
-    }
-
     async fn supervise(self: Rc<Self>) {
         let _supervising = Supervising(self.clone());
         let Ok(config) = &self.config else {
@@ -378,17 +334,6 @@ impl Engine {
                     self.answered.set(true);
                     eprintln!("zeron-zgx: engine: connected");
                     *self.rpc.borrow_mut() = Some(rpc.clone());
-                    self.scope.borrow_mut().take();
-                    self.restarting.set(false);
-                    // Which workspace it opened: whether a session change
-                    // needs it started again.
-                    let (me, info) = (self.clone(), rpc.clone());
-                    self.spawn(async move {
-                        if let Ok(answer) = info.call("EngineInfo", json!({})).await {
-                            *me.scope.borrow_mut() = answer["workspaceScope"].as_str().map(Into::into);
-                            me.follow_session();
-                        }
-                    });
                     let listeners = self.listeners.borrow().clone();
                     for listener in listeners {
                         listener(&rpc);
@@ -442,7 +387,9 @@ impl Engine {
             let waited = Instant::now();
             loop {
                 zgx::timer::sleep(delay.min(TOKEN_LOOK)).await;
-                let changed = refused.as_ref().is_some_and(|was| *was != rpc::read_token(&config.data_dir));
+                let changed = refused
+                    .as_ref()
+                    .is_some_and(|was| *was != rpc::read_token(&config.data_dir));
                 if changed || waited.elapsed() >= delay {
                     break;
                 }
@@ -462,7 +409,11 @@ const STALE_TOKEN_WAIT: Duration = Duration::from_secs(60);
 /// The wait before the dial after this one: doubling, to 3 s, as it always
 /// has; to a minute while the engine keeps refusing the same token.
 fn next_delay(delay: Duration, stale_token: bool) -> Duration {
-    (delay * 2).min(if stale_token { STALE_TOKEN_WAIT } else { Duration::from_secs(3) })
+    (delay * 2).min(if stale_token {
+        STALE_TOKEN_WAIT
+    } else {
+        Duration::from_secs(3)
+    })
 }
 
 /// Whether a call keeps waiting for a connection past its time.
@@ -481,7 +432,10 @@ pub fn outcome(error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase();
     if error == "offline" || error == "closed" || lower.contains("unreachable") {
         "offline"
-    } else if lower.contains("signed out") || lower.contains("signed-in") || lower.contains("sign in") {
+    } else if lower.contains("signed out")
+        || lower.contains("signed-in")
+        || lower.contains("sign in")
+    {
         "signed_out"
     } else {
         "failed"
@@ -560,9 +514,19 @@ mod tests {
             }
             dials
         };
-        assert!(dials_in_ten_minutes(false) >= 195, "an engine starting is retried as before");
-        assert!(dials_in_ten_minutes(true) <= 20, "{} dials", dials_in_ten_minutes(true));
-        assert_eq!(next_delay(Duration::from_secs(3), false), Duration::from_secs(3));
+        assert!(
+            dials_in_ten_minutes(false) >= 195,
+            "an engine starting is retried as before"
+        );
+        assert!(
+            dials_in_ten_minutes(true) <= 20,
+            "{} dials",
+            dials_in_ten_minutes(true)
+        );
+        assert_eq!(
+            next_delay(Duration::from_secs(3), false),
+            Duration::from_secs(3)
+        );
         assert_eq!(next_delay(Duration::from_secs(40), true), STALE_TOKEN_WAIT);
     }
 

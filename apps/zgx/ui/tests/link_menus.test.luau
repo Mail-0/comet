@@ -253,12 +253,12 @@ test("a settings link (About's rows): Open, as its click, and Copy link", functi
 	expect(shows(app, "Open in browser panel")).to_be(false)
 	expect(shows(app, "Open in default browser")).to_be(false)
 	pick(app, "Copy link")
-	expect(app:clipboard()).to_be("https://zeron.sh")
+	expect(app:clipboard()).to_be("https://onkeiki.com")
 	menu(app, '#settings-page >> role:button "Release notes"')
 	pick(app, "Open")
 	local asked = false
 	for _, c in (app:state("settings_stub_calls") :: any) or {} do
-		asked = asked or c == "open_url:https://github.com/zeronsh/comet/releases/tag/v0.2.131"
+		asked = asked or c == "open_url:https://github.com/Mail-0/comet/releases/tag/v0.2.131"
 	end
 	expect(asked).to_be(true)
 	expect(app:error()).to_be(nil)

@@ -2768,11 +2768,11 @@
     "skip_for_now": "暂时跳过",
     "not_now": "以后再说",
     "signin": {
-      "title": "欢迎使用\nZeron",
+      "title": "欢迎使用\nKeiki",
       "lines": {
-        "phone": "在手机上接着聊。",
-        "machines": "在你的任意设备上运行智能体。",
-        "cloud": "将对话交给 Keiki Cloud，放心去忙别的。"
+        "local": "将对话和文件保留在这台电脑上。",
+        "copilot": "使用 Keiki 账号登录 Keiki Copilot。",
+        "organizations": "切换 Keiki 组织，无需移动本地工作区。"
       },
       "waiting": "请在浏览器中完成登录。",
       "failed": "无法登录。未进行任何更改。",

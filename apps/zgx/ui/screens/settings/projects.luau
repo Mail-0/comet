@@ -26,7 +26,6 @@ local search = require("@app/screens/settings/search")
 local rename = require("@app/screens/settings/rename_row")
 local look = require("@app/screens/shell/project_look")
 local files = require("@app/screens/files/api")
-local cloud_projects = require("@app/screens/shell/cloud_projects")
 
 local M = {}
 
@@ -122,70 +121,16 @@ local counts = ui.computed(function(): { [string]: number }
 	return out
 end)
 
-local function is_cloud(device: string): boolean
-	return string.sub(device, 1, 6) == "cloud-" or device == "cloud"
-end
-
--- A row: a project, or (Cloud's) one repository's projects on Cloud's
--- machines as one: `key` names that row, `members` are its projects, and
--- the rest is the one it reads as (screens/shell/cloud_projects).
 type Row = sessions.Project & { key: string?, members: { sessions.Project }? }
 
--- Which devices are Cloud's (as the engine lists them, or by their id).
-local function cloud_devices(): { [string]: boolean }
-	local out: { [string]: boolean } = {}
-	local all = sessions.devices:get()
-	local yours: { [string]: boolean } = {}
-	for _, d in sessions.computers(all) do
-		yours[d.id] = true
-	end
-	for _, d in all do
-		if (d.cloud or d.platform == "cloud") and not yours[d.id] then
-			out[d.id] = true
-		end
-	end
-	for _, p in sessions.projects:get() do
-		if not yours[p.device] and is_cloud(p.device) then
-			out[p.device] = true
-		end
-	end
-	return out
-end
-
--- Cloud's rows, by key, whatever the search.
-local cloud_rows = ui.computed(function(): { [string]: Row }
-	local on_cloud = cloud_devices()
-	local members: { [string]: { sessions.Project } } = {}
-	for _, p in sessions.projects:get() do
-		if on_cloud[p.device] then
-			local key = cloud_projects.key(p)
-			members[key] = members[key] or {}
-			table.insert(members[key], p)
-		end
-	end
-	local out: { [string]: Row } = {}
-	for key, list in members do
-		local row = table.clone(cloud_projects.lead(list)) :: Row
-		row.key = key
-		row.members = list
-		out[key] = row
-	end
-	return out
-end)
-
--- A row by its key (a project's id, or a Cloud row's key): the one it reads
--- as, and the projects it stands for.
+-- A project row and its removal target.
 local function row_of(key: string): (sessions.Project?, { sessions.Project })
-	local row = cloud_rows:get()[key]
-	if row then
-		return row, row.members or {}
-	end
 	local p = project(key)
 	return p, if p then { p } else {}
 end
 
 -- The device a project is on, as its group heads it.
-type Group = { id: string, name: string, here: boolean, cloud: boolean, gone: boolean, projects: { Row } }
+type Group = { id: string, name: string, here: boolean, gone: boolean, projects: { Row } }
 
 local function by_name(a: Row, b: Row): boolean
 	local x, y = string.lower(name_of(a)), string.lower(name_of(b))
@@ -201,12 +146,8 @@ end
 -- repository too).
 local groups = ui.computed(function(): { Group }
 	local q = string.lower(trimmed(query:get()))
-	local on_cloud = cloud_devices()
 	local by_device: { [string]: { Row } } = {}
 	for _, p in sessions.projects:get() do
-		if on_cloud[p.device] then
-			continue
-		end
 		local hay = string.lower(`{name_of(p)} {p.path}`)
 		if q == "" or string.find(hay, q, 1, true) then
 			by_device[p.device] = by_device[p.device] or {}
@@ -216,28 +157,17 @@ local groups = ui.computed(function(): { Group }
 	for _, list in by_device do
 		table.sort(list, by_name)
 	end
-	local clouds: { Row } = {}
-	for _, row in cloud_rows:get() do
-		local hay = string.lower(`{name_of(row)} {row.github or ""} {row.path}`)
-		if q == "" or string.find(hay, q, 1, true) then
-			table.insert(clouds, row)
-		end
-	end
-	table.sort(clouds, by_name)
 	local out: { Group } = {}
 	local placed: { [string]: boolean } = {}
-	local function add(id: string, name: string, here: boolean, cloud: boolean, gone: boolean)
+	local function add(id: string, name: string, here: boolean, gone: boolean)
 		if by_device[id] and not placed[id] then
 			placed[id] = true
-			table.insert(out, { id = id, name = name, here = here, cloud = cloud, gone = gone, projects = by_device[id] })
+			table.insert(out, { id = id, name = name, here = here, gone = gone, projects = by_device[id] })
 		end
 	end
 	local all = sessions.devices:get()
 	for _, d in sessions.computers(all) do
-		add(d.id, d.name, d.here == true, false, false)
-	end
-	if #clouds > 0 then
-		table.insert(out, { id = "cloud", name = ui.t("settings.projects.cloud"):get(), here = false, cloud = true, gone = false, projects = clouds })
+		add(d.id, d.name, d.here == true, false)
 	end
 	local rest: { string } = {}
 	for id in by_device do
@@ -247,7 +177,7 @@ local groups = ui.computed(function(): { Group }
 	end
 	table.sort(rest)
 	for _, id in rest do
-		add(id, ui.t("settings.projects.device_gone"):get(), false, false, true)
+		add(id, ui.t("settings.projects.device_gone"):get(), false, true)
 	end
 	return out
 end)
@@ -384,21 +314,17 @@ local function removal_words(): string
 	end
 	local where: string? = nil
 	for _, d in sessions.devices:get() do
-		if d.id == p.device and not d.cloud then
+		if d.id == p.device then
 			where = d.name
 		end
 	end
-	if is_cloud(p.device) then
-		table.insert(parts, ui.t("settings.projects.remove_keeps_repo"):get())
-	else
-		table.insert(parts, ui.t("settings.projects.remove_keeps_folder", { path = p.path, device = where or ui.t("settings.projects.its_device"):get() }):get())
-	end
+	table.insert(parts, ui.t("settings.projects.remove_keeps_folder", { path = p.path, device = where or ui.t("settings.projects.its_device"):get() }):get())
 	said_last = table.concat(parts, " ")
 	return said_last
 end
 
 local function project_row(_p: Row, _i: number, p: State<Row>): Node
-	-- (A Cloud row's key; else its project's id.)
+	-- The project's stable row id.
 	local id = p:peek().key or p:peek().id
 	local merged = p:peek().members ~= nil
 	local menu_open = ui.use_state(false)
@@ -546,7 +472,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 					n += all[m.id] or 0
 				end
 				local count = if n == 0 then ui.t("settings.projects.no_sessions"):get() else ui.t("settings.projects.sessions", { n = n }):get()
-				local where = if now.members or is_cloud(now.device) then (now.github or now.path) else now.path
+				local where = now.path
 				return if where and where ~= "" then `{count} · {where}` else count
 			end,
 			lead = tile(),

@@ -26,7 +26,7 @@ local M = {}
 
 export type State = "restoring" | "signed_out" | "waiting" | "signed_in"
 export type Failure = "cancelled" | "denied" | "timed_out" | "offline" | "expired" | "failed"
-export type User = { id: string, email: string, first_name: string? }
+export type User = { id: string, email: string, first_name: string?, name: string? }
 -- `organization_id`: the organization the session works in (Settings').
 export type Account = { state: State, user: User?, failure: Failure?, env: string, organization_id: string? }
 
@@ -46,7 +46,7 @@ end)
 M.signed_in = ui.computed(function(): boolean
 	return M.state:get() == "signed_in"
 end)
--- Which Zeron it signs into: "staging", "production" or "custom".
+-- The account service's display name.
 M.env = ui.computed(function(): string
 	return (M.account:get() :: Account).env
 end)

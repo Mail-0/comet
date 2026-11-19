@@ -29,11 +29,9 @@ local route = require("@app/screens/shell/route")
 local art = require("@app/screens/shell/art")
 local shared = require("@app/screens/chat/shared")
 local sessions = require("@account/sessions")
-local cloud = require("@account/cloud")
 local LinkNotice = require("@app/screens/chat/link_notice")
-local CloudTray = require("@app/screens/chat/cloud_tray")
 local Held = require("@app/screens/chat/held")
-local CloudMachine = require("@app/screens/chat/cloud_machine")
+local Delivery = require("@app/screens/chat/delivery")
 local Where = require("@app/screens/chat/where")
 local Warm = require("@app/screens/chat/warm")
 local DropOverlay = require("@ds/drop_overlay")
@@ -192,9 +190,6 @@ local function Composer(): Node
 	local checkout = ui.state("chat_checkout", "worktree" :: string?)
 	local branch = ui.state("chat_branch", nil :: string?)
 	local project = ui.state("chat_project", nil :: string?)
-	-- On Cloud, what a new chat's machine reaches (nil: the account's
-	-- default, Settings → Cloud). Each new chat starts from the default.
-	local reach = ui.state("chat_reach", nil :: string?)
 	local locals: { [string]: State<any> } =
 		{ model = model, effort = effort, fast = fast, options = options, access = access, plan = plan }
 
@@ -446,23 +441,14 @@ local function Composer(): Node
 			store.catalog_on(d)
 		end
 	end)
-	-- A new chat moved onto Cloud runs only the agents Cloud has accounts
-	-- for: a model it doesn't run gives way to Cloud's first, as the
-	-- shipping app drops one on the switch. So does one the last new chat
-	-- used that its device doesn't offer (once all its agents have said: a
-	-- model still on its way isn't dropped), so a chat isn't made on a
-	-- device for an agent it doesn't have.
+	-- Choose a model after this device's catalog arrives.
 	ui.effect(function()
 		local cat = store.catalog:get()
 		if session_id:get() ~= nil then
 			return
 		end
 		local d = run_device()
-		if d == Where.CLOUD then
-			if (cat :: any).device ~= Where.CLOUD then
-				return
-			end
-		elseif (cat :: any).complete ~= true or not shows_catalog_of(d) then
+		if (cat :: any).complete ~= true or not shows_catalog_of(d) then
 			return
 		end
 		local picked = model:peek()
@@ -619,37 +605,12 @@ local function Composer(): Node
 			own_notice:set(nil)
 		end
 	end)
-	-- Its Cloud machine, on a chat that has one: its state and its alert.
-	local machine = CloudTray.bind {
-		chat = function(): string?
-			return session_id:get()
-		end,
-		device = function(): string?
-			local s = open()
-			return s and s.device
-		end,
-		running = function(): boolean
-			return running:get()
-		end,
-		queue = function(): { any }
-			return queue:get()
-		end,
-		waiting = function(): { any }?
-			local s = open()
-			return s and s.waiting
-		end,
-		retry = function(message: string?)
-			local id = session_id:peek()
-			if id and message then
-				store.retry(id, message)
-			end
-		end,
-		-- A send on its way: its machine coming up is said in the
-		-- transcript, under it.
-		sending = function(): boolean
-			return CloudMachine.sending_last(store.messages)
-		end,
-	}
+	local queue_clock = ui.state("chat_queue_clock", os.time())
+	ui.effect(function()
+		if #queue:get() == 0 then return end
+		queue_clock:set(os.time())
+		ui.every(60000, function() queue_clock:set(os.time()) end)
+	end)
 	-- This device's outbox for the chat (#1256): sends uploading or stopped,
 	-- each removable where the engine can take one back. Whether it can is
 	-- asked once a chat has one, by taking out a send that isn't there (an
@@ -661,7 +622,7 @@ local function Composer(): Node
 	local removes_held = ui.state("chat_removes_held", nil :: { chat: string, can: boolean }?)
 	ui.effect(function()
 		local chat = session_id:get()
-		if not chat or not CloudMachine.has_outbox(outbox:get()) then
+		if not chat or not Delivery.has_outbox(outbox:get()) then
 			return
 		end
 		local known = removes_held:peek()
@@ -690,26 +651,25 @@ local function Composer(): Node
 	-- then this device's outbox.
 	local shown_queue = ui.computed(function(): { any }
 		local out: { any } = {}
-		local now = machine.now()
+		local now = queue_clock:get()
 		for _, q in queue:get() do
-			if q.at and now - q.at > CloudMachine.LONG_WAIT then
+			if q.at and now - q.at > Delivery.LONG_WAIT then
 				local row = table.clone(q)
-				row.age = CloudMachine.age_words(now - q.at)
+				row.age = Delivery.age_words(now - q.at)
 				table.insert(out, row)
 			else
 				table.insert(out, q)
 			end
 		end
-		local reason = machine.hold_reason()
 		for _, h in Held.of(session_id:get()) do
 			table.insert(out, {
 				id = Held.PREFIX .. h.id,
 				text = h.text,
-				-- (Refused, and its machine can take it: the person's to send.)
-				waiting = if h.refused and not reason then nil else CloudMachine.held_label(reason),
+				-- (Refused: the person's to send.)
+				waiting = if h.refused then nil else "Waiting to send",
 			})
 		end
-		for _, row in CloudMachine.outbox_rows(outbox:get(), can_remove_held()) do
+		for _, row in Delivery.outbox_rows(outbox:get(), can_remove_held()) do
 			table.insert(out, row)
 		end
 		return out
@@ -730,19 +690,6 @@ local function Composer(): Node
 			own_notice:set { tone = "danger", key = "chat.composer.didnt_send", dismissable = true }
 		end)
 	end
-	-- The machine can take them now (a size picked, a fresh machine): what's
-	-- held goes, in order, however long it waited.
-	ui.effect(function()
-		local chat = session_id:get()
-		if not chat or machine.hold_reason() ~= nil or machine.session() == nil then
-			return
-		end
-		for _, e in Held.of(chat) do
-			if not e.refused then
-				release(chat, e.id)
-			end
-		end
-	end)
 	local notice = ui.computed(function(): any
 		local mine = own_notice:get()
 		if mine then
@@ -774,7 +721,6 @@ local function Composer(): Node
 		end
 		return LinkNotice.of {
 			connection = sessions.connection:get(),
-			cloud = machine.cloud_link(Draft.has_text(shared.text) or #shared.cargo:get() > 0 or #queue:get() > 0),
 			host_unreachable = host_unreachable,
 			host = host,
 			intent = Draft.has_text(shared.text) or #shared.cargo:get() > 0 or #queue:get() > 0,
@@ -1005,11 +951,6 @@ local function Composer(): Node
 					shared.restore_cargo_of(id, carried)
 				end)
 			end
-			-- Its machine can't take it yet: kept, in the queue, till it can.
-			if machine.hold_reason() then
-				Held.add(id, { id = store.new_id(), at = os.time(), text = words, req = req })
-				return
-			end
 			if running:peek() then
 				deliver(nil)
 				return
@@ -1071,70 +1012,19 @@ local function Composer(): Node
 			return
 		end
 		local plan = where.plan()
-		-- (`why`: what to say instead, a Cloud chat's reason in words.)
+		-- (`why`: what to say instead.)
 		local failed = function(why: string?)
 			own_notice:set { tone = "danger", text = why, key = if why then nil else "chat.composer.didnt_start", dismissable = true }
 			if shared.text:peek() == "" then
 				shared.text:set(text_out)
 			end
 		end
-		-- On Cloud, as the shipping app starts one: the chat opens at once
-		-- under the id it's made with, your message in it, sending, and its
-		-- machine starting under that (a tool row, as the machine's own setup
-		-- steps are); Cloud makes it meanwhile, and the message goes once it
-		-- has. Refused, back to the new chat with the words and why.
-		if plan.cloud then
-			warm.stop()
-			local chat_id = store.new_id()
-			req.project = plan.project
-			req.device = plan.device
-			req.branch = plan.branch
-			req.session = chat_id
-			req.fresh = true
-			req.message_id = store.new_id()
-			req.worktree = plan.worktree
-			T.sent_here(req.message_id :: string)
-			own_notice:set(nil)
-			store.creating(req)
-			store.open(chat_id)
-			-- (Down with its prompt: the dock's one slide.)
-			slide_to = chat_id
-			route.open_session(chat_id)
-			sessions
-				.create({ id = chat_id, project = plan.project, branch = plan.branch, cloud = true, reach = reach:peek() })
-				:after(function(made: any)
-					local cwd = if type(made) == "table" then made.cwd else nil
-					req.cwd = if type(cwd) == "string" and cwd ~= "" then cwd else nil
-					-- (The next new chat starts from the default again.)
-					reach:set(nil)
-					store.created(chat_id)
-					store.send(req):after(function() end, function(_e: any) end)
-				end, function(e: any)
-					local why = if type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
-						then e.message
-						else nil
-					store.create_failed(chat_id)
-					-- Still on it: back to the new chat, where the words and
-					-- why are said. (Gone to another chat meanwhile, that
-					-- chat's composer is left alone.)
-					if route.current:peek().name == "session" and route.current:peek().session == chat_id then
-						route.new_chat(plan.project)
-						-- (Said once the new chat is back: a chat moving
-						-- clears the composer's own line.)
-						ui.after(0, function()
-							failed(why)
-						end)
-					end
-				end)
-			return
-		end
 		own_notice:set { key = "chat.composer.starting", spinner = true }
 		-- Made where the project is (or on the device chosen), then its first
 		-- message run there, as the shipping app starts one (the send sets
 		-- its config: the model, effort, access and plan chosen here): in
 		-- the project's folder, the worktree its ref is checked out in, or a
-		-- new worktree off that ref (screens/chat/where's plan). On Cloud, made
-		-- there: the run goes in its machine's checkout, named as it's made.
+		-- new worktree off that ref (screens/chat/where's plan).
 		req.project = plan.project
 		req.device = plan.device
 		req.branch = plan.branch
@@ -1148,19 +1038,15 @@ local function Composer(): Node
 				device = if plan.project then nil else plan.device,
 				branch = plan.branch,
 				cwd = if plan.worktree then nil else plan.cwd,
-				cloud = plan.cloud,
 			})
 			:after(function(made: any)
-				local id = if plan.cloud and type(made) == "table" then made.id else made
+				local id = made
 				if type(id) ~= "string" then
 					if warmed then
 						store.unwarm(warmed)
 					end
 					failed()
 					return
-				end
-				if plan.cloud then
-					plan.cwd = if type(made.cwd) == "string" and made.cwd ~= "" then made.cwd else nil
 				end
 				req.session = id
 				req.fresh = true
@@ -1187,11 +1073,7 @@ local function Composer(): Node
 				if warmed then
 					store.unwarm(warmed)
 				end
-				-- (A Cloud chat's reason is said in words; an outcome word isn't.)
-				local why = if plan.cloud and type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
-					then e.message
-					else nil
-				failed(why)
+				failed()
 			end)
 	end
 
@@ -1249,13 +1131,9 @@ local function Composer(): Node
 				on = d.name
 			end
 		end
-		-- On Cloud: its machine's session (a side chat shares its parent's).
-		local machine = if cloud.on_device((s :: any).device) then cloud.session_for(s.id, (s :: any).device) else nil
 		return {
 			device = on,
 			name = name,
-			cloud = cloud.on_device((s :: any).device),
-			reach = if machine then machine.reach else nil,
 			worktree = path ~= nil and s.cwd ~= nil and s.cwd ~= path,
 			project = project,
 			hue = if project and s.project then (route.look(s.project) or { hue = route.hue(s.project) }).hue else nil,
@@ -1378,16 +1256,6 @@ local function Composer(): Node
 			branches = where.branches,
 			branches_empty = where.branches_empty,
 			branch_fixed = branch_fixed,
-			-- (Only ever the person's: the engine takes it from this app alone.)
-			on_reach = function(r: string)
-				local s = open()
-				local machine = if s then cloud.session_for(s.id, (s :: any).device) else nil
-				if machine then
-					cloud.set_session_reach(machine.chat, r)
-				end
-			end,
-			reach = reach,
-			reach_default = cloud.reach,
 			cargo = shared.cargo,
 			on_remove_cargo = shared.remove_cargo,
 			on_attach = function()
@@ -1435,11 +1303,11 @@ local function Composer(): Node
 			-- (A held row goes on its own; one refused, by its Send.)
 			on_queue_send = function(row: string)
 				local held, chat = Held.id_of(row), session_id:peek()
-				if CloudMachine.outbox_id(row) then
+				if Delivery.outbox_id(row) then
 					return
 				elseif not held then
 					asks.on_queue_send(row)
-				elseif chat and not machine.hold_reason() then
+				elseif chat then
 					release(chat, held)
 				end
 			end,
@@ -1447,7 +1315,7 @@ local function Composer(): Node
 			-- after what's there.)
 			on_queue_edit = function(row: string)
 				local held, chat = Held.id_of(row), session_id:peek()
-				if CloudMachine.outbox_id(row) then
+				if Delivery.outbox_id(row) then
 					return
 				elseif not held then
 					edits.on_queue_edit(row)
@@ -1472,7 +1340,7 @@ local function Composer(): Node
 				-- An outbox send: out for good, and its prompt with it. (Gone
 				-- already, it went out or was taken out elsewhere; the list
 				-- says so as it changes.)
-				local sent = CloudMachine.outbox_id(row)
+				local sent = Delivery.outbox_id(row)
 				if sent then
 					if chat and can_remove_held() then
 						local message = nil
@@ -1530,11 +1398,6 @@ local function Composer(): Node
 			on_dismiss_notice = function()
 				own_notice:set(nil)
 			end,
-			-- (The only notice with an action: a sleeping machine's Wake.)
-			on_notice_action = machine.wake,
-			alerts = machine.alerts,
-			on_alert_action = machine.on_alert,
-			on_dismiss_alert = machine.dismiss,
 			disabled = function(): boolean
 				local s = store.session:get()
 				local id = session_id:get()

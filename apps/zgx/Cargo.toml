@@ -71,6 +71,7 @@ image = { version = "0.25.10", default-features = false, features = ["webp", "ic
 # The account (src/auth.rs): the edge over HTTPS from worker threads, its
 # JSON, and the browser.
 ureq = { version = "2", features = ["json"] }
+url = "2"
 # A template's preview, taken from the window (src/plugins/live.rs): the
 # version zgx's own snapshots are written with.
 png = "0.18"

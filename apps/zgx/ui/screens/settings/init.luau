@@ -31,11 +31,7 @@ local browser_history = require("@app/screens/settings/browser_history")
 local shortcuts = require("@app/screens/settings/shortcuts")
 local voice = require("@app/screens/settings/voice")
 local appshots = require("@app/screens/settings/appshots")
-local members = require("@app/screens/settings/members")
 local about = require("@app/screens/settings/about")
-local cloud_page = require("@app/screens/settings/cloud")
-local billing_page = require("@app/screens/settings/billing")
-local cloud = require("@account/cloud")
 
 type Module = { ID: string, TITLE: string, view: () -> Node }
 
@@ -79,7 +75,6 @@ add(browser_history, "clock-circle", "Browser")
 add(providers, "widget", "Devices")
 add(devices, "laptop", "Devices")
 add(projects_page, "folder-with-files", "Devices")
-add(members, "users-group-rounded", "Organization")
 -- Last, under Zeron's own heading (the shipping app's About and its
 -- updates, in its app menu): after everything, Archived too.
 settings.add {
@@ -89,45 +84,6 @@ settings.add {
 	group = "Keiki",
 	view = about.view,
 }
-
--- Cloud and Billing, only while the account has Cloud (the shipping app's
--- `cloud_offered`): listed ahead of Zeron's own, and found by the search
--- only then.
-settings.extra("cloud", function(): { any }
-	if not cloud.offered() then
-		return {}
-	end
-	return {
-		{ id = cloud_page.ID, title = cloud_page.TITLE, icon = "cloud", group = "Cloud", view = cloud_page.view, private = true },
-		{ id = billing_page.ID, title = billing_page.TITLE, icon = "wallet", group = "Cloud", view = billing_page.view, private = true },
-	}
-end)
-ui.effect(function()
-	if cloud.offered() then
-		search.index(cloud_page.ID, ui.t("settings.cloud.title"), cloud_page.TERMS, cloud_page.ROWS)
-		search.index(billing_page.ID, ui.t("settings.billing.title"), billing_page.TERMS, billing_page.ROWS)
-	else
-		search.unindex(cloud_page.ID)
-		search.unindex(billing_page.ID)
-	end
-end)
--- Cloud's status as the account signs in (whether it has Cloud lists the
--- pages, and the new chat's Work in offers it), and nothing of it kept
--- once signed out.
-local cloud_for = ui.state("settings_cloud_for", "")
-ui.effect(function()
-	local u = auth.user:get()
-	if auth.state:get() == "signed_in" and u then
-		-- (Again after a reload that dropped a read on its way.)
-		if cloud_for:peek() ~= u.id or cloud.now:peek().phase == "unknown" then
-			cloud_for:set(u.id)
-			cloud.load()
-		end
-	elseif cloud_for:peek() ~= "" then
-		cloud_for:set("")
-		cloud.forget()
-	end
-end)
 
 -- The search: its field heads the list, and while something is typed its
 -- results stand in the pages' place.
@@ -146,14 +102,14 @@ ui.effect(function()
 	end
 end)
 
--- Your profile once a run while signed in (the sidebar shows your photo
--- from it): kept over a reload, so a reload asks nothing again.
-local asked_me = ui.state("settings_me_asked_for", "")
+local asked_orgs = ui.state("settings_orgs_asked_for", "")
 ui.effect(function()
-	local u = auth.user:get()
-	if u and asked_me:peek() ~= u.id then
-		asked_me:set(u.id)
-		store.load_me()
+	local user = auth.user:get()
+	if user and asked_orgs:peek() ~= user.id then
+		asked_orgs:set(user.id)
+		store.load_org()
+	elseif not user then
+		asked_orgs:set("")
 	end
 end)
 

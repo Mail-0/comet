@@ -7392,6 +7392,7 @@ dependencies = [
  "ttf-parser",
  "tungstenite",
  "ureq 2.12.1",
+ "url",
  "usvg",
  "windows-sys 0.61.2",
  "zatex",

@@ -5,7 +5,7 @@
 -- edge to edge under the pointer): its project's tile, its title, where it
 -- ran, its harness and how long ago. Under the pointer a row's corner
 -- restores it or deletes it; its menu has both and Open. Delete all, at the title's end, asks once more, naming how many
--- (and the Cloud machines that go with them), and deletes the ones archived
+-- and deletes the ones archived
 -- as it was asked: one restored meanwhile stays.
 
 local ds = require("@ds")
@@ -288,15 +288,10 @@ local function group(g: Group, _i: number, now: State<any>): Node
 	}
 end
 
--- Delete all's line: how many, and the Cloud machines that go with them.
-function M.delete_all_body(count: number, on_cloud: number): string
-	local what = locale.s("settings.archived.sessions", { n = count })
-	if on_cloud == 1 and count == 1 then
-		what ..= locale.s("settings.archived.its_machine")
-	elseif on_cloud > 0 then
-		what ..= locale.s("settings.archived.machines", { n = on_cloud })
-	end
-	return locale.s("settings.archived.delete_all_body", { what = what })
+function M.delete_all_body(count: number): string
+	return locale.s("settings.archived.delete_all_body", {
+		what = locale.s("settings.archived.sessions", { n = count }),
+	})
 end
 
 local function delete_all()
@@ -497,17 +492,7 @@ function M.view(): Node
 			},
 			body(function(): string
 				local ids = delete_all_ids:get()
-				local mine: { [string]: boolean } = {}
-				for _, id in ids do
-					mine[id] = true
-				end
-				local on_cloud = 0
-				for _, c in all() do
-					if mine[c.id] and M.on_cloud(c) then
-						on_cloud += 1
-					end
-				end
-				return M.delete_all_body(#ids, on_cloud)
+				return M.delete_all_body(#ids)
 			end),
 		},
 	}

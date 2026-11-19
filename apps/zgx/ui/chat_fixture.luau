@@ -14,7 +14,6 @@ local chat = require("@app/screens/chat")
 local sessions = require("@account/sessions")
 local files = require("@app/screens/files/api")
 -- Cloud for the new chat's Work in (none until `cloud_stub.offer`).
-require("./cloud_stub")
 
 local EFFORT = {
 	{ value = "low", label = "Low" },

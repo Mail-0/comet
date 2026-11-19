@@ -1,52 +1,12 @@
--- Where a new chat works, as the shipping app's new-chat location picker has
--- it (crates/ui pickers.rs, composer.rs; crates/proto view.rs
--- `checkout_plan`): the device it runs on, the project there (or none), a
--- local checkout or a worktree, and the ref.
---
--- - Devices: your computers, this one first; one whose presence has gone
---   quiet (no beat in 70 s) is shown, dimmed, with when it was last seen,
---   and can't be picked. Then Cloud, while it's on and can open a
---   project's GitHub repository (account/cloud), whichever project is chosen
---   now: the chat runs on a machine of its own that clones the repository,
---   from the ref chosen among GitHub's branches (`ListCloudBranches`). On
---   Cloud, the projects are those Cloud can open, on whichever device, and
---   never none (a Cloud chat needs a repository): picking Cloud keeps the
---   project if Cloud can open it, else the one last used on Cloud, else the
---   first.
--- - Projects: the chosen device's, searchable, "No project" among them.
---   Picking another device brings that device's projects (the one last used
---   there, else its first); picking a project on another device moves the
---   device with it. A project no longer there stays named, warned and
---   dimmed, and the chat can't start in it.
--- - Refs: the project's branches from git where it is (`ListRefs`, forwarded
---   to its device), the current first; the chip shows the one chosen, else
---   the project's current branch.
--- - Remembered: the last device (never Cloud: chosen afresh), and the last
---   project on each device, Cloud's too.
--- - Sent: a local checkout runs in the project's folder (or, for a ref
---   checked out in a worktree of its own, in that worktree), the ref named
---   on the chat; a worktree is made off the ref as the run starts (HEAD if
---   the refs never came). A folder with no git runs in place, whichever
---   checkout was picked. On Cloud, the chat is made there (`cloud`) and runs
---   in its machine's checkout.
---
--- `Where.bind { device, project, checkout, branch, active, slot?, remember? }`
--- (in a component): the composer's choices, and while `active` (a new chat,
--- or a side chat before its first message) it keeps them in step; it gives
--- back what the composer lists and how to send.
+-- Local project, checkout, and ref choices for a new chat.
 
 local sessions = require("@account/sessions")
-local cloud = require("@account/cloud")
 local route = require("@app/screens/shell/route")
-local cloud_projects = require("@app/screens/shell/cloud_projects")
 local store = require("@app/screens/chat/store")
 
 local M = {}
 
 M.NO_PROJECT = "none"
--- The device Cloud is picked as (the engine's name for Cloud's own: its
--- agents and models are Cloud's).
-M.CLOUD = "cloud"
 -- A device is out of reach once its presence heartbeat (every 15 s) has been
 -- quiet this long (the shipping app's `DEVICE_ONLINE_WINDOW_SECS`).
 local ONLINE_WINDOW = 70
@@ -84,8 +44,6 @@ export type Plan = {
 	cwd: string?,
 	-- A worktree made off `branch` (HEAD with none) as it starts.
 	worktree: boolean,
-	-- On a Cloud machine of its own, cloning the project's repository.
-	cloud: boolean?,
 }
 
 -- How long ago, in words ("2 min ago").
@@ -155,44 +113,12 @@ function M.bind(c: Choices)
 		end
 		return nil
 	end
-	-- A project that lives on Cloud alone (New project's Cloud: a
-	-- repository, on the account's Cloud device, no folder anywhere).
-	local function lives_on_cloud(p: sessions.Project?): boolean
-		return p ~= nil and string.sub(p.device, 1, 6) == "cloud-"
-	end
-	-- The repository Cloud would clone for a project, if Cloud can open it.
-	-- (One on Cloud runs there even before Cloud's repositories are read, as
-	-- the shipping app's does: the engine takes the repository from it.)
-	local function cloud_repo(p: sessions.Project?): cloud.Repo?
-		if not p then
-			return nil
-		end
-		local found = cloud.reaches(p.github)
-		if not found and lives_on_cloud(p) and p.github and cloud.on() then
-			return { name = p.github :: string, private = false, pushed = 0 }
-		end
-		return found
-	end
-	local function on_cloud(): boolean
-		return c.device:get() == M.CLOUD
-	end
 	local function on_device(device: string?): { sessions.Project }
 		local out = {}
 		for _, p in sessions.projects:get() do
-			-- (On Cloud: those it can open, on whichever device.)
-			if if device == M.CLOUD then cloud_repo(p) ~= nil else p.device == device then
-				table.insert(out, p)
-			end
+			if p.device == device then table.insert(out, p) end
 		end
 		return out
-	end
-	-- Cloud is offered while it can open any project, whichever is chosen
-	-- (picking it brings one it can open).
-	local function cloud_offered(): boolean
-		if not cloud.on() then
-			return false
-		end
-		return #on_device(M.CLOUD) > 0
 	end
 
 	-- The devices offered: yours, this one first; one out of reach dimmed,
@@ -213,9 +139,6 @@ function M.bind(c: Choices)
 					else ui.t("chat.where.device.offline"):get(),
 			})
 		end
-		if cloud_offered() then
-			table.insert(out, { value = M.CLOUD, label = "Cloud", cloud = true })
-		end
 		return out
 	end)
 
@@ -225,39 +148,7 @@ function M.bind(c: Choices)
 		local out = {}
 		local chosen = c.project:get()
 		local list = on_device(c.device:get())
-		-- On Cloud, Cloud's machines' copies of a repository once (each Cloud
-		-- chat's machine has its own): where the first stands, reading as
-		-- screens/shell/cloud_projects says, the one chosen kept chosen.
-		local copies: { [string]: { sessions.Project } } = {}
-		if c.device:get() == M.CLOUD then
-			for _, p in list do
-				if lives_on_cloud(p) then
-					local key = cloud_projects.key(p)
-					copies[key] = copies[key] or {}
-					table.insert(copies[key], p)
-				end
-			end
-		end
-		local listed: { [string]: boolean } = {}
 		for _, p in list do
-			local key = if lives_on_cloud(p) then cloud_projects.key(p) else nil
-			local group = if key then copies[key] else nil
-			if group then
-				if listed[key :: string] then
-					continue
-				end
-				listed[key :: string] = true
-				local lead = cloud_projects.lead(group)
-				local value = lead.id
-				for _, q in group do
-					if q.id == chosen then
-						value = q.id
-					end
-				end
-				local l = route.look(lead.id) or { hue = route.hue(lead.id) }
-				table.insert(out, { value = value, label = lead.name, hue = l.hue, src = l.src, emoji = l.emoji, project = lead.id, plain = not lead.git or nil })
-				continue
-			end
 			local l = route.look(p.id) or { hue = route.hue(p.id) }
 			table.insert(out, { value = p.id, label = p.name, hue = l.hue, src = l.src, emoji = l.emoji, project = p.id, plain = not p.git or nil })
 		end
@@ -289,30 +180,8 @@ function M.bind(c: Choices)
 			return
 		end
 		local p = project_row(c.project:get())
-		-- A project on Cloud alone runs on Cloud.
-		if lives_on_cloud(p) then
-			if cloud_repo(p) and c.device:peek() ~= M.CLOUD then
-				c.device:set(M.CLOUD)
-			end
-			return
-		end
-		-- (On Cloud, a project Cloud can open stays there.)
-		if c.device:peek() == M.CLOUD and cloud_repo(p) then
-			return
-		end
 		if p and p.device ~= c.device:peek() and device_row(p.device) then
 			c.device:set(p.device)
-		end
-	end)
-	-- Cloud no longer offered (turned off, or the repository out of its
-	-- reach): back to the project's device.
-	ui.effect(function()
-		if not c.active() or not on_cloud() or cloud.now:get().phase ~= "ready" then
-			return
-		end
-		if not cloud_offered() then
-			local p = project_row(c.project:peek())
-			c.device:set(if p and device_row(p.device) then p.device else sessions.now:peek().here)
 		end
 	end)
 	-- No device yet, or one no longer yours: the one last used, else this one.
@@ -321,7 +190,7 @@ function M.bind(c: Choices)
 			return
 		end
 		local d = c.device:get()
-		if d and (device_row(d) or d == M.CLOUD) then
+		if d and device_row(d) then
 			return
 		end
 		local last = M.remembered:peek().device
@@ -342,10 +211,9 @@ function M.bind(c: Choices)
 		device_was = d
 		local chosen = c.project:peek()
 		local here = on_device(d)
-		-- (On Cloud, never none: its machine clones a project's repository.)
 		local function there(id: string?): boolean
 			if id == M.NO_PROJECT then
-				return d ~= M.CLOUD
+				return true
 			end
 			for _, p in here do
 				if p.id == id then
@@ -397,16 +265,6 @@ function M.bind(c: Choices)
 			return
 		end
 		local r = M.remembered:peek()
-		-- (Cloud is chosen afresh each time; the project used there is kept,
-		-- for the next time it's picked.)
-		if d == M.CLOUD then
-			if p and p ~= M.NO_PROJECT and project_row(p) and r.projects[M.CLOUD] ~= p then
-				local next = table.clone(r.projects)
-				next[M.CLOUD] = p
-				M.remembered:set { device = r.device, projects = next }
-			end
-			return
-		end
 		if not device_row(d) then
 			return
 		end
@@ -442,27 +300,6 @@ function M.bind(c: Choices)
 			end
 		end
 		local p = project_row(id)
-		-- On Cloud: GitHub's branches of the repository, the default first.
-		local repo = if on_cloud() then cloud_repo(p) else nil
-		if p and repo then
-			local key = `cloud|{repo.name}`
-			local was = refs:peek()
-			if was.key == key and (was.state == "ready" or was.state == "error" or (was.state == "loading" and asked == key)) then
-				return
-			end
-			asked = key
-			refs:set { key = key, state = "loading", list = {} }
-			cloud.branches(repo.name, repo.branch):after(function(list: any)
-				if refs:peek().key == key then
-					refs:set { key = key, state = "ready", list = list or {} }
-				end
-			end, function()
-				if refs:peek().key == key then
-					refs:set { key = key, state = "error", list = {} }
-				end
-			end)
-			return
-		end
 		if not p or not p.git then
 			if refs:peek().key ~= "" then
 				refs:set { key = "", state = "idle", list = {} }
@@ -535,7 +372,7 @@ function M.bind(c: Choices)
 				label = ref.name,
 				icon = "git-branch",
 				tag = if ref.current
-					then ui.t(if on_cloud() then "chat.where.branch.default" else "chat.where.branch.current"):get()
+					then ui.t("chat.where.branch.current"):get()
 					elseif ref.worktree then ui.t("chat.where.branch.worktree"):get()
 					else nil,
 			})
@@ -551,9 +388,6 @@ function M.bind(c: Choices)
 		elseif r.state == "away" then
 			return { title = ui.t("chat.where.branches_empty.offline"), hint = ui.t("chat.where.branches_empty.offline_hint") }
 		elseif r.state == "error" then
-			if on_cloud() then
-				return { title = ui.t("chat.where.branches_empty.error"), hint = ui.t("chat.where.branches_empty.error_cloud_hint") }
-			end
 			return { title = ui.t("chat.where.branches_empty.error"), hint = ui.t("chat.where.branches_empty.error_hint") }
 		end
 		return { title = ui.t("chat.where.branches_empty.none"), hint = ui.t("chat.where.branches_empty.none_hint") }
@@ -571,9 +405,6 @@ function M.bind(c: Choices)
 				return ui.t("chat.where.blocked.project_gone"):get()
 			end
 		end
-		if on_cloud() and (id == nil or id == M.NO_PROJECT) then
-			return ui.t("chat.where.blocked.cloud_needs_project"):get()
-		end
 		return nil
 	end)
 	-- What a send does, from the choices as they stand.
@@ -583,11 +414,6 @@ function M.bind(c: Choices)
 			return { project = nil, device = c.device:peek(), branch = nil, cwd = nil, worktree = false }
 		end
 		local name = c.branch:peek()
-		-- On Cloud: made there, run in its machine's checkout of the
-		-- repository (its folder comes back as the chat is made).
-		if c.device:peek() == M.CLOUD and cloud_repo(p) then
-			return { project = p.id, device = nil, branch = name, cwd = nil, worktree = false, cloud = true }
-		end
 		-- (Only a repository can make a worktree: in a plain folder the host
 		-- would refuse the run, so the pick waits for the next repository.)
 		if c.checkout:peek() == "worktree" and p.git then

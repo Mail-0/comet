@@ -205,17 +205,6 @@ test("a new chat that will run on another device starts nothing early", function
 	expect(calls(app)).never.to_contain("warm_ask:")
 end)
 
-test("a new chat on Cloud starts nothing early", function()
-	local app = fresh()
-	app:command("cloud_stub.offer")
-	settle(app)
-	app:command("go_home")
-	settle(app)
-	pick(app, "Device", "Cloud")
-	app:type(BOX, "On Cloud")
-	settle(app)
-	expect(calls(app)).never.to_contain("warm_ask:")
-end)
 
 test("a send whose chat isn't made stops the agent started for it", function()
 	local app = fresh()

@@ -4,7 +4,7 @@
 -- host calls answered by ui/settings_stub.luau.
 
 local SIDE = "#shell-sidebar"
-local SIGNED_OUT_PAGE = "Sign in to show up as yourself across Keiki."
+local SIGNED_OUT_PAGE = "Sign in to Keiki to use Copilot. Your workspace stays local."
 
 local function open(command: string): any
 	local app = mount("shell_fixture.luau")

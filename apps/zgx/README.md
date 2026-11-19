@@ -1,22 +1,22 @@
-# Zeron in zgx
+# Keiki in zgx
 
-Zeron's interface rebuilt on [zgx](https://zgx.zeron.sh), starting with
+Keiki's interface runs on [zgx](https://zgx.zeron.sh), starting with
 onboarding. The interface is Luau (`ui/`): it hot-reloads as it is saved,
 keeping its state, so most work never rebuilds Rust. The Rust host
 (`src/main.rs`) makes windows, registers fonts and answers the scripts'
 actions, and speaks to a Zeron engine (`src/engine/`), which owns the
-account, this Mac's agents and GitHub for Cloud.
+Keiki account, Copilot harness and local GitHub source control.
 
 The composer's current behavior, layout and sizing contracts are documented
 in [Composer](docs/composer.md).
 
 ## Running it
 
-**Dev builds talk to Zeron's staging servers, not production.** Signing in
-uses staging's edge (`https://staging.zeron.sh`) and sign-in client, and
-the engine zgx starts keeps its data in `~/.zeron-staging`: your production
-account, chats and devices aren't there. `ZERON_ZGX_ENV=production` points a
-build at production instead (`src/auth.rs` lists the other overrides).
+Sign-in uses Keiki OAuth at `https://onkeiki.com`, overridden with
+`KEIKI_API_URL`. Refresh credentials use the OS keyring; the workspace is
+always Local under `~/.keiki`, independently of the selected organization.
+`ZERON_DATA_DIR` overrides the local data directory. Release checks are
+opt-in through `KEIKI_RELEASES_URL`, with no Zeron-service fallback.
 
 You need Rust 1.85 or newer (edition 2024). We develop on macOS; Linux
 should work but is untested. The app is this folder: `apps/zgx` in
