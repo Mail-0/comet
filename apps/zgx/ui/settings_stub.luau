@@ -159,9 +159,7 @@ apis.choose_org = function(id: string): any
 	log(`account.choose_org:{id}`)
 	local result = change(nil)
 	if not result.error then
-		local account = table.clone(auth.account:peek())
-		account.organization_id = id
-		auth.account:set(account)
+		auth.account:set_key("organization_id", id)
 	end
 	return result
 end

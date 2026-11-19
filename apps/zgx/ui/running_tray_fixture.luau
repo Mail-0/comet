@@ -11,9 +11,7 @@ ds.setup()
 
 local calls = ui.state("calls", {} :: { string })
 local function call(what: string)
-	local list = table.clone(calls:peek())
-	table.insert(list, what)
-	calls:set(list)
+	calls:push(what)
 end
 
 return ui.column {

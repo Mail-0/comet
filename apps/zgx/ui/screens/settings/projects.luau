@@ -391,7 +391,7 @@ local function project_row(_p: Row, _i: number, p: State<Row>): Node
 			shrink = 0,
 			role = "button",
 			label = ui.t("settings.projects.icon_of", { name = p:peek().name }),
-			tooltip = ui.t("settings.projects.change_icon_tip"):get(),
+			tooltip = locale.s("settings.projects.change_icon_tip"),
 			focusable = true,
 			cursor = "pointer",
 			rounded = "$radius.md",

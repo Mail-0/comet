@@ -261,9 +261,7 @@ M.take_keys = ui.state("chat_lanes_take_keys", {} :: { [string]: boolean })
 M.starts = ui.state("chat_lanes_starts", {} :: { [string]: { project: string?, device: string? } })
 
 local function set_in(s: State<any>, key: string, value: any)
-	local now = table.clone(s:peek())
-	now[key] = value
-	s:set(now)
+	s:set_key(key, value)
 end
 
 -- The shipping app's "New side chat": a side chat of the session, opened in

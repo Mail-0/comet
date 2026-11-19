@@ -21,7 +21,7 @@ local generation = ui.state("test_reply_generation", 1)
 local pictures = ReplyImages.for_session(function(): any
 	return { id = "chat-1", cwd = "/work" }
 end, function(_target: any, path: string): any
-	reads:set(reads:peek() .. path .. "\n")
+	reads:append(path .. "\n")
 	local rel = string.match(path, "^/work/(.*)$")
 	return {
 		after = function(_self: any, ok: (any) -> (), err: (any) -> ())

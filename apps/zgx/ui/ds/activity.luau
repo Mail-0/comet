@@ -439,9 +439,7 @@ local function thought_row(
 		return CALLS_OPEN:get()[id] == true
 	end
 	local function set_open(on: boolean)
-		local all = table.clone(CALLS_OPEN:peek())
-		all[id] = on
-		CALLS_OPEN:set(all)
+		CALLS_OPEN:set_key(id, on)
 	end
 	local function live(): boolean
 		return now().live == true
@@ -745,9 +743,7 @@ local function row(
 					return
 				end
 				if has_call() or has_detail() or has_pictures() then
-					local all = table.clone(CALLS_OPEN:peek())
-					all[id] = not showing()
-					CALLS_OPEN:set(all)
+					CALLS_OPEN:set_key(id, not showing())
 				end
 			end,
 			-- (A row before the group's last never runs: its glyph alone, placed
@@ -868,9 +864,7 @@ return ui.component(function(props: Props): Node
 	end
 	local function choose(on: boolean)
 		if key then
-			local all = table.clone(GROUPS_CHOSEN:peek())
-			all[key] = on
-			GROUPS_CHOSEN:set(all)
+			GROUPS_CHOSEN:set_key(key, on)
 		else
 			own:set(on)
 		end

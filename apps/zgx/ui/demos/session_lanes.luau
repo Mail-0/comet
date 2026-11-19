@@ -53,9 +53,7 @@ return {
 				gap = "$space.2",
 				flex_wrap = true,
 				ds.Button { tone = "secondary", size = "sm", on_click = function()
-					local now = table.clone(side:peek())
-					table.insert(now, 1, { id = `s{#now + 1}`, title = "A new side chat", status = "working", agent = "claude", updated = os.time() })
-					side:set(now)
+					side:insert(1, { id = `s{#side:peek() + 1}`, title = "A new side chat", status = "working", agent = "claude", updated = os.time() })
 				end, "Add a side chat" },
 				ds.Button { tone = "secondary", size = "sm", on_click = function()
 					local now = table.clone(subs:peek())

@@ -44,9 +44,7 @@ function M.key(harness: string?, target: Target?): string?
 end
 
 local function put(key: string, catalog: Catalog)
-	local now = table.clone(CATALOGS:peek())
-	now[key] = catalog
-	CATALOGS:set(now)
+	CATALOGS:set_key(key, catalog)
 end
 
 -- Reads the list for `harness` at `target` (again, if it has been), the
@@ -145,9 +143,7 @@ function M.remember(item: any, trigger: string, token: string?)
 	if type(item) ~= "table" or type(item.link) ~= "string" or type(item.value) ~= "string" then
 		return
 	end
-	local now = table.clone(PICKS:peek())
-	now[token or (trigger .. item.value)] = item.link
-	PICKS:set(now)
+	PICKS:set_key(token or (trigger .. item.value), item.link)
 end
 
 -- Where a token may stand: at the start, after a space or an opening

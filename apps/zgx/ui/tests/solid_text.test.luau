@@ -37,8 +37,8 @@ test("light: muted text is the solid window's when opaque, and glass's when fros
 	app:click(`{PAGE} >> role:switch "Frosted glass"`)
 	app:frames(10)
 	local secondary, tertiary = muted(app)
-	expect(secondary).to_be("$zeron.solid.secondary")
-	expect(tertiary).to_be("$zeron.solid.tertiary")
+	expect(secondary).to_be("#1b1b1dbd")
+	expect(tertiary).to_be("#1b1b1da3")
 	-- The page and sidebar wear the theme's own fill and edge: one colour
 	-- with the window, no card.
 	local t = read(app)

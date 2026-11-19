@@ -106,9 +106,7 @@ M.fetch_output = function(chat: string, id: string): any
 end
 
 local function put(blob_ref: string, blob: Blob)
-	local now = table.clone(BLOBS:peek())
-	now[blob_ref] = blob
-	BLOBS:set(now)
+	BLOBS:set_key(blob_ref, blob)
 end
 
 -- A failure's word: an error's message, or what it is.

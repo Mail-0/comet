@@ -20,9 +20,7 @@ local history = ui.state("fixture_metrics_history", {} :: { string })
 ui.effect(function()
 	local r = metrics.result:get()
 	result:set(r)
-	local h = table.clone(history:peek())
-	table.insert(h, r.status)
-	history:set(h)
+	history:push(r.status)
 end)
 
 ui.command {

@@ -32,7 +32,7 @@ local pending = ui.state("test_sent_pending", "")
 local sent = ReplyImages.for_attachments(function(): any
 	return { id = "chat-1", device = if remote:get() then "other" else "me", here = "me" }
 end, function(_target: any, path: string): any
-	reads:set(reads:peek() .. path .. "\n")
+	reads:append(path .. "\n")
 	return {
 		after = function(_self: any, ok: (any) -> (), bad: (any) -> ())
 			if string.find(path, "missing", 1, true) then

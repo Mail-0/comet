@@ -88,9 +88,7 @@ read_permissions()
 
 local calls = ui.state("plugin_settings_calls", {} :: { string })
 local function note(what: string)
-	local list = table.clone(calls:peek())
-	table.insert(list, what)
-	calls:set(list)
+	calls:push(what)
 end
 
 local function publish()

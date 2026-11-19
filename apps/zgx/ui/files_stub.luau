@@ -453,9 +453,7 @@ do
 		made += 1
 		local id = `comment-{made}`
 		note(`comment:{c.path}:{c.line}:{c.body}`)
-		local list = table.clone(staged:peek())
-		table.insert(list, { id = id, path = c.path, line = c.line, body = c.body })
-		staged:set(list)
+		staged:push({ id = id, path = c.path, line = c.line, body = c.body })
 		return id
 	end
 	comments.of = function(_root: string?, path: string): { any }

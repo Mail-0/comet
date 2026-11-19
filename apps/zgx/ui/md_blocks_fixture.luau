@@ -48,7 +48,7 @@ ui.command {
 	id = "stream",
 	title = "Write more of the last block",
 	run = function()
-		text:set(text:peek() .. " block, streaming")
+		text:append(" block, streaming")
 	end,
 }
 

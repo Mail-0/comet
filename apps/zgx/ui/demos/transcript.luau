@@ -342,9 +342,7 @@ return {
 					pictures = pictures,
 					on_mention = function(q)
 						local line = Quote.line(q)
-						local kept = table.clone(quotes:peek())
-						kept[line] = q.text
-						quotes:set(kept)
+						quotes:set_key(line, q.text)
 						typed:set(Quote.add(typed:peek(), line))
 						to_composer:add(1)
 					end,

@@ -51,8 +51,8 @@ function M.solid_theme(): { [string]: any }?
 		["zeron.island.blur"] = 0,
 	}
 	if ui.theme.get("zeron.solid.secondary") ~= nil then
-		out["text.secondary"] = "$zeron.solid.secondary"
-		out["text.tertiary"] = "$zeron.solid.tertiary"
+		out["text.secondary"] = ui.theme.get("zeron.solid.secondary")
+		out["text.tertiary"] = ui.theme.get("zeron.solid.tertiary")
 	end
 	return out
 end

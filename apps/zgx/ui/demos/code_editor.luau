@@ -464,9 +464,7 @@ return {
 							block_view = block_view(id, `{s.label}.sample`),
 							on_add_block = function(line: number)
 								local blocks = blocks_of(id)
-								local list = table.clone(blocks:peek())
-								table.insert(list, { key = `comment-{line}`, line = line, kind = "composer" })
-								blocks:set(list)
+								blocks:push({ key = `comment-{line}`, line = line, kind = "composer" })
 							end,
 							on_block_moved = function(key: string, line: number)
 								local list = table.clone(blocks_of(id):peek())

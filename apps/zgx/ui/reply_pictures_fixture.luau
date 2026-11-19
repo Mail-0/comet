@@ -27,7 +27,7 @@ local here = ui.state("fixture_here", true)
 -- does, anything else isn't there.
 local function stub(prefix: string): (target: any, path: string) -> any
 	return function(_target: any, path: string): any
-		reads:set(reads:peek() .. path .. "\n")
+		reads:append(path .. "\n")
 		local rel = string.match(path, "^" .. prefix .. "(.*)$") or path
 		return {
 			after = function(_self: any, ok: (any) -> (), err: (any) -> ())

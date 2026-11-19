@@ -58,9 +58,7 @@ return function(zeron: any, pulls: any)
 	local scheduled = false
 
 	local function settle(repo: string, sha: string, record: any)
-		local now = table.clone(known:peek())
-		now[`{repo}|{sha}`] = record
-		known:set(now)
+		known:set_key(`{repo}|{sha}`, record)
 	end
 
 	local function ask(repo: string, shas: { string })

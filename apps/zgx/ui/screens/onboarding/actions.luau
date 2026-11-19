@@ -83,9 +83,7 @@ end
 
 function M.finished(step: state.Step)
 	if state.PAGES[step] == "device" then
-		local done = table.clone(state.device_done:peek())
-		done[step] = true
-		state.device_done:set(done)
+		state.device_done:set_key(step, true)
 	end
 end
 

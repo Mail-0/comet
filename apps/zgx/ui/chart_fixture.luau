@@ -183,7 +183,7 @@ return ui.column {
 	id = "page",
 	w_full = true,
 	h_full = true,
-	bg = "$bg",
+	bg = "$background",
 	p = "$space.6",
 	ui.column {
 		w = function(): number

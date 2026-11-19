@@ -28,9 +28,7 @@ local function failed(module: string, why: string?)
 	if M.failures:peek()[module] == why then
 		return
 	end
-	local now = table.clone(M.failures:peek())
-	now[module] = why
-	M.failures:set(now)
+	M.failures:set_key(module, why)
 end
 
 -- The module at `module`, or nil and why it didn't load.

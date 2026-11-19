@@ -549,13 +549,9 @@ return function(zeron: any)
 			if m.infos:peek()[sha] ~= nil then
 				return
 			end
-			local now = table.clone(m.infos:peek())
-			now[sha] = false
-			m.infos:set(now)
+			m.infos:set_key(sha, false)
 			m.call("commit_info", { sha = sha }, 30):after(function(info: any)
-				local next = table.clone(m.infos:peek())
-				next[sha] = info
-				m.infos:set(next)
+				m.infos:set_key(sha, info)
 			end, function(err: any)
 				print(`git: commit {sha}: {err}`)
 			end)

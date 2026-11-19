@@ -1346,9 +1346,7 @@ local function mark_sent(id: string)
 	if SENT:peek()[id] then
 		return
 	end
-	local all = table.clone(SENT:peek())
-	all[id] = true
-	SENT:set(all)
+	SENT:set_key(id, true)
 end
 -- The transcript shown last, for `latest` and `send`.
 -- (`landing`: the id of a prompt the host adds after `push`, a steer's.)

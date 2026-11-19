@@ -349,9 +349,7 @@ local ScrollStep = ui.component(function(props: ScrollStepProps): Node
 	local settled = ui.use_state(false)
 	if key then
 		ui.on_cleanup(function()
-			local all = table.clone(kept_titles:peek())
-			all[key :: string] = { room = room:peek(), tall = tall:peek(), settled = settled:peek(), load = LOAD, left = ui.now() }
-			kept_titles:set(all)
+			kept_titles:set_key(key :: string, { room = room:peek(), tall = tall:peek(), settled = settled:peek(), load = LOAD, left = ui.now() })
 		end)
 	end
 	local function lifted_now(): boolean

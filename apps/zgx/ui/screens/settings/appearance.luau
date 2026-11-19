@@ -152,9 +152,7 @@ local function adjust_dialog(): Node
 		end
 	end)
 	local function set_zoom(z: number)
-		local d = table.clone(wallpaper.draft:peek())
-		d.zoom = math.clamp(z, ds.wallpaper.MIN_ZOOM, ds.wallpaper.MAX_ZOOM)
-		wallpaper.draft:set(d)
+		wallpaper.draft:set_key("zoom", math.clamp(z, ds.wallpaper.MIN_ZOOM, ds.wallpaper.MAX_ZOOM))
 	end
 	local function picture(): any
 		local image = appearance.image:get()

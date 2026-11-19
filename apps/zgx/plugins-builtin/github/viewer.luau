@@ -918,9 +918,7 @@ return function(zeron: any, pulls: any): (props: { tab: any }) -> Node
 			sent += 1
 			entry.seq = sent
 			entry.at = os.time()
-			local list = table.clone(pending:peek())
-			table.insert(list, entry)
-			pending:set(list)
+			pending:push(entry)
 			return sent
 		end
 		local function release(keep: (entry: any) -> boolean)

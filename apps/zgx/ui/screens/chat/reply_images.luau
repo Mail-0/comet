@@ -104,9 +104,7 @@ local function key_of(s: Session, path: string): string
 end
 
 local function put(key: string, picture: Picture)
-	local now = table.clone(PICTURES:peek())
-	now[key] = picture
-	PICTURES:set(now)
+	PICTURES:set_key(key, picture)
 end
 
 local function next_read()

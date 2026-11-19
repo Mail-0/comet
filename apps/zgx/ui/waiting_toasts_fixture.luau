@@ -11,9 +11,7 @@ local templates = require("@app/screens/templates/state")
 -- What Review asked of the host, in order.
 local calls = ui.state("waiting_calls", {} :: { string })
 local function called(what: string)
-	local list = table.clone(calls:peek())
-	table.insert(list, what)
-	calls:set(list)
+	calls:push(what)
 end
 local stub_plugins = plugins :: any
 stub_plugins.review = function(id: string)

@@ -53,8 +53,8 @@ local Preview = ui.component(function(): Node
 		w = 660,
 		ds.Composer {
 			value = draft, cargo = cargo, focus = focus,
-			model = ui.state("fixture_preview_model", "sonnet" :: string?),
-			effort = ui.state("fixture_preview_effort", "medium" :: string?),
+			model = ui.use_state("sonnet" :: string?),
+			effort = ui.use_state("medium" :: string?),
 			harnesses = { { id = "claude", label = "Claude", mark = "claude" } },
 			models = { { value = "sonnet", label = "Sonnet", harness = "claude" } },
 		},

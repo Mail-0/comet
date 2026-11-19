@@ -62,9 +62,7 @@ local function session_menu(s: Session): { Entry }
 			-- Where it is already: nowhere to move it.
 			disabled = p == here,
 			on_select = function()
-				local m = table.clone(moved:peek())
-				m[s.id] = p
-				moved:set(m)
+				moved:set_key(s.id, p)
 				did:set(`Moved “{s.title}” to {p}`)
 			end,
 		})

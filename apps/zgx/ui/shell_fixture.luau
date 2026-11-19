@@ -224,9 +224,7 @@ chat_store.open = open_store
 -- `fixture_sent`, for a test to read.
 local sent = ui.state("fixture_sent", {} :: { any })
 chat_store.send = function(req: any): any
-	local now = table.clone(sent:peek())
-	table.insert(now, req)
-	sent:set(now)
+	sent:push(req)
 	return {
 		after = function(_, ok: (any) -> ())
 			ui.after(0, function()

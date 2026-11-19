@@ -46,7 +46,7 @@ for i = 1, 30 do
 end
 
 ToolDetail.fetch = function(blob_ref: string): any
-	fetches:set(fetches:peek() .. blob_ref .. "\n")
+	fetches:append(blob_ref .. "\n")
 	if blob_ref == "c/p1.diff" then
 		return settled({
 			kind = "diff",
