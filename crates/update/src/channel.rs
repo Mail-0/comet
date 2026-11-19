@@ -11,8 +11,8 @@
 //! back to Stable. Stable builds there, headless daemons and source builds are
 //! always on stable.
 //!
-//!   stable  `{edge}/releases/manifest.json` (and `latest.txt`), unchanged
-//!   beta    `{edge}/releases/beta/manifest.json`
+//! GitHub feeds use latest stable or the published-release list for beta.
+//! Custom manifest bases use `manifest.json` / `beta/manifest.json`.
 //!
 //! Opting in: a "Get beta updates" choice in the app (`select`), or a beta
 //! download whose first launch claims the channel (`claim_for_beta_build`).

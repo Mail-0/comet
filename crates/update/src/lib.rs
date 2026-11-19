@@ -3,11 +3,10 @@
 //! (its own report-only checker, the "Check for Updates…" menu item, the
 //! sidebar update strip, and the desktop install paths).
 //!
-//! Release layout (see `.github/workflows/release.yml` and `edge/src/install.sh`):
-//! artifacts live in the `comet-native-releases` R2 bucket, served pre-auth at
-//! `{edge}/releases/*`. `manifest.json` carries the latest version plus a
-//! sha256 per artifact; `latest.txt` (version only) remains as the fallback for
-//! releases published before the manifest existed.
+//! Releases come from Comet's GitHub Releases API. Assets are downloaded through
+//! their API URLs; `manifest.json` adds checksums and platform requirements.
+//! `KEIKI_RELEASES_URL` can select another GitHub release API or a manifest base
+//! URL (`manifest.json`, with a legacy `latest.txt` fallback).
 //!
 //! Install kinds and their update paths:
 //! - **Managed** (`~/.keiki/app/<ver>` + `current` symlink — the curl|sh
@@ -44,6 +43,7 @@ pub mod windows;
 
 pub mod channel;
 pub mod desktop;
+mod github;
 pub mod transaction;
 pub use channel::Channel;
 pub use transaction::{UpdateReport, UpdateState};
@@ -53,8 +53,10 @@ pub fn release_feed_url() -> Option<String> {
 }
 
 fn configured_release_feed(value: Option<&str>) -> Option<String> {
-    value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+    Some(value.map(str::trim).filter(|value| !value.is_empty()).unwrap_or(DEFAULT_FEED_URL).to_owned())
 }
+
+pub const DEFAULT_FEED_URL: &str = "https://api.github.com/repos/Mail-0/comet/releases/latest";
 
 /// The version compiled into this binary: the workspace's, or a beta's
 /// (`ZERON_ENGINE_VERSION=0.2.137-beta.3` at build time). Betas of one release
@@ -128,9 +130,11 @@ const RELEASE_METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 // Release metadata
 // ---------------------------------------------------------------------------
 
-/// `{edge}/releases/manifest.json` — written by the release workflow.
+/// `manifest.json` — attached to GitHub releases by the release workflow.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
+    #[serde(skip)]
+    pub asset_urls: BTreeMap<String, String>,
     pub version: String,
     /// Artifact file name → metadata. Empty for pre-manifest releases resolved
     /// via `latest.txt` — downloads then skip checksum verification (with a log).
@@ -393,7 +397,11 @@ pub async fn fetch_latest(edge_url: &str) -> anyhow::Result<Manifest> {
 
 /// [`fetch_latest`] from `channel`'s feed.
 pub async fn fetch_latest_on(edge_url: &str, channel: Channel) -> anyhow::Result<Manifest> {
-    let mut manifest = fetch_latest_from(&channel.base(&release_base(edge_url)?)).await?;
+    let base = release_base(edge_url)?;
+    if github::is_feed(&base) {
+        return github::fetch(&base, channel).await;
+    }
+    let mut manifest = fetch_latest_from(&channel.base(&base)).await?;
     manifest.channel = channel;
     Ok(manifest)
 }
@@ -463,11 +471,8 @@ async fn fetch_release_metadata_with_limits(
     max_bytes: usize,
 ) -> anyhow::Result<ReleaseMetadataResponse> {
     let request = async {
-        let response = client
-            .get(url)
-            // Intermediaries must revalidate: the edge already bounds its own
-            // cache to a minute, and a proxy holding an old manifest for
-            // longer is exactly the "prompt appears late" failure.
+        let response = github::request(client, reqwest::Method::GET, url)
+            .header(reqwest::header::ACCEPT, if url.contains("/assets/") { "application/octet-stream" } else { "application/json" })
             .header(reqwest::header::CACHE_CONTROL, "no-cache")
             .send()
             .await
@@ -551,23 +556,14 @@ fn validate_release_override(value: &str) -> anyhow::Result<String> {
 /// The project's GitHub releases page — the advisory update strip opens this
 /// for unmanaged installs (source builds, hand-copied binaries), where no
 /// updater flow exists to drive.
-pub const RELEASES_PAGE: &str = "https://github.com/zeronsh/zeron/releases";
+pub const RELEASES_PAGE: &str = "https://github.com/Mail-0/comet/releases";
 
 /// The newest release's page — the download destination offered when this
 /// installation cannot replace itself.
-pub const LATEST_RELEASE_PAGE: &str = "https://github.com/zeronsh/zeron/releases/latest";
+pub const LATEST_RELEASE_PAGE: &str = "https://github.com/Mail-0/comet/releases/latest";
 
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
-    if let Ok(url) = std::env::var("ZERON_RELEASES_URL")
-        && !url.trim().is_empty()
-    {
-        return validate_release_override(&url);
-    }
-    #[cfg(windows)]
-    if let Some(url) = windows::release_url()? {
-        return Ok(url.trim_end_matches('/').to_owned());
-    }
-    Ok(format!("{}/releases", edge_url.trim_end_matches('/')))
+    validate_release_override(edge_url)
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,7 +1031,7 @@ fn plist_string(plist: &str, key: &str) -> Option<String> {
 // Download + verify
 // ---------------------------------------------------------------------------
 
-/// Stream `{edge}/releases/<file>` to `dest`, verifying the manifest sha256 when
+/// Stream a release asset to `dest`, verifying the manifest sha256 when
 /// present. Writes through a `.partial` sidecar so an interrupted download never
 /// leaves a plausible-looking artifact behind.
 pub async fn download_release_file(
@@ -1055,7 +1051,7 @@ pub(crate) async fn download_release_file_from(
     file: &str,
     dest: &Path,
 ) -> anyhow::Result<()> {
-    let url = format!("{base}/{file}");
+    let url = manifest.asset_urls.get(file).cloned().unwrap_or_else(|| format!("{base}/{file}"));
     let expected = manifest.files.get(file).and_then(|m| m.sha256.as_deref());
     if expected.is_none() {
         tracing::warn!(
@@ -1064,8 +1060,7 @@ pub(crate) async fn download_release_file_from(
         );
     }
     let partial = dest.with_extension("partial");
-    let resp = http_client()?
-        .get(&url)
+    let resp = github::request(&http_client()?, reqwest::Method::GET, &url)
         .send()
         .await
         .with_context(|| format!("downloading {url}"))?
@@ -2831,8 +2826,8 @@ pub async fn prepare_install(
 /// What the feed says the release's download weighs, if it says.
 async fn artifact_size(edge_url: &str, manifest: &Manifest, file: &str) -> Option<u64> {
     let base = manifest.channel.base(&release_base(edge_url).ok()?);
-    let url = format!("{base}/{file}");
-    let response = http_client().ok()?.head(&url).send().await.ok()?;
+    let url = manifest.asset_urls.get(file).cloned().unwrap_or_else(|| format!("{base}/{file}"));
+    let response = github::request(&http_client().ok()?, reqwest::Method::HEAD, &url).send().await.ok()?;
     response.status().is_success().then(|| response.content_length())?
 }
 
@@ -2973,9 +2968,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn releases_require_an_explicit_keiki_feed() {
-        assert_eq!(configured_release_feed(None), None);
-        assert_eq!(configured_release_feed(Some(" \t")), None);
+    fn releases_default_to_comets_github_feed_and_allow_an_override() {
+        assert_eq!(configured_release_feed(None), Some(DEFAULT_FEED_URL.into()));
+        assert_eq!(configured_release_feed(Some(" \t")), Some(DEFAULT_FEED_URL.into()));
         assert_eq!(configured_release_feed(Some(" https://releases.example.test ")), Some("https://releases.example.test".into()));
     }
 
