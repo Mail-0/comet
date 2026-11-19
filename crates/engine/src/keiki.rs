@@ -445,7 +445,7 @@ impl KeikiConversations {
             }
             let snapshot = tokio::select! {
                 biased;
-                _ = auth.changed() => Err(failed("Keiki account or organization changed")),
+                _ = auth.changed() => return Some((json!({"reset":true,"agents":[],"groups":[],"conversations":[]}), (this, scope, params, auth, false, true))),
                 snapshot = this.snapshot(&scope, &params) => snapshot,
             };
             let failed = snapshot.is_err();
@@ -453,6 +453,9 @@ impl KeikiConversations {
             // Comet retries failed sidebar polls after ten seconds.
             if failed {
                 tokio::select! { _ = tokio::time::sleep(Duration::from_secs(RETRY_SECONDS)) => {}, _ = auth.changed() => {} }
+            }
+            if this.0.check(&scope).is_err() {
+                return Some((json!({"reset":true,"agents":[],"groups":[],"conversations":[]}), (this, scope, params, auth, false, true)));
             }
             Some((value, (this, scope, params, auth, !failed, false)))
         }).boxed()

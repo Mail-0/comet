@@ -111,8 +111,12 @@ struct View {
     watches: RefCell<HashMap<&'static str, Watch>>,
 }
 
+fn watch_failure(reason: &str) -> Option<Json> {
+    (reason != "done").then(|| json!({"error":"Keiki connection ended. Retry to reconnect."}))
+}
+
 impl View {
-    fn subscribe(&self, method: &'static str) {
+    fn subscribe(self: &Rc<Self>, method: &'static str) {
         self.watches.borrow_mut().remove(method);
         let Some(rpc) = self.rpc.borrow().clone() else {
             return;
@@ -130,6 +134,7 @@ impl View {
         };
         let Some(params) = params else { return };
         let ended = shared.clone();
+        let weak = Rc::downgrade(self);
         self.watches.borrow_mut().insert(
             method,
             rpc.watch_ending(
@@ -138,10 +143,12 @@ impl View {
                 move |item| {
                     shared.set(json_value(&item));
                 },
-                move |_| {
-                    ended.set(json_value(
-                        &json!({"error":"Keiki connection ended. Retry to reconnect."}),
-                    ));
+                move |reason| {
+                    if let Some(error) = watch_failure(&reason) {
+                        ended.set(json_value(&error));
+                    } else if let Some(view) = weak.upgrade() {
+                        view.subscribe(method);
+                    }
                 },
             ),
         );
@@ -216,6 +223,14 @@ mod tests {
     use super::{AvatarFiles, CALLS, request_params};
     use base64::Engine as _;
     use serde_json::json;
+
+    #[test]
+    fn scope_watch_completion_is_not_a_connection_error() {
+        assert!(super::watch_failure("done").is_none());
+        for reason in ["closed", "bad request", ""] {
+            assert!(super::watch_failure(reason).unwrap()["error"].is_string());
+        }
+    }
 
     #[test]
     fn phase4_empty_lua_tables_become_rpc_parameter_objects_without_changing_nested_arrays() {

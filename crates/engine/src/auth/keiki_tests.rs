@@ -685,6 +685,51 @@ async fn org_switch_invalidates_inflight_reads_before_the_new_session_is_publish
 }
 
 #[tokio::test]
+async fn org_switch_resets_an_inflight_sidebar_without_publishing_a_stale_error() {
+    let read = Arc::new(tokio::sync::Notify::new());
+    let release_read = Arc::new(tokio::sync::Notify::new());
+    let switching = Arc::new(tokio::sync::Notify::new());
+    let release_switch = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        let mut agents_reply = Reply::ok("GET", "/api/webapp/agents", agents());
+        agents_reply.received = Some(read.clone());
+        agents_reply.release = Some(release_read.clone());
+        let mut switch = Reply::ok("POST", "/api/webapp/orgs/switch", json!({"ok":true,"activeOrgId":"org-2"}));
+        switch.received = Some(switching.clone());
+        switch.release = Some(release_switch.clone());
+        replies.extend([
+            agents_reply,
+            switch,
+            Reply::ok("GET", "/api/webapp/auth/session", account(Some("org-2"), json!([{"id":"org-2","name":"Two"}]))),
+        ]);
+        replies
+    }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let core = runtime.core();
+    let RpcReply::Stream(mut sidebar) = core.rpc_service().handle("WatchKeikiSidebar", json!({})).await.unwrap() else { panic!("sidebar stream") };
+    let fetching = tokio::spawn(async move {
+        let reset = sidebar.next().await.unwrap();
+        assert_eq!(reset["reset"], true);
+        assert!(reset.get("error").is_none());
+        assert_eq!(reset["agents"], json!([]));
+        assert!(sidebar.next().await.is_none());
+    });
+    tokio::time::timeout(Duration::from_secs(2), read.notified()).await.unwrap();
+    let auth = core.auth();
+    let switch = tokio::spawn(async move { auth.select_org("org-2").await });
+    tokio::time::timeout(Duration::from_secs(2), switching.notified()).await.unwrap();
+    assert_eq!(core.auth().state().org_id(), Some("org-1"));
+    tokio::time::timeout(Duration::from_secs(2), fetching).await.unwrap().unwrap();
+    release_read.notify_one();
+    release_switch.notify_one();
+    switch.await.unwrap().unwrap();
+    runtime.shutdown().await;
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
 async fn cancelling_an_active_stream_drops_the_connection_and_reconciles_authoritative_history() {
     let server = Server::start(|url| {
         let mut replies = restored(url);
