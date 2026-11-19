@@ -382,10 +382,6 @@ fn observe(pid: i32) -> Option<Observed> {
 /// SIGTERM, then SIGKILL after this long.
 #[cfg(unix)]
 const GRACE: Duration = Duration::from_secs(5);
-/// The longest the sweep waits out a login refresh before leaving the
-/// agent for the next engine start.
-#[cfg(unix)]
-
 /// [`sweep`] on a thread of its own: the engine starts without waiting
 /// for it.
 pub fn sweep_in_background(data_dir: &Path) {
