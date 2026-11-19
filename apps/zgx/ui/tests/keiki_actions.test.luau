@@ -125,3 +125,11 @@ test("Keiki sandbox terminal opens the existing terminal panel for its bound cha
 	local panel = app:state("panel_sessions")["chat:keiki-bound-demo"]
 	expect(panel.tabs[1].kind).to_be("terminal")
 end)
+test("Keiki avatars use scoped engine requests and retain the avatar fallback without a photo", function()
+	local app = open()
+	expect(app:state("keiki.fixture.calls")).to_contain("GetKeikiAvatar:fern:")
+	app:click('role:button "Group roster: Design team"'); app:frames(20)
+	expect(app:state("keiki.fixture.calls")).to_contain("GetKeikiAvatar:nova:")
+	expect(app:has('~"Nova"')).to_be(true)
+	expect(app:state("keiki.fixture.calls"):find("AccessToken", 1, true) == nil).to_be(true)
+end)

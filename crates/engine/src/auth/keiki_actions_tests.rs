@@ -7,7 +7,7 @@ fn preset(dir: &std::path::Path, chat: &str) {
         org: "org-1".into(),
         revision: 0,
     };
-    store.set_questions(&owner, chat, &json!([{ "id":"auth", "question":{"mcpConnect":{"agentId":"agent-a","presetId":"docs","name":"Docs"}} }])).unwrap();
+    store.set_questions(&owner, chat, &json!([{ "id":"auth", "question":{"metadata":{"mcpConnect":{"agentId":"agent-a","presetId":"docs","name":"Docs"}}} }])).unwrap();
 }
 
 #[tokio::test]

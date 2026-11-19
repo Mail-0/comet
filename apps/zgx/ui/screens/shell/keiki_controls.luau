@@ -2,7 +2,7 @@ local ds = require("@ds")
 local keiki = require("@account/keiki")
 local route = require("@app/screens/shell/route")
 local Avatar = require("@app/screens/shell/keiki_avatar")
-local M: { [string]: any } = {}
+local M = {}
 M.open = ui.state("keiki.controls.open", false)
 M.context = ui.state("keiki.controls.context", {} :: any)
 M.info = ui.state("keiki.controls.info", nil :: any)
@@ -98,8 +98,9 @@ local function action(action: string, extra: any?)
 			)
 		else
 			local previous = M.info:peek() or {}
-			answer.blocked, answer.takeover = previous.blocked, previous.takeover
-			M.info:set(answer)
+			local updated = table.clone(answer)
+			updated.blocked, updated.takeover = previous.blocked, previous.takeover
+			M.info:set(updated)
 			M.context:set_key("kind", "conversation")
 		end
 		local agent = context.agent or (M.info:peek() or {}).agentId

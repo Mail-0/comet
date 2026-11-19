@@ -25,6 +25,13 @@ local function signed(org: string?)
 	auth.account:set { state = "signed_in", env = "keiki", user = { id = "demo@keiki.test", email = "demo@keiki.test", name = "Demo" }, organization_id = org }
 end
 local function promise(answer: any, failed: boolean?): any
+	local function freeze(value: any): any
+		if type(value) ~= "table" then return value end
+		local copy = {}
+		for key, child in value do copy[key] = freeze(child) end
+		return table.freeze(copy)
+	end
+	answer = freeze(answer)
 	return { await = function() if failed then error("offline") end; return answer end, after = function(_, ok, bad)
 		ui.after(40, function() if failed then if bad then bad({ message = "offline" }) end else ok(answer) end end)
 	end }

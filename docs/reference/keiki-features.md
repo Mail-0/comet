@@ -21,7 +21,7 @@ The ZGX column is the intended treatment, not a completion checklist.
 | Terminal | Open/input/resize/close HTTP calls and SSE `TerminalEvent` output | Engine transport, existing ZGX terminal |
 | Desktop | `open_desktop` gives preview URL + preview token; GPUI uses native VNC over `/websockify`, authenticating with a header | Deferred by request; agent workspace shows “Desktop view coming soon”. No capability request or transport |
 | Browser | Availability + screencast capability; native JPEG WebSocket viewer, credential in first message | Deferred by request; agent workspace shows “Browser view coming soon”. No capability request or transport |
-| Agent avatars | Public avatar image, keyed by agent/state/theme/size; bounded cache with fallback/retry | Existing avatar component; image bytes fetched through engine |
+| Agent avatars | Public avatar image, keyed by agent/state/theme/size; bounded cache with fallback/retry | Existing avatar component; image bytes fetched through engine. Rust bridge keeps at most 64 temporary image files because ZGX accepts paths, not data URIs; files are removed when the host is dropped |
 | User avatar | First-letter fallback in GPUI; session has no photo field | Existing user avatar fallback; no invented photo endpoint |
 | Create agent | List templates, create from selected template; optional name/line | Existing form/dialog components |
 | MCP connection prompts | Connect and refresh preset status; open provider authorization page | Engine opens authorization URL; Luau receives status only |

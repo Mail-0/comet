@@ -39,6 +39,15 @@ const CALLS: &[&str] = &[
     "GetKeikiAvatar",
 ];
 
+fn request_params(value: Option<&Value>) -> Json {
+    let params = value.map(value_json).unwrap_or(json!({}));
+    if params.as_array().is_some_and(Vec::is_empty) {
+        json!({})
+    } else {
+        params
+    }
+}
+
 #[derive(Default)]
 struct AvatarFiles {
     dir: Option<tempfile::TempDir>,
@@ -181,7 +190,7 @@ pub fn install(host: &ScriptHost) {
     let avatars = Rc::new(RefCell::new(AvatarFiles::default()));
     host.async_action("keiki.call", move |args| {
         let method = args.field("method").map(text).unwrap_or_default();
-        let params = args.field("params").map(value_json).unwrap_or(json!({}));
+        let params = request_params(args.field("params"));
         let avatars = avatars.clone();
         async move {
             crate::plugins::preview::refuse("keiki.call")?;
@@ -204,9 +213,24 @@ pub fn install(host: &ScriptHost) {
 
 #[cfg(test)]
 mod tests {
-    use super::{AvatarFiles, CALLS};
+    use super::{AvatarFiles, CALLS, request_params};
     use base64::Engine as _;
     use serde_json::json;
+
+    #[test]
+    fn phase4_empty_lua_tables_become_rpc_parameter_objects_without_changing_nested_arrays() {
+        assert_eq!(request_params(None), json!({}));
+        assert_eq!(
+            request_params(Some(&crate::plugins::json_value(&json!([])))),
+            json!({})
+        );
+        let normal = json!({"agentId":"nova", "items":[]});
+        assert_eq!(
+            request_params(Some(&crate::plugins::json_value(&normal))),
+            normal
+        );
+        assert!(!request_params(Some(&crate::plugins::json_value(&json!([1])))).is_object());
+    }
 
     #[test]
     fn phase4_avatar_files_are_deduplicated_bounded_and_removed_with_the_host() {

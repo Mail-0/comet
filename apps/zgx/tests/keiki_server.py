@@ -300,7 +300,7 @@ class Handler(BaseHTTPRequestHandler):
             rows.append(message(answer, reply, "outbound"))
             event("RUN_FINISHED", threadId=identity, runId=run,
                   outcome={"type": "interrupt", "interrupts": [{"id": "launch-direction", "reason": "Choose a direction",
-                           "message": "Should we lead with the story or the product?", "mcpConnect": {"agentId": "nova", "presetId": "docs", "name": "Team docs"}}]})
+                           "message": "Should we lead with the story or the product?", "metadata": {"mcpConnect": {"agentId": "nova", "presetId": "docs", "name": "Team docs"}}}]})
         except (BrokenPipeError, ConnectionResetError):
             print("Stream disconnected (local Stop)", flush=True)
         finally:
