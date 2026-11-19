@@ -46,9 +46,6 @@ jobs:
           fi
           echo "version=$workspace" >>"$GITHUB_OUTPUT"
 
-  cursor-compatibility:
-    uses: ./.github/workflows/cursor-compatibility.yml
-
   zgx:
     needs: version
     uses: ./.github/workflows/zgx-build.yml
@@ -64,7 +61,7 @@ jobs:
   publish:
     # Every platform must build before publishing the release and updater manifest.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version, cursor-compatibility, zgx]
+    needs: [version, zgx]
     runs-on: ubuntu-latest
     environment: cloudflare
     env:

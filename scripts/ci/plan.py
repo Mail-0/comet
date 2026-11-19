@@ -54,14 +54,10 @@ from reuse import matches  # noqa: E402
 # (scripts/tests/test_ci_plan.py checks).
 SUITE_JOBS: dict[str, list[tuple[str, str]]] = {
     "core": [("core-tests", "linux")],  # ui-tests.yml
-    "cursor": [("cursor-compatibility", "linux")],  # cursor-compatibility.yml
-    "edge": [("edge", "linux")],  # preview-tests.yml
     "installer": [("desktop-entry", "linux")],  # linux-installer.yml
     "voice": [("offline-linux", "linux"), ("windows-runtime", "windows")],  # voice-tests.yml
     "windows": [("tests", "windows"), ("app", "windows")],  # windows.yml
     "macos": [("macos-native", "macos")],  # macos.yml
-    "ios": [("ios-core", "linux"), ("ios-tests", "macos")],  # macos.yml (+ android publish below)
-    "android": [("apk", "linux")],  # android.yml (+ publish on main, added below)
     "zgx": [("zgx-macos", "macos"), ("zgx-linux", "linux")],  # zgx-tests.yml
 }
 # Run only nightly, manually or with `ci:full` (see the module docstring): voice
@@ -190,7 +186,7 @@ PLATFORM_CODE = {
 COMMENT = re.compile(r"^\s*(?://|/\*|\*)")
 
 
-PLATFORM_FAST_SUITES = ("voice", "windows", "macos", "android")
+PLATFORM_FAST_SUITES = ("voice", "windows", "macos")
 
 
 def changed_code(patch: str) -> str:

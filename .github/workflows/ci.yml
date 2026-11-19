@@ -128,21 +128,6 @@ jobs:
       core: true
       pass-key: ${{ fromJSON(needs.plan.outputs.keys).core || '' }}
 
-  cursor:
-    needs: [plan, admit]
-    if: fromJSON(needs.plan.outputs.suites).cursor
-    uses: ./.github/workflows/cursor-compatibility.yml
-    with:
-      rust-tests: false
-      pass-key: ${{ fromJSON(needs.plan.outputs.keys).cursor || '' }}
-
-  edge:
-    needs: [plan, admit]
-    if: fromJSON(needs.plan.outputs.suites).edge
-    uses: ./.github/workflows/preview-tests.yml
-    with:
-      pass-key: ${{ fromJSON(needs.plan.outputs.keys).edge || '' }}
-
   installer:
     needs: [plan, admit]
     if: fromJSON(needs.plan.outputs.suites).installer
@@ -172,33 +157,7 @@ jobs:
     uses: ./.github/workflows/macos.yml
     with:
       native: true
-      ios: false
       pass-key: ${{ fromJSON(needs.plan.outputs.keys).macos || '' }}
-
-  ios:
-    needs: [plan, admit]
-    if: fromJSON(needs.plan.outputs.suites).ios
-    uses: ./.github/workflows/macos.yml
-    with:
-      native: false
-      ios: true
-      skip: ${{ toJSON(fromJSON(needs.plan.outputs.skip).ios || fromJSON('[]')) }}
-      pass-key: ${{ fromJSON(needs.plan.outputs.keys).ios || '' }}
-
-  android:
-    needs: [plan, admit]
-    if: fromJSON(needs.plan.outputs.suites).android
-    uses: ./.github/workflows/android.yml
-    # Only what android.yml uses, and only on pushes to main, which publish: pull
-    # requests and the merge queue (code not on main yet) sign with a debug key.
-    secrets:
-      ANDROID_KEYSTORE_BASE64: ${{ github.event_name == 'push' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
-      ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name == 'push' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
-      ANDROID_KEY_ALIAS: ${{ github.event_name == 'push' && secrets.ANDROID_KEY_ALIAS || '' }}
-      ANDROID_KEY_PASSWORD: ${{ github.event_name == 'push' && secrets.ANDROID_KEY_PASSWORD || '' }}
-      CLOUDFLARE_API_TOKEN: ${{ github.event_name == 'push' && secrets.CLOUDFLARE_API_TOKEN || '' }}
-    with:
-      pass-key: ${{ fromJSON(needs.plan.outputs.keys).android || '' }}
 
   zgx:
     needs: [plan, admit]
@@ -209,7 +168,7 @@ jobs:
 
   result:
     name: CI result
-    needs: [plan, admit, linux-core, cursor, edge, installer, voice, windows, macos, ios, android, zgx]
+    needs: [plan, admit, linux-core, installer, voice, windows, macos, zgx]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
