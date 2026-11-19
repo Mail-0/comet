@@ -15,6 +15,7 @@ local Icon = require("@ds/icon")
 local ContextMenu = require("@ds/context_menu")
 local locale = require("@ds/locale")
 local sessions = require("@account/sessions")
+local keiki = require("@account/keiki")
 local route = require("@app/screens/shell/route")
 
 local M = {}
@@ -34,7 +35,11 @@ local busy = ui.state("settings_archived_busy", 0)
 
 
 local function all(): { sessions.Chat }
-	return sessions.now:get().archived or {}
+	local rows = {}
+	for _, chat in sessions.now:get().archived or {} do
+		if not keiki.bound(chat.id) then table.insert(rows, chat) end
+	end
+	return rows
 end
 local function device_of(id: string?): sessions.Device?
 	for _, d in sessions.devices:get() or {} do

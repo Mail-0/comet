@@ -41,6 +41,24 @@ local function calls(app: any): string
 	return app:state("calls") :: string
 end
 
+test("the Local archive shelf excludes Keiki conversations, including counts, search and delete all", function()
+	local app = open("archive_only_keiki")
+	expect(app:has("#archived-empty")).to_be(true)
+	expect(app:has("#archived-delete-all")).to_be(false)
+	expect(app:tree(PAGE)).never.to_contain("Keiki archived conversation")
+	app:command("archive_many"); app:frames(20)
+	expect(app:tree(PAGE)).never.to_contain("Keiki archived conversation")
+	app:fill(`{PAGE} >> role:textbox "Search archived sessions"`, "Keiki archived conversation")
+	app:frames(10)
+	expect(app:has("#archived-none-match")).to_be(true)
+	app:fill(`{PAGE} >> role:textbox "Search archived sessions"`, "")
+	app:click("#archived-delete-all"); app:frames(15)
+	expect(app:tree(DELETE_ALL)).to_contain("30 archived sessions")
+	app:click(`{DELETE_ALL} >> role:button "Delete all"`); app:frames(30)
+	expect(calls(app)).never.to_contain("delete:keiki-bound-demo")
+	expect(app:has("#archived-empty")).to_be(true)
+end)
+
 test("sessions group by when they last moved, today first", function()
 	local app = open()
 	local order = {}
