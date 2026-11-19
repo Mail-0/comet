@@ -1320,7 +1320,7 @@ return function(id: string): any
 		end
 		ui.call(`{prefix}.agents`, { op = "listen", args = {}, device = ui.null, listeners = list })
 			:after(nil, function(why)
-				print(`{id}: listening for Zeron's events: {why}`)
+				print(`{id}: listening for Keiki's events: {why}`)
 			end)
 	end
 	function M.on(event: string, fn: (any, string) -> (), opts: { [string]: any }?): () -> ()
