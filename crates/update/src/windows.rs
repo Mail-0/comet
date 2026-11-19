@@ -1247,8 +1247,8 @@ mod tests {
             ..Default::default()
         };
         let error = stage(&base, &manifest, dir.path()).await.unwrap_err();
-        server.join().unwrap();
         assert!(error.to_string().contains("checksum mismatch"));
+        server.join().unwrap();
         assert_eq!(std::fs::read(&installed).unwrap(), b"existing installation");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }

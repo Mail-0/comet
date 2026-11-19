@@ -535,10 +535,9 @@ fn http_client_with_timeouts(connect: Duration, read: Duration) -> anyhow::Resul
 
 fn validate_release_override(value: &str) -> anyhow::Result<String> {
     let url = reqwest::Url::parse(value.trim()).context("invalid update feed URL")?;
-    // A test install's local feed, in a debug build only: release builds can't be
-    // pointed anywhere but HTTPS.
+    // Local fixtures in debug and test builds; production releases require HTTPS.
     let local_test_feed =
-        cfg!(debug_assertions) && url.scheme() == "http" && url.host_str() == Some("127.0.0.1");
+        cfg!(any(debug_assertions, test)) && url.scheme() == "http" && url.host_str() == Some("127.0.0.1");
     anyhow::ensure!(
         local_test_feed || (url.scheme() == "https" && url.host_str().is_some()),
         "update feed must use HTTPS"
@@ -3508,12 +3507,14 @@ mod tests {
 
     #[test]
     fn update_feed_override_requires_an_https_base_url() {
+        assert!(validate_release_override("http://127.0.0.1:8080/releases").is_ok());
         assert_eq!(
             validate_release_override(" https://example.com/releases/ ").unwrap(),
             "https://example.com/releases"
         );
         for url in [
             "http://example.com/releases",
+            "http://127.0.0.1:8080/releases?token=secret",
             "file:///tmp/update",
             "https://user:password@example.com",
             "https://example.com?feed=x",
