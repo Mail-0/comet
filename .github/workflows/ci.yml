@@ -34,7 +34,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
-      - run: cargo clippy -p zeron-desktop --all-targets --locked -- -D warnings
+      - run: cargo clippy -p zeron-desktop --all-targets --locked --no-deps -- -D warnings
       - name: Install Luau strict checker
         run: |
           curl -fsSL https://github.com/JohnnyMorganz/luau-lsp/releases/download/1.70.1/luau-lsp-linux-x86_64.zip -o "$RUNNER_TEMP/luau-lsp.zip"
