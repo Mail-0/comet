@@ -106,6 +106,7 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # and its size, and the engine's base64 for terminal bytes.
 libc = "0.2"
 base64 = "0.22"
+tempfile = "3"
 # LaTeX math in replies (src/math.rs): the shipping app's layout, its six
 # bundled math faces (`bundled`, read only once a formula uses one).
 zatex = { path = "../../crates/zatex", features = ["bundled"] }
@@ -217,8 +218,6 @@ codegen-units = 1
 # zgx gives its windows (zgx-desktop `window_chrome`, the exe's first icon).
 embed-resource = "3.0.11"
 
-[dev-dependencies]
-tempfile = "3"
 
 # src/terminal.rs's test: the bridge line split as Windows itself splits a
 # command line (CommandLineToArgvW).
