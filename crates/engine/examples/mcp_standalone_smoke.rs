@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     std::fs::write(dir.path().join("device-id"), "smoke-device")?;
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(SmokeHarness));
-    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Codex, None)?;
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None)?;
     core.workspace.create_space(
         "smoke-project",
         "smoke-device",
@@ -49,7 +49,7 @@ struct SmokeHarness;
 #[async_trait]
 impl Harness for SmokeHarness {
     fn id(&self) -> HarnessId {
-        HarnessId::Codex
+        HarnessId::Mock
     }
     fn display_name(&self) -> &str {
         "Scripted Codex (smoke only)"
@@ -83,7 +83,7 @@ impl Harness for SmokeHarness {
         let mock = MockHarness {
             script: vec![
                 AgentEvent::SessionStarted {
-                    harness: HarnessId::Codex,
+                    harness: HarnessId::Mock,
                     model: "smoke-1".into(),
                     tools: vec![],
                     cwd: request.cwd.clone(),

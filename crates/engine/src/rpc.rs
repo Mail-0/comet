@@ -932,7 +932,7 @@ pub struct EngineRpc {
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<zeron_update::Updater>,
-    harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
+    copilot_credentials: crate::CopilotCredentialHolder,
     local_import: Option<crate::local_import::LocalImporter>,
     /// Cloud runner only: vault grants (ListGithubRepos, credentialed CloneRepo).
     credentials: Option<crate::credentials::CredentialBroker>,
@@ -964,7 +964,7 @@ impl EngineRpc {
         let engine_info = EngineInfo {
             device_id: doc_host.device_id().to_string(),
             workspace_scope,
-            cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
+            cursor_sdk_version: None,
             capabilities: {
                 let mut capabilities = zeron_proto::capabilities::current();
                 if crate::desktop_notify::enabled() {
@@ -997,7 +997,7 @@ impl EngineRpc {
             auth: None,
             links: None,
             updater: None,
-            harness_updates: None,
+            copilot_credentials: Default::default(),
             local_import: None,
             credentials: None,
             viewport_focus: Default::default(),
@@ -1056,11 +1056,9 @@ impl EngineRpc {
         self
     }
 
-    pub fn with_harness_updates(
-        mut self,
-        coordinator: crate::harness_updates::HarnessUpdateCoordinator,
-    ) -> Self {
-        self.harness_updates = Some(coordinator);
+    pub fn with_copilot_credentials(
+        mut self, holder: crate::CopilotCredentialHolder) -> Self {
+        self.copilot_credentials = holder;
         self
     }
 
@@ -1438,14 +1436,6 @@ impl EngineRpc {
         self.updater
             .as_ref()
             .ok_or_else(|| RpcError::Failed("updates unavailable".into()))
-    }
-
-    fn harness_updates(
-        &self,
-    ) -> Result<&crate::harness_updates::HarnessUpdateCoordinator, RpcError> {
-        self.harness_updates
-            .as_ref()
-            .ok_or_else(|| RpcError::Failed("agent updates unavailable".into()))
     }
 
     fn local_importer(&self) -> Result<&crate::local_import::LocalImporter, RpcError> {
@@ -2118,35 +2108,14 @@ impl EngineRpc {
         chat: &str,
     ) -> Result<
         (
-            zeron_harness::codex::realtime::RealtimeHandle,
+            zeron_harness::realtime::RealtimeHandle,
             tokio::sync::broadcast::Receiver<zeron_proto::voice::VoiceEvent>,
             std::sync::Arc<crate::sessions::VoiceActivity>,
         ),
         zeron_proto::voice::VoiceRejection,
     > {
-        use zeron_proto::voice::VoiceRejection;
-        // Without Codex here a retry can never connect: ask for an install.
-        if !self
-            .registry
-            .resolve(HarnessId::Codex)
-            .is_ok_and(|codex| codex.installed())
-        {
-            return Err(VoiceRejection::NativeRuntimeUnavailable);
-        }
-        let mut request = self
-            .doc_host
-            .request_from_chat_row(chat, "")
-            .ok_or(VoiceRejection::Unsupported)?;
-        if request.cwd.is_empty() {
-            request.cwd = "~".into();
-        }
-        self.sessions
-            .start_idle(chat, request)
-            .await
-            .map_err(|_| VoiceRejection::Unsupported)?;
-        self.sessions
-            .take_voice_bridge(chat)
-            .ok_or(VoiceRejection::Unsupported)
+        let _ = chat;
+        Err(zeron_proto::voice::VoiceRejection::NativeRuntimeUnavailable)
     }
 
     fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
@@ -2378,7 +2347,8 @@ impl EngineRpc {
                     self.doc_host.purge_chat(child);
                 }
                 if on_cloud {
-                    self.delete_cloud_machines(std::iter::once(chat_id).chain(cloud_children).collect());
+                    self.delete_cloud_machines(std::iter::once(chat_id).chain(cloud_children).collect(),
+                    );
                 }
                 Ok(())
             }
@@ -2497,91 +2467,6 @@ fn change_request_rpc_error(error: ChangeRequestError) -> RpcError {
 /// (the composer's permanent "Sending…", 2026-08-18). Network-bound git and
 /// update methods get a long leash; worktree creation checks out a full tree;
 /// everything else is interactive and must fail fast.
-#[derive(Default)]
-pub(crate) struct Installations(
-    std::sync::Mutex<std::collections::HashMap<HarnessId, zeron_harness::CancellationToken>>,
-);
-
-struct Installing<'a> {
-    installs: &'a Installations,
-    harness: HarnessId,
-    cancel: zeron_harness::CancellationToken,
-}
-impl Drop for Installing<'_> {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        self.installs
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.harness);
-    }
-}
-impl Installations {
-    fn begin(&self, harness: HarnessId) -> Result<Installing<'_>, RpcError> {
-        let mut installs = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if installs.contains_key(&harness) {
-            return Err(RpcError::Failed("already installing".into()));
-        }
-        let cancel = zeron_harness::CancellationToken::new();
-        installs.insert(harness, cancel.clone());
-        Ok(Installing {
-            installs: self,
-            harness,
-            cancel,
-        })
-    }
-    fn cancel(&self, harness: HarnessId) {
-        if let Some(cancel) = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&harness)
-        {
-            cancel.cancel();
-        }
-    }
-}
-
-async fn run_requested_install(
-    harness: HarnessId,
-    cancel: zeron_harness::CancellationToken,
-) -> Result<(), zeron_harness::HarnessError> {
-    #[cfg(test)]
-    if let Ok(script) = std::env::var(format!("ZERON_INSTALLER_COMMAND_{harness:?}").to_uppercase())
-    {
-        return zeron_harness::install::install_with_command(harness, &script, cancel).await;
-    }
-    zeron_harness::install::install_harness(harness, cancel).await
-}
-
-async fn install_harness_with<F, Fut>(
-    registry: &HarnessRegistry,
-    harness: HarnessId,
-    install: F,
-) -> Result<Vec<crate::registry::HarnessDescriptor>, RpcError>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<(), zeron_harness::HarnessError>>,
-{
-    // A Cloud device registers only Codex + Claude Code; installing anything
-    // else would put a CLI on it that nothing may run (or probe).
-    if !registry.is_registered(harness) {
-        return Err(RpcError::Failed(format!(
-            "{harness:?} is not available on this device"
-        )));
-    }
-    if !zeron_harness::install::can_install(harness) {
-        return Err(RpcError::Failed(
-            "No supported installer or required tools available on this device".into(),
-        ));
-    }
-    install()
-        .await
-        .map_err(|error| RpcError::Failed(error.to_string()))?;
-    Ok(registry.descriptors())
-}
-
 /// Whether a client asked for the agents added from the ACP registry in a
 /// harness catalog (`includeRegistry`): older clients read harness ids
 /// strictly and would refuse a whole list over one they don't know.
@@ -2613,7 +2498,6 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         methods::CHECK_HARNESS_UPDATES => Duration::from_secs(4 * 60),
         // The updater's own limit, plus headroom for queueing behind another
         // update, verification, and the relayed response itself.
-        methods::APPLY_HARNESS_UPDATE => crate::harness_updates::APPLY_REPLY_DEADLINE,
         methods::CREATE_WORKTREE => Duration::from_secs(120),
         // The longest a command may run there, and the reply's way back.
         methods::RUN_COMMAND => crate::commands::MAX_TIMEOUT + Duration::from_secs(30),
@@ -2635,32 +2519,6 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// live login for it and the engine's environment (`set`) holds none of the
 /// variables its CLI signs in with. Unknown (never listed, or an agent whose
 /// logins aren't tracked) is not signed out.
-fn warm_signed_out(
-    snapshot: Option<&zeron_proto::AgentAccountsSnapshot>,
-    harness: zeron_proto::HarnessId,
-    set: impl Fn(&str) -> bool,
-) -> bool {
-    use zeron_proto::HarnessId;
-    let env: &[&str] = match harness {
-        HarnessId::ClaudeCode => &[
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "CLAUDE_CODE_USE_BEDROCK",
-            "CLAUDE_CODE_USE_VERTEX",
-        ],
-        HarnessId::Codex => &["OPENAI_API_KEY", "CODEX_API_KEY"],
-        _ => return false,
-    };
-    let Some(snapshot) = snapshot else {
-        return false;
-    };
-    !env.iter().any(|name| set(name))
-        && !snapshot
-            .accounts
-            .iter()
-            .any(|account| account.harness == harness && account.active)
-}
 
 fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method) {
@@ -2873,7 +2731,8 @@ fn wants_changes(params: &serde_json::Value) -> bool {
 }
 
 /// What a keyed list stream last sent: its keys in order, and each row.
-type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Value>);
+type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Value>,
+);
 
 /// A list of rows keyed by `key` (`id`, or a session's `chatId`) as change
 /// frames: the whole list first, as [`watch_stream`] sends it; then, per
@@ -2886,7 +2745,8 @@ type SentRows = (Vec<String>, std::collections::HashMap<String, serde_json::Valu
 /// The whole chat list is ~0.4 MB with a few hundred chats, and one field
 /// of one row (a seen mark, a heartbeat) changing sent and parsed it all,
 /// in every window on every device.
-fn keyed_changes_stream<T>(rx: watch::Receiver<Vec<T>>, key: &'static str) -> BoxStream<'static, serde_json::Value>
+fn keyed_changes_stream<T>(rx: watch::Receiver<Vec<T>>, key: &'static str,
+) -> BoxStream<'static, serde_json::Value>
 where
     T: serde::Serialize + Send + Sync + 'static,
 {
@@ -2905,16 +2765,20 @@ where
                 return Some((frame, (rx, last)));
             }
         }
-    })
+    },
+    )
     .boxed()
 }
 
 /// `rows` as the frame that follows `last` (`None`: nothing changed), and
 /// what's been sent once it is. No `last`: the whole list.
-fn keyed_frame(rows: Vec<serde_json::Value>, key: &str, last: Option<SentRows>) -> (Option<serde_json::Value>, SentRows) {
+fn keyed_frame(rows: Vec<serde_json::Value>, key: &str, last: Option<SentRows>,
+) -> (Option<serde_json::Value>, SentRows) {
     let keys: Vec<String> = rows
         .iter()
-        .map(|row| row.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_owned())
+        .map(|row| {
+            row.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_owned()
+        })
         .collect();
     let Some((last_keys, mut last_rows)) = last else {
         let by_key = keys.iter().cloned().zip(rows.iter().cloned()).collect();
@@ -2964,7 +2828,8 @@ fn doc_messages_stream_from(
     rx: watch::Receiver<crate::doc_host::TranscriptSnapshot>,
     doc: std::sync::Arc<zeron_doc::SessionDoc>,
     options: zeron_doc::DiffOptions,
-    start: Option<(crate::doc_host::TranscriptSnapshot, zeron_doc::TranscriptBaseline)>,
+    start: Option<(crate::doc_host::TranscriptSnapshot, zeron_doc::TranscriptBaseline,
+    )>,
 ) -> BoxStream<'static, serde_json::Value> {
     use zeron_doc::transcript_delta::{TranscriptFrame, diff_transcript_with};
     let (prev, baseline) = match start {
@@ -3462,7 +3327,8 @@ impl RpcService for EngineRpc {
             // agent's token (which can't call them here either).
             if zeron_rpc::app_forward_only(method, &params) {
                 if !zeron_rpc::caller().is_local() {
-                    return Err(crate::plugins::reviews::needed("Allowing a plugin on another device"));
+                    return Err(crate::plugins::reviews::needed("Allowing a plugin on another device",
+                    ));
                 }
                 let reply = self.forward(&target, method, params).await;
                 return reply.map_err(|error| remote_plugins::older_engine(&target, method, error));
@@ -3558,15 +3424,7 @@ impl RpcService for EngineRpc {
             let Some(plugins) = self.plugins.clone() else {
                 return Err(RpcError::Failed("Plugins aren't available here".into()));
             };
-            return Box::pin(async move { plugins.dispatch(method, params).await }).await;
-        }
-        if crate::acp_registry::handles(method) {
-            return Box::pin(crate::acp_registry::dispatch(
-                &self.registry,
-                self.harness_updates.as_ref(),
-                method,
-                params,
-            ))
+            return Box::pin(async move { plugins.dispatch(method, params).await })
             .await;
         }
         if crate::cloud_client::handles(method) {
@@ -3595,20 +3453,6 @@ impl RpcService for EngineRpc {
             methods::ENGINE_READY => RpcReply::value(&serde_json::json!({ "ready": true })),
             methods::LIST_HARNESSES => {
                 RpcReply::value(&self.registry.descriptors_for(include_registry(&params)))
-            }
-            methods::INSTALL_HARNESS => {
-                let p: ListModelsParams = parse_params(params)?;
-                let installing = self.registry.installs.begin(p.harness)?;
-                let descriptors = install_harness_with(&self.registry, p.harness, || {
-                    run_requested_install(p.harness, installing.cancel.clone())
-                })
-                .await?;
-                RpcReply::value(&descriptors)
-            }
-            methods::CANCEL_INSTALL => {
-                let p: ListModelsParams = parse_params(params)?;
-                self.registry.installs.cancel(p.harness);
-                RpcReply::value(&serde_json::json!({}))
             }
             methods::GET_TITLE_SETTINGS => RpcReply::value(&self.registry.title_settings()),
             methods::GET_COMMIT_CREDIT => match self.registry.commit_credit() {
@@ -3652,9 +3496,6 @@ impl RpcService for EngineRpc {
                 let include = include_registry(&params);
                 let p: SetHarnessEnabledParams = parse_params(params)?;
                 update_harness_enabled(&self.registry, p.harness, p.enabled).await?;
-                if let Some(coordinator) = &self.harness_updates {
-                    coordinator.refresh_enabled();
-                }
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors_for(include))
@@ -3666,12 +3507,9 @@ impl RpcService for EngineRpc {
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let models = crate::model_catalogs::list_with_lease(
-                    self.repos.data_dir(),
-                    harness,
-                    p.force,
-                    Some(lease),
-                )
+                let _lease = lease;
+                let models = harness
+                    .models()
                 .await
                 .map_err(|e| RpcError::Failed(e.to_string()))?;
                 // A catalog that changed is told to plugins (models.updated).
@@ -3757,18 +3595,6 @@ impl RpcService for EngineRpc {
                 let Some(harness) = p.request.harness else {
                     return Err(RpcError::BadParams("a warm start names its harness".into()));
                 };
-                // An agent known to be signed out: its CLI would only wait for a
-                // sign-in, so nothing starts early (its send says what's wrong).
-                if warm_signed_out(
-                    self.agent_accounts.watch_snapshots().borrow().as_ref(),
-                    harness,
-                    |name| std::env::var_os(name).is_some_and(|v| !v.is_empty()),
-                ) {
-                    self.sessions.warm_stop(&p.chat_id).await;
-                    return RpcReply::value(
-                        &serde_json::json!({ "outcome": crate::sessions::WarmOutcome::Unsupported }),
-                    );
-                }
                 // Only for a chat on this device: one elsewhere would outlive
                 // this app's quit (only this engine hears it), so nothing
                 // starts early there.
@@ -3777,7 +3603,8 @@ impl RpcService for EngineRpc {
                     .and_then(|v| v.as_str())
                     .is_some_and(|target| target != self.doc_host.device_id())
                 {
-                    return RpcReply::value(&serde_json::json!({ "outcome": crate::sessions::WarmOutcome::Unsupported }));
+                    return RpcReply::value(&serde_json::json!({ "outcome": crate::sessions::WarmOutcome::Unsupported }),
+                    );
                 }
                 let outcome = self
                     .sessions
@@ -3975,7 +3802,8 @@ impl RpcService for EngineRpc {
                 let p: Params = parse_params(params)?;
                 let title: String = p.title.lines().next().unwrap_or_default().trim().chars().take(120).collect();
                 if title.is_empty() || p.source.is_empty() {
-                    return Err(RpcError::BadParams("A notification needs a title and who asked".into()));
+                    return Err(RpcError::BadParams("A notification needs a title and who asked".into(),
+                    ));
                 }
                 let outcome = crate::desktop_notify::post_for(
                     self.repos.data_dir(),
@@ -4226,7 +4054,8 @@ impl RpcService for EngineRpc {
                 }
                 match self
                     .sessions
-                    .await_background(&p.chat_id, &p.task_ids, p.waiting.unwrap_or(true))
+                    .await_background(&p.chat_id, &p.task_ids, p.waiting.unwrap_or(true),
+                )
                 {
                     Ok(outcome) => RpcReply::value(&serde_json::json!({
                         "matched": outcome.matched,
@@ -4566,64 +4395,6 @@ impl RpcService for EngineRpc {
                     "updateId": applied.update_id,
                 }))
             }
-            methods::WATCH_HARNESS_UPDATES => {
-                let coordinator = self.harness_updates()?;
-                // A view of the rows just opened: re-check any CLI that
-                // changed on disk since its last check (stat-only otherwise).
-                coordinator.recheck_changed_binaries_soon();
-                Ok(RpcReply::Stream(watch_stream(coordinator.watch())))
-            }
-            methods::CHECK_HARNESS_UPDATES => {
-                let p: HarnessUpdateParams = parse_params(params)?;
-                let coordinator = self.harness_updates()?.clone();
-                // Provider checks are engine-owned once accepted. If a
-                // Settings view closes or a relay drops, the request future
-                // may disappear; detaching the work prevents a permanent
-                // `Checking` status and still publishes the result by watch.
-                let statuses = tokio::spawn(async move {
-                    if let Some(harness) = p.harness {
-                        coordinator.check_one(harness).await?;
-                    } else {
-                        coordinator.check_all().await;
-                    }
-                    Ok::<_, String>(coordinator.snapshot())
-                })
-                .await
-                .map_err(|error| {
-                    RpcError::Failed(format!("agent update check task failed: {error}"))
-                })?
-                .map_err(RpcError::Failed)?;
-                RpcReply::value(&statuses)
-            }
-            methods::APPLY_HARNESS_UPDATE => {
-                let p: HarnessUpdateParams = parse_params(params)?;
-                let harness = p
-                    .harness
-                    .ok_or_else(|| RpcError::BadParams("harness is required".into()))?;
-                let version = self
-                    .harness_updates()?
-                    .apply(harness)
-                    .await
-                    .map_err(RpcError::Failed)?;
-                RpcReply::value(&serde_json::json!({ "ok": true, "version": version }))
-            }
-            methods::CANCEL_HARNESS_UPDATE => {
-                let p: HarnessUpdateParams = parse_params(params)?;
-                let harness = p
-                    .harness
-                    .ok_or_else(|| RpcError::BadParams("harness is required".into()))?;
-                RpcReply::value(&serde_json::json!({
-                    "cancelled": self.harness_updates()?.cancel(harness),
-                }))
-            }
-            methods::DISMISS_HARNESS_UPDATE => {
-                let p: DismissHarnessUpdateParams = parse_params(params)?;
-                RpcReply::value(&self.harness_updates()?.dismiss(p.harness, p.version))
-            }
-            methods::SET_HARNESS_UPDATE_POLICY => {
-                let p: SetHarnessUpdatePolicyParams = parse_params(params)?;
-                RpcReply::value(&self.harness_updates()?.set_policy(p.harness, p.policy))
-            }
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;
                 if let MutateParams::CreateChat {
@@ -4838,7 +4609,9 @@ impl RpcService for EngineRpc {
                     ));
                 }
                 if !crate::source_control::valid_comment_body(&p.body) {
-                    return Err(RpcError::BadParams("Comment must contain 1–60000 bytes".into()));
+                    return Err(RpcError::BadParams(
+                        "Comment must contain 1–60000 bytes".into(),
+                    ));
                 }
                 let comment = self
                     .github
@@ -4863,7 +4636,9 @@ impl RpcService for EngineRpc {
                 }
                 if method == methods::REPLY_CHANGE_REQUEST_THREAD {
                     if !crate::source_control::valid_comment_body(&p.body) {
-                        return Err(RpcError::BadParams("Comment must contain 1–60000 bytes".into()));
+                        return Err(RpcError::BadParams(
+                            "Comment must contain 1–60000 bytes".into(),
+                        ));
                     }
                     let comment = self
                         .github
@@ -4872,7 +4647,9 @@ impl RpcService for EngineRpc {
                         .map_err(change_request_rpc_error)?;
                     return RpcReply::value(&comment);
                 }
-                let resolved = p.resolved.ok_or_else(|| RpcError::BadParams("resolved: true or false".into()))?;
+                let resolved = p
+                    .resolved
+                    .ok_or_else(|| RpcError::BadParams("resolved: true or false".into()))?;
                 let now = self
                     .github
                     .set_thread_resolved(&p.url, &p.thread, resolved)
@@ -5999,8 +5776,7 @@ impl RpcService for EngineRpc {
                 // (Never `parse_params`'s error: it can quote the input.)
                 let p: AddAgentApiKeyParams = serde_json::from_value(params)
                     .map_err(|_| RpcError::BadParams("expected {harness, provider, key}".into()))?;
-                if p
-                    .target_device_id
+                if p.target_device_id
                     .as_deref()
                     .is_some_and(|target| !target.is_empty() && target != self.doc_host.device_id())
                 {
@@ -6024,15 +5800,6 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
-            }
-            methods::CONSUME_CODEX_RESET_CREDIT => {
-                let p: ConsumeCodexResetCreditParams = parse_params(params)?;
-                let outcome = self
-                    .agent_accounts
-                    .consume_codex_reset_credit(&p.account_id, &p.credit_id, &p.idempotency_key)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&outcome)
             }
             methods::START_AGENT_LOGIN => {
                 let p: StartAgentLoginParams = parse_params(params)?;
@@ -6161,12 +5928,12 @@ impl RpcService for EngineRpc {
                     .map_err(|e| match e {
                         E::NotACommand | E::BadOffset => RpcError::BadParams(e.to_string()),
                         // Stable codes: a client words these for its reader.
-                        E::NotAvailable => RpcError::Capability(
-                            capability_errors::TOOL_OUTPUT_UNAVAILABLE.into(),
-                        ),
-                        E::NotFinished => RpcError::Capability(
-                            capability_errors::TOOL_OUTPUT_NOT_FINISHED.into(),
-                        ),
+                        E::NotAvailable => {
+                            RpcError::Capability(capability_errors::TOOL_OUTPUT_UNAVAILABLE.into())
+                        }
+                        E::NotFinished => {
+                            RpcError::Capability(capability_errors::TOOL_OUTPUT_NOT_FINISHED.into())
+                        }
                         E::Journal(err) => RpcError::Failed(err.to_string()),
                     })?;
                 RpcReply::value(&chunk)
@@ -6303,43 +6070,28 @@ mod tests {
 
     /// No warm start for an agent known to be signed out; one whose logins
     /// aren't known yet, or that signs in from the environment, still gets it.
-    #[test]
-    fn a_new_chat_starts_early_only_for_an_agent_not_known_signed_out() {
-        use zeron_proto::HarnessId;
-        let snapshot = |accounts: serde_json::Value| -> zeron_proto::AgentAccountsSnapshot {
-            serde_json::from_value(serde_json::json!({ "accounts": accounts, "warnings": [] }))
-                .unwrap()
-        };
-        let none = |_: &str| false;
-        let signed_out = snapshot(serde_json::json!([]));
-        let claude_in =
-            snapshot(serde_json::json!([{ "id": "a", "harness": "claude-code", "active": true }]));
-        let claude_saved =
-            snapshot(serde_json::json!([{ "id": "a", "harness": "claude-code", "active": false }]));
-        // No login listed, none in the environment: signed out.
-        assert!(warm_signed_out(Some(&signed_out), HarnessId::ClaudeCode, none));
-        assert!(warm_signed_out(Some(&signed_out), HarnessId::Codex, none));
-        // A saved login that isn't the live one doesn't sign the CLI in.
-        assert!(warm_signed_out(Some(&claude_saved), HarnessId::ClaudeCode, none));
-        // A live login, or a key the CLI reads from the environment.
-        assert!(!warm_signed_out(Some(&claude_in), HarnessId::ClaudeCode, none));
-        assert!(!warm_signed_out(Some(&signed_out), HarnessId::ClaudeCode, |n| n
-            == "ANTHROPIC_API_KEY"));
-        assert!(!warm_signed_out(Some(&signed_out), HarnessId::Codex, |n| n == "OPENAI_API_KEY"));
-        // Never listed yet: unknown, not signed out.
-        assert!(!warm_signed_out(None, HarnessId::ClaudeCode, none));
-        // An agent whose logins aren't tracked here.
-        assert!(!warm_signed_out(Some(&signed_out), HarnessId::Opencode, none));
-    }
 
     /// What a viewport does with a keyed list frame: the list it shows after.
-    fn apply_frame(list: &[serde_json::Value], frame: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
+    fn apply_frame(
+        list: &[serde_json::Value],
+        frame: &serde_json::Value,
+        key: &str,
+    ) -> Vec<serde_json::Value> {
         if let Some(whole) = frame.as_array() {
             return whole.clone();
         }
         let id = |row: &serde_json::Value| row[key].as_str().unwrap_or_default().to_owned();
-        let removed: Vec<&str> = frame["removed"].as_array().unwrap().iter().filter_map(|k| k.as_str()).collect();
-        let mut rows: Vec<serde_json::Value> = list.iter().filter(|row| !removed.contains(&id(row).as_str())).cloned().collect();
+        let removed: Vec<&str> = frame["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|k| k.as_str())
+            .collect();
+        let mut rows: Vec<serde_json::Value> = list
+            .iter()
+            .filter(|row| !removed.contains(&id(row).as_str()))
+            .cloned()
+            .collect();
         for row in frame["changed"].as_array().unwrap() {
             match rows.iter_mut().find(|r| id(r) == id(row)) {
                 Some(slot) => *slot = row.clone(),
@@ -6347,7 +6099,10 @@ mod tests {
             }
         }
         if let Some(order) = frame["order"].as_array() {
-            rows = order.iter().filter_map(|k| rows.iter().find(|r| id(r) == k.as_str().unwrap()).cloned()).collect();
+            rows = order
+                .iter()
+                .filter_map(|k| rows.iter().find(|r| id(r) == k.as_str().unwrap()).cloned())
+                .collect();
         }
         rows
     }
@@ -6379,14 +6134,25 @@ mod tests {
             assert_eq!(&serde_json::Value::Array(shown.clone()), list);
             frames.push(frame);
         }
-        assert!(frames[0].as_ref().unwrap().is_array(), "the whole list first");
-        assert_eq!(frames[1], Some(json!({ "changed": [{ "id": "b", "seen": 2 }], "removed": [] })));
+        assert!(
+            frames[0].as_ref().unwrap().is_array(),
+            "the whole list first"
+        );
+        assert_eq!(
+            frames[1],
+            Some(json!({ "changed": [{ "id": "b", "seen": 2 }], "removed": [] }))
+        );
         assert_eq!(frames[2], None, "nothing changed: nothing sent");
         assert_eq!(
             frames[3],
-            Some(json!({ "changed": [{ "id": "d", "seen": 0 }], "removed": ["b"], "order": ["c", "a", "d"] }))
+            Some(
+                json!({ "changed": [{ "id": "d", "seen": 0 }], "removed": ["b"], "order": ["c", "a", "d"] })
+            )
         );
-        assert_eq!(frames[4], Some(json!({ "changed": [], "removed": ["c", "a", "d"] })));
+        assert_eq!(
+            frames[4],
+            Some(json!({ "changed": [], "removed": ["c", "a", "d"] }))
+        );
     }
 
     /// Without asking, a watch is the whole list, as older viewports read it.
@@ -6403,7 +6169,7 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             std::sync::Arc::new(HarnessRegistry::new()),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();
@@ -6427,7 +6193,7 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             std::sync::Arc::new(HarnessRegistry::new()),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();
@@ -6457,14 +6223,19 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             std::sync::Arc::new(HarnessRegistry::new()),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();
         let rpc = core.rpc_service();
         use zeron_proto::ChildKind;
         for (chat, parent, kind, expected) in [
-            ("sub", Some("main"), Some("subagent"), Some(ChildKind::Subagent)),
+            (
+                "sub",
+                Some("main"),
+                Some("subagent"),
+                Some(ChildKind::Subagent),
+            ),
             ("side", Some("main"), Some("side"), Some(ChildKind::Side)),
             // A person's side chat names none; a newer peer's kind reads as none.
             ("plain-side", Some("main"), None, None),
@@ -6494,7 +6265,7 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             std::sync::Arc::new(HarnessRegistry::new()),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();
@@ -6516,282 +6287,18 @@ mod tests {
             methods::MUTATE,
             serde_json::json!({"op":"createChat", "chatId":"remote-grok",
                 "originChatId":"voice-origin", "deviceId":"remote",
-                "config":{"harness":"grok","sandbox":"workspace-write"}}),
+                "config":{"harness":"copilot","sandbox":"workspace-write"}}),
         )
         .await
         .unwrap();
         let chat = core.workspace.chat("remote-grok").unwrap().unwrap();
         assert_eq!(chat.device_id, "remote");
-        assert_eq!(chat.config.unwrap().harness, HarnessId::Grok);
+        assert_eq!(chat.config.unwrap().harness, HarnessId::Copilot);
         drop(owner);
         core.sessions.shutdown().await;
     }
 
     // Each subprocess has private HOME/PATH/overrides, avoiding process-global test races.
-    #[cfg(unix)]
-    async fn installer_rpc_fixture(mode: &str) {
-        use std::{os::unix::fs::PermissionsExt, sync::Arc};
-        if std::env::var_os("ZERON_INSTALL_FIXTURE_CHILD").is_none() {
-            let root = tempfile::tempdir().unwrap();
-            let bin = root.path().join("bin");
-            std::fs::create_dir(&bin).unwrap();
-            let script = match mode {
-                "success" => {
-                    "test -z \"$ZERON_INSTALL_FIXTURE_CHILD\" && test -z \"$CLAUDECODE\" && printf '#!/bin/sh\\necho 99.0.0\\n' > \"$CODEX_EXECUTABLE\" && /bin/chmod +x \"$CODEX_EXECUTABLE\""
-                }
-                "failure" => "echo 'fixture failure api_key=private' >&2; exit 7",
-                "missing" => "exit 0",
-                "cancel" => "echo ready > \"$READY_FILE\"; sleep 60",
-                "npm" => "npm install -g @openai/codex",
-                _ => unreachable!(),
-            };
-            let test = format!("rpc::tests::installer_rpc_{mode}");
-            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &test, "--nocapture", "--include-ignored"])
-                .env("ZERON_INSTALL_FIXTURE_CHILD", root.path())
-                .env("ZERON_INSTALLER_COMMAND_CODEX", script)
-                .env("ZERON_NO_LOGIN_SHELL", "1")
-                .env("HOME", root.path())
-                .env("XDG_CONFIG_HOME", root.path().join("config"))
-                .env("CODEX_EXECUTABLE", bin.join("codex"))
-                .env("CLAUDECODE", "nested-test")
-                .env("READY_FILE", root.path().join("ready"))
-                .env("npm_config_prefix", root.path())
-                .env("npm_config_cache", root.path().join("npm-cache"))
-                .env(
-                    "PATH",
-                    std::env::join_paths(
-                        std::iter::once(bin)
-                            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-                    )
-                    .unwrap(),
-                )
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            println!("{}", String::from_utf8_lossy(&output.stdout));
-            return;
-        }
-        let root =
-            std::path::PathBuf::from(std::env::var_os("ZERON_INSTALL_FIXTURE_CHILD").unwrap());
-        let registry = Arc::new(HarnessRegistry::new());
-        registry.register(Arc::new(zeron_harness::CodexHarness::new()));
-        let core = crate::EngineCore::assemble(
-            &root.join("engine"),
-            registry.clone(),
-            HarnessId::Codex,
-            None,
-        )
-        .unwrap();
-        let rpc = core.rpc_service();
-        let params = serde_json::json!({"harness": "codex"});
-        assert!(!registry.descriptors()[0].installed);
-        assert_eq!(registry.descriptors()[0].enabled, Some(false));
-        let result = if mode == "cancel" {
-            let rpc = rpc.clone();
-            let task = tokio::spawn(async move {
-                rpc.handle(
-                    methods::INSTALL_HARNESS,
-                    serde_json::json!({"harness": "codex"}),
-                )
-                .await
-            });
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !root.join("ready").exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-            // A second service for the same device must share the in-flight guard.
-            let other = core.rpc_service();
-            assert!(
-                matches!(other.handle(methods::INSTALL_HARNESS, params.clone()).await, Err(RpcError::Failed(e)) if e == "already installing")
-            );
-            other.handle(methods::CANCEL_INSTALL, params).await.unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(5), task)
-                .await
-                .unwrap()
-                .unwrap()
-        } else {
-            rpc.handle(methods::INSTALL_HARNESS, params).await
-        };
-        match mode {
-            "success" | "npm" => {
-                let RpcReply::Value(value) = result.unwrap() else {
-                    panic!("expected descriptors");
-                };
-                let list: Vec<crate::registry::HarnessDescriptor> =
-                    serde_json::from_value(value).unwrap();
-                assert!(list[0].installed);
-                assert_eq!(list[0].enabled, Some(true));
-                assert!(list[0].can_install);
-                let path = root.join("bin/codex");
-                assert!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o111 != 0);
-                println!(
-                    "InstallHarness ({mode}): installed=false/enabled=false -> installed=true/enabled=true; {}",
-                    path.display()
-                );
-            }
-            "failure" => assert!(
-                matches!(result, Err(RpcError::Failed(e)) if e.contains("fixture failure") && e.contains("[REDACTED]") && !e.contains("private"))
-            ),
-            "missing" => assert!(
-                matches!(result, Err(RpcError::Failed(e)) if e.contains("installer finished but `codex` was not found on PATH"))
-            ),
-            "cancel" => {
-                assert!(matches!(result, Err(RpcError::Failed(e)) if e.contains("cancelled")));
-                assert!(registry.installs.begin(HarnessId::Codex).is_ok());
-            }
-            _ => unreachable!(),
-        }
-        assert!(forwardable(methods::CANCEL_INSTALL));
-        core.shutdown().await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_rpc_success() {
-        installer_rpc_fixture("success").await;
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_rpc_failure() {
-        installer_rpc_fixture("failure").await;
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_rpc_missing() {
-        installer_rpc_fixture("missing").await;
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn installer_rpc_cancel() {
-        installer_rpc_fixture("cancel").await;
-    }
-    #[cfg(unix)]
-    #[tokio::test]
-    #[ignore = "downloads the official npm package into an isolated temporary prefix"]
-    async fn installer_rpc_npm() {
-        installer_rpc_fixture("npm").await;
-    }
-
-    #[tokio::test]
-    async fn explicit_install_rpc_verifies_archive_and_refreshes_descriptors() {
-        use sha2::{Digest, Sha512};
-        use std::io::Write;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use zeron_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
-        if std::env::var_os("ZERON_INSTALL_RPC_TEST").is_none() {
-            let root = tempfile::tempdir().unwrap();
-            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "rpc::tests::explicit_install_rpc_verifies_archive_and_refreshes_descriptors",
-                    "--nocapture",
-                ])
-                .env("ZERON_INSTALL_RPC_TEST", "1")
-                .env("ZERON_ADAPTERS_DIR", root.path())
-                .output()
-                .await
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{} {}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-        if !zeron_harness::acp::can_install(HarnessId::Antigravity) {
-            return;
-        }
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        zip.start_file("server", zip::write::SimpleFileOptions::default())
-            .unwrap();
-        zip.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
-        let bytes = zip.finish().unwrap().into_inner();
-        let digest = Box::leak(format!("{:x}", Sha512::digest(&bytes)).into_boxed_str());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = Box::leak(
-            format!("http://{}/archive.zip", listener.local_addr().unwrap()).into_boxed_str(),
-        );
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut headers = Vec::new();
-            let mut buf = [0; 4096];
-            while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let count = socket.read(&mut buf).await.unwrap();
-                assert!(count > 0, "archive request closed before its headers");
-                headers.extend_from_slice(&buf[..count]);
-            }
-            socket
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        bytes.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-            socket.write_all(&bytes).await.unwrap();
-        });
-        let pin = ArchivePin {
-            name: "explicit-install-test",
-            version: "1",
-            url,
-            entry: "server",
-            sha512: digest,
-        };
-        let registry = HarnessRegistry::new();
-        let descriptor = serde_json::from_value(serde_json::json!({
-            "id": "antigravity", "name": "Antigravity", "supportsSteering": true,
-            "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false
-        }))
-        .unwrap();
-        registry.register_lazy(
-            descriptor,
-            Box::new(move || installed_entry(&pin).is_some()),
-            Box::new(|| panic!("installation must not spawn the harness")),
-        );
-        assert!(!registry.descriptors()[0].installed);
-        let result = install_harness_with(&registry, HarnessId::Antigravity, || async {
-            ensure_installed(pin, "Test adapter").await.map(|_| ())
-        })
-        .await
-        .unwrap();
-        assert!(result[0].installed);
-        assert_eq!(result[0].enabled, Some(true));
-        assert!(result[0].can_install);
-        assert!(installed_entry(&pin).unwrap().is_file());
-        server.await.unwrap();
-        // The verified marker makes another explicit install idempotent, even
-        // after the archive server has stopped.
-        install_harness_with(&registry, HarnessId::Antigravity, || async {
-            ensure_installed(pin, "Test adapter").await.map(|_| ())
-        })
-        .await
-        .unwrap();
-        assert!(
-            install_harness_with(&registry, HarnessId::Mock, || async {
-                panic!("unsupported harness must not invoke an installer")
-            })
-            .await
-            .is_err()
-        );
-        assert!(forwardable(methods::INSTALL_HARNESS));
-        assert_eq!(
-            forward_deadline(methods::INSTALL_HARNESS),
-            std::time::Duration::from_secs(15 * 60)
-        );
-    }
 
     /// A reader that kept the transcript (opened before, or reconnecting)
     /// says what it holds and gets only what changed since: no tail, no
@@ -6804,26 +6311,44 @@ mod tests {
         let store = Arc::new(zeron_sync::DocsStore::open(dir.path()).unwrap());
         let host = DocHost::new(
             store,
-            DocHostConfig { device_id: "viewer".into(), default_harness: zeron_proto::HarnessId::Mock, edge: None },
+            DocHostConfig {
+                device_id: "viewer".into(),
+                default_harness: zeron_proto::HarnessId::Mock,
+                edge: None,
+            },
         );
         let handle = host.open("kept").unwrap();
         for i in 0..300 {
-            handle.write_user_message(&format!("m{i}"), &format!("words {i}"), i).unwrap();
+            handle
+                .write_user_message(&format!("m{i}"), &format!("words {i}"), i)
+                .unwrap();
         }
         // What the reader holds: the whole copy as sent, summed as it holds it.
-        let mut whole = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut whole = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         let sent = whole.next().await.unwrap();
         drop(whole);
         let held: Vec<serde_json::Value> = sent["reset"].as_array().unwrap().clone();
         let known: Vec<(String, u64)> = held
             .iter()
-            .map(|e| (e["id"].as_str().unwrap().to_owned(), zeron_doc::entry_sum(e)))
+            .map(|e| {
+                (
+                    e["id"].as_str().unwrap().to_owned(),
+                    zeron_doc::entry_sum(e),
+                )
+            })
             .collect();
         // While it was away: one more message.
-        handle.write_user_message("away", "while away", 400).unwrap();
-        let mut stream = since_doc_messages_stream(host.clone(), "kept".into(), Default::default(), known)
-            .await
+        handle
+            .write_user_message("away", "while away", 400)
             .unwrap();
+        let mut stream =
+            since_doc_messages_stream(host.clone(), "kept".into(), Default::default(), known)
+                .await
+                .unwrap();
         let first = stream.next().await.unwrap();
         assert_eq!(first["since"], true);
         assert!(first.get("reset").is_none(), "a delta, not the whole copy");
@@ -6831,7 +6356,13 @@ mod tests {
         assert_eq!(upserts.len(), 1);
         assert_eq!(upserts[0]["entry"]["id"], "away");
         assert_eq!(first["count"], 301);
-        let ids: Vec<String> = handle.doc().read_entries().unwrap().into_iter().map(|e| e.id).collect();
+        let ids: Vec<String> = handle
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
         assert_eq!(
             first["orderSum"].as_u64(),
             Some(zeron_doc::order_sum(ids.iter().map(String::as_str))),
@@ -6840,7 +6371,10 @@ mod tests {
         assert!(serde_json::to_string(&first).unwrap().len() < 4_000);
         // Then live changes, as deltas.
         handle.write_user_message("next", "after", 500).unwrap();
-        let next = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.unwrap().unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(next["upsert"][0]["entry"]["id"], "next");
         assert_eq!(next["count"], 302);
     }
@@ -6928,24 +6462,6 @@ mod tests {
         host.shutdown_workers().await;
     }
 
-    #[tokio::test]
-    async fn antigravity_disable_does_not_launch_the_server() {
-        let registry = HarnessRegistry::new();
-        let executable = std::env::current_exe().unwrap();
-        registry.register(std::sync::Arc::new(
-            zeron_harness::AcpHarness::grok().with_executable(executable.clone()),
-        ));
-        registry.register(std::sync::Arc::new(
-            zeron_harness::AcpHarness::antigravity().with_executable(executable),
-        ));
-        registry.set_enabled(HarnessId::Antigravity, true).unwrap();
-
-        update_harness_enabled(&registry, HarnessId::Antigravity, false)
-            .await
-            .unwrap();
-        assert!(!registry.enabled_set().contains(&HarnessId::Antigravity));
-    }
-
     /// The UI's Switch/Forget calls send `{id, accountId, harness}` (+ optional
     /// `targetDeviceId`); the extra fields must be tolerated, `accountId` wins.
     #[test]
@@ -6963,12 +6479,12 @@ mod tests {
         let p: AgentAccountParams = parse_params(serde_json::json!({
             "id": "acct-1",
             "accountId": "acct-1",
-            "harness": "claude-code",
+            "harness": "copilot",
             "targetDeviceId": "dev-2",
         }))
         .expect("ui param shape");
         assert_eq!(p.account_id, "acct-1");
-        assert_eq!(p.harness, HarnessId::ClaudeCode);
+        assert_eq!(p.harness, HarnessId::Copilot);
     }
 
     #[test]
@@ -6997,7 +6513,10 @@ mod tests {
         // not served to a peer through the relay, not an agent's to call.
         assert!(!forwardable(methods::ADD_AGENT_API_KEY));
         assert!(zeron_rpc::local_only(methods::ADD_AGENT_API_KEY));
-        assert!(zeron_rpc::peer_refused(methods::ADD_AGENT_API_KEY, &serde_json::json!({})));
+        assert!(zeron_rpc::peer_refused(
+            methods::ADD_AGENT_API_KEY,
+            &serde_json::json!({})
+        ));
         assert!(!zeron_rpc::agent_allowed(methods::ADD_AGENT_API_KEY));
         // Per-provider account actions do travel, provider and all.
         assert!(forwardable(methods::START_AGENT_LOGIN));
@@ -7061,45 +6580,6 @@ mod tests {
     /// Every forwardable unary method gets a bounded reply deadline —
     /// interactive calls fail fast, network-bound git/update calls get the
     /// long leash, and nothing awaits forever (the "Sending…" wedge).
-    #[test]
-    fn forward_deadlines_are_tiered_and_bounded() {
-        for method in [methods::LIST_MODELS, methods::LIST_COMMANDS] {
-            assert_eq!(
-                forward_deadline(method),
-                std::time::Duration::from_secs(100)
-            );
-        }
-        use std::time::Duration;
-        assert_eq!(
-            forward_deadline(methods::CREATE_WORKTREE),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            forward_deadline(methods::CLONE_REPO),
-            Duration::from_secs(15 * 60)
-        );
-        // Never shorter than the updater it waits on.
-        assert!(
-            forward_deadline(methods::APPLY_HARNESS_UPDATE)
-                > crate::harness_updates::UPDATE_TIMEOUT
-        );
-        assert_eq!(
-            forward_deadline(methods::CHECK_HARNESS_UPDATES),
-            Duration::from_secs(4 * 60)
-        );
-        assert_eq!(
-            forward_deadline(methods::LIST_BRANCHES),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            forward_deadline(methods::QUEUE_COMMAND),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            forward_deadline(methods::LIST_CHANGE_REQUEST_PAGE),
-            Duration::from_secs(30)
-        );
-    }
 
     #[test]
     fn pull_request_errors_are_stable_and_sanitized() {
@@ -7309,7 +6789,11 @@ mod context_usage_tests {
         let handle = host.open("replay-chat").unwrap();
         let sink = crate::chat2_host::EngineChatSink::new(&handle.doc_arc(), store, "replay-chat")
             .with_handle(Arc::downgrade(&handle));
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut stream = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         let first: zeron_doc::TranscriptUpdate =
             serde_json::from_value(stream.next().await.unwrap()).unwrap();
         assert!(first.replay_baseline.unwrap().entries.is_empty());
@@ -7405,7 +6889,11 @@ mod context_usage_tests {
             update.replay_baseline.is_none(),
             "live updates must not resend the history watermark"
         );
-        let mut reopened = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut reopened = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         let opening: zeron_doc::TranscriptUpdate =
             serde_json::from_value(reopened.next().await.unwrap()).unwrap();
         assert_eq!(
@@ -7433,7 +6921,11 @@ mod context_usage_tests {
         let handle = host.open("interleaved").unwrap();
         let sink = crate::chat2_host::EngineChatSink::new(&handle.doc_arc(), store, "interleaved")
             .with_handle(Arc::downgrade(&handle));
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut stream = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         stream.next().await.unwrap();
         let source = zeron_doc::SessionDoc::init("interleaved").unwrap();
         sink.apply_checkpoint(&source.export_snapshot().unwrap(), 0)
@@ -7524,7 +7016,11 @@ mod context_usage_tests {
             .unwrap();
         // Cached content exists before the first watcher and never enters
         // the changed-parts tracker. It may not have been painted yet.
-        let mut first = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut first = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         let opening: zeron_doc::TranscriptUpdate =
             serde_json::from_value(first.next().await.unwrap()).unwrap();
         assert_eq!(
@@ -7545,7 +7041,11 @@ mod context_usage_tests {
         assert!(update.replay_baseline.is_none());
         // A later subscriber sees a longer historical prefix, but must not
         // change the first subscriber's ongoing live animation.
-        let mut second = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut second = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         let opening: zeron_doc::TranscriptUpdate =
             serde_json::from_value(second.next().await.unwrap()).unwrap();
         assert_eq!(
@@ -7609,7 +7109,11 @@ mod context_usage_tests {
             id: "body".into(),
             text: text.into(),
         };
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut stream = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         stream.next().await.unwrap();
         writer.sync(&[part("live")]).unwrap();
         sink.apply_row(&source.export_snapshot().unwrap(), 1);
@@ -7620,7 +7124,11 @@ mod context_usage_tests {
                 .unwrap();
         drop(stream);
         // No unwatched commit clears provenance before the new attach.
-        let mut stream = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut stream = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         stream.next().await.unwrap();
         writer.sync(&[part("live plus recovered")]).unwrap();
         sink.apply_replay_row(&source.export_snapshot().unwrap(), 2);
@@ -7674,14 +7182,20 @@ mod context_usage_tests {
         sink.apply_row(&source.export_snapshot().unwrap(), 1);
         let options = zeron_doc::DiffOptions { part_patches: true };
         let mut patched = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), options);
-        let mut whole = doc_messages_stream(handle.watch_messages(), handle.doc_arc(), Default::default());
+        let mut whole = doc_messages_stream(
+            handle.watch_messages(),
+            handle.doc_arc(),
+            Default::default(),
+        );
         async fn next(stream: &mut BoxStream<'static, serde_json::Value>) -> serde_json::Value {
             tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
                 .await
                 .unwrap()
                 .unwrap()
         }
-        let read = |value: serde_json::Value| serde_json::from_value::<zeron_doc::TranscriptUpdate>(value).unwrap();
+        let read = |value: serde_json::Value| {
+            serde_json::from_value::<zeron_doc::TranscriptUpdate>(value).unwrap()
+        };
         let (mut a, mut b) = (vec![], vec![]);
         zeron_doc::apply_transcript_frame(&mut a, read(next(&mut patched).await).frame).unwrap();
         zeron_doc::apply_transcript_frame(&mut b, read(next(&mut whole).await).frame).unwrap();
@@ -7691,8 +7205,18 @@ mod context_usage_tests {
         writer.sync(&calls).unwrap();
         sink.apply_row(&source.export_snapshot().unwrap(), 2);
         let value = next(&mut patched).await;
-        assert!(value.get("upsert").is_none_or(|u| u.as_array().is_some_and(Vec::is_empty)), "{value}");
-        let ids: Vec<_> = value["parts"].as_array().unwrap().iter().map(|p| p["part"]["id"].as_str().unwrap().to_owned()).collect();
+        assert!(
+            value
+                .get("upsert")
+                .is_none_or(|u| u.as_array().is_some_and(Vec::is_empty)),
+            "{value}"
+        );
+        let ids: Vec<_> = value["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["part"]["id"].as_str().unwrap().to_owned())
+            .collect();
         assert_eq!(ids, ["t40", "t41"]);
         zeron_doc::apply_transcript_frame(&mut a, read(value).frame).unwrap();
         let value = next(&mut whole).await;
@@ -7765,12 +7289,58 @@ mod cold_open_tests {
     struct Words(u64);
     impl Words {
         const VOCAB: &'static [&'static str] = &[
-            "the", "engine", "reads", "a", "chat", "document", "snapshot", "loro", "entry", "part",
-            "tool", "output", "transcript", "frame", "tail", "known", "since", "cold", "warm",
-            "cache", "import", "list", "container", "deep", "value", "json", "serialize", "hash",
-            "order", "count", "delta", "upsert", "remove", "append", "reply", "assistant", "user",
-            "prompt", "reasoning", "command", "cargo", "test", "build", "release", "window",
-            "viewport", "skeleton", "latency", "milliseconds", "budget", "thread", "blocking",
+            "the",
+            "engine",
+            "reads",
+            "a",
+            "chat",
+            "document",
+            "snapshot",
+            "loro",
+            "entry",
+            "part",
+            "tool",
+            "output",
+            "transcript",
+            "frame",
+            "tail",
+            "known",
+            "since",
+            "cold",
+            "warm",
+            "cache",
+            "import",
+            "list",
+            "container",
+            "deep",
+            "value",
+            "json",
+            "serialize",
+            "hash",
+            "order",
+            "count",
+            "delta",
+            "upsert",
+            "remove",
+            "append",
+            "reply",
+            "assistant",
+            "user",
+            "prompt",
+            "reasoning",
+            "command",
+            "cargo",
+            "test",
+            "build",
+            "release",
+            "window",
+            "viewport",
+            "skeleton",
+            "latency",
+            "milliseconds",
+            "budget",
+            "thread",
+            "blocking",
         ];
         fn next(&mut self) -> u64 {
             self.0 ^= self.0 << 13;
@@ -7787,7 +7357,11 @@ mod cold_open_tests {
                 if self.next().is_multiple_of(5) {
                     out.push_str(&format!("{}", self.next() % 100_000));
                 }
-                out.push(if self.next().is_multiple_of(11) { '\n' } else { ' ' });
+                out.push(if self.next().is_multiple_of(11) {
+                    '\n'
+                } else {
+                    ' '
+                });
             }
             out
         }
@@ -7801,7 +7375,10 @@ mod cold_open_tests {
             return SessionMessageEntry {
                 id: id.clone(),
                 role: MessageRole::User,
-                parts: vec![MessagePart::Text { id: format!("{id}-t"), text: words.text(300) }],
+                parts: vec![MessagePart::Text {
+                    id: format!("{id}-t"),
+                    text: words.text(300),
+                }],
                 created_at: i as i64,
                 device_id: "host".into(),
                 status: Some(MessageStatus::Complete),
@@ -7809,8 +7386,14 @@ mod cold_open_tests {
                 duration_ms: None,
             };
         }
-        let mut parts = vec![MessagePart::Reasoning { id: format!("{id}-r"), text: words.text(900) }];
-        parts.push(MessagePart::Text { id: format!("{id}-t0"), text: words.text(1200) });
+        let mut parts = vec![MessagePart::Reasoning {
+            id: format!("{id}-r"),
+            text: words.text(900),
+        }];
+        parts.push(MessagePart::Text {
+            id: format!("{id}-t0"),
+            text: words.text(1200),
+        });
         for call in 0..6 {
             parts.push(
                 serde_json::from_value(serde_json::json!({
@@ -7823,7 +7406,10 @@ mod cold_open_tests {
                 .unwrap(),
             );
         }
-        parts.push(MessagePart::Text { id: format!("{id}-t1"), text: words.text(800) });
+        parts.push(MessagePart::Text {
+            id: format!("{id}-t1"),
+            text: words.text(800),
+        });
         SessionMessageEntry {
             id,
             role: MessageRole::Assistant,
@@ -7866,12 +7452,20 @@ mod cold_open_tests {
     fn known_of(entries: &[serde_json::Value]) -> Vec<(String, u64)> {
         entries
             .iter()
-            .map(|e| (e["id"].as_str().unwrap().to_owned(), zeron_doc::entry_sum(e)))
+            .map(|e| {
+                (
+                    e["id"].as_str().unwrap().to_owned(),
+                    zeron_doc::entry_sum(e),
+                )
+            })
             .collect()
     }
 
     /// The transcript as a reader of the whole of it gets it.
-    async fn whole_transcript(store: &Arc<zeron_sync::DocsStore>, chat: &str) -> Vec<serde_json::Value> {
+    async fn whole_transcript(
+        store: &Arc<zeron_sync::DocsStore>,
+        chat: &str,
+    ) -> Vec<serde_json::Value> {
         let host = new_host(store);
         let handle = host.open(chat).unwrap();
         let rx = handle.watch_messages();
@@ -7879,7 +7473,10 @@ mod cold_open_tests {
         drop(rx);
         drop(handle);
         host.shutdown_workers().await;
-        entries.iter().map(|e| serde_json::to_value(&**e).unwrap()).collect()
+        entries
+            .iter()
+            .map(|e| serde_json::to_value(&**e).unwrap())
+            .collect()
     }
 
     /// A reader holding a long chat's rows opens it cold: what changed among
@@ -7905,8 +7502,10 @@ mod cold_open_tests {
             assert!(held[at].parts.len() > 1, "a reply");
             held[at].parts.truncate(1);
         }
-        let known: Vec<(String, u64)> =
-            held.iter().map(|e| (e.id.clone(), zeron_doc::entry_sum_of(e))).collect();
+        let known: Vec<(String, u64)> = held
+            .iter()
+            .map(|e| (e.id.clone(), zeron_doc::entry_sum_of(e)))
+            .collect();
 
         let host = new_host(&store);
         let handle = host.open(chat).unwrap();
@@ -7937,9 +7536,16 @@ mod cold_open_tests {
         blocker.join().unwrap();
         assert_eq!(preview["historyPending"], true);
         assert!(preview.get("since").is_none());
-        let ids: Vec<&str> =
-            preview["reset"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
-        let newest: Vec<&str> = [n - 5, n - 3, n - 2, n - 1].iter().map(|&i| whole[i].id.as_str()).collect();
+        let ids: Vec<&str> = preview["reset"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        let newest: Vec<&str> = [n - 5, n - 3, n - 2, n - 1]
+            .iter()
+            .map(|&i| whole[i].id.as_str())
+            .collect();
         assert_eq!(ids, newest, "of the newest entries, only what changed");
         // As the app takes an opening tail into rows it holds.
         let mut rows = held.clone();
@@ -7953,17 +7559,31 @@ mod cold_open_tests {
         // Then what changed since, from those rows.
         let since = stream.next().await.unwrap();
         assert_eq!(since["since"], true);
-        let upserts: Vec<&str> =
-            since["upsert"].as_array().unwrap().iter().map(|u| u["entry"]["id"].as_str().unwrap()).collect();
-        assert_eq!(upserts, [whole[11].id.as_str()], "the older change, nothing of the tail again");
+        let upserts: Vec<&str> = since["upsert"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["entry"]["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            upserts,
+            [whole[11].id.as_str()],
+            "the older change, nothing of the tail again"
+        );
         let order = since["orderSum"].as_u64();
         let update: zeron_doc::TranscriptUpdate = serde_json::from_value(since).unwrap();
         zeron_doc::apply_transcript_frame(&mut rows, update.frame).unwrap();
         assert_eq!(rows, whole);
-        assert_eq!(order, Some(zeron_doc::order_sum(rows.iter().map(|e| e.id.as_str()))));
+        assert_eq!(
+            order,
+            Some(zeron_doc::order_sum(rows.iter().map(|e| e.id.as_str())))
+        );
         // Then live changes, as deltas.
         handle.write_user_message("live", "after", 1).unwrap();
-        let live = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.unwrap().unwrap();
+        let live = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
         let update: zeron_doc::TranscriptUpdate = serde_json::from_value(live).unwrap();
         zeron_doc::apply_transcript_frame(&mut rows, update.frame).unwrap();
         assert_eq!(rows.len(), n + 1);
@@ -7971,10 +7591,14 @@ mod cold_open_tests {
         drop(stream);
 
         // Nothing among the newest entries changed: the `since` frame alone.
-        let mut known: Vec<(String, u64)> =
-            rows.iter().map(|e| (e.id.clone(), zeron_doc::entry_sum_of(e))).collect();
+        let mut known: Vec<(String, u64)> = rows
+            .iter()
+            .map(|e| (e.id.clone(), zeron_doc::entry_sum_of(e)))
+            .collect();
         known[11].1 = 0;
-        let mut again = since_doc_messages_stream(host.clone(), chat.into(), options, known).await.unwrap();
+        let mut again = since_doc_messages_stream(host.clone(), chat.into(), options, known)
+            .await
+            .unwrap();
         let first = again.next().await.unwrap();
         assert_eq!(first["since"], true);
         assert!(first.get("historyPending").is_none());
@@ -8036,7 +7660,11 @@ mod cold_open_tests {
             }
             eprintln!("  open alone (load + import)  {:>8.1?}", median(opens));
             let mut results = Vec::new();
-            for scenario in ["(a) opening tail, cold", "(b) known, cold", "(b) known, warm"] {
+            for scenario in [
+                "(a) opening tail, cold",
+                "(b) known, cold",
+                "(b) known, warm",
+            ] {
                 let (mut first, mut rest, mut bytes) = (Vec::new(), Vec::new(), (0, 0));
                 for _ in 0..RUNS {
                     let host = new_host(&store);
@@ -8044,10 +7672,14 @@ mod cold_open_tests {
                     if scenario.ends_with("warm") {
                         // Viewed a moment ago: open, its reader gone, its
                         // read cache kept.
-                        let mut viewed =
-                            since_doc_messages_stream(host.clone(), chat.into(), options, known.clone())
-                                .await
-                                .unwrap();
+                        let mut viewed = since_doc_messages_stream(
+                            host.clone(),
+                            chat.into(),
+                            options,
+                            known.clone(),
+                        )
+                        .await
+                        .unwrap();
                         while let Some(frame) = viewed.next().await {
                             if frame.get("historyPending").is_none() {
                                 break;
@@ -8056,7 +7688,9 @@ mod cold_open_tests {
                     }
                     let start = Instant::now();
                     let mut stream = if scenario.starts_with("(a)") {
-                        opening_doc_messages_stream(host.clone(), chat.into(), options).await.unwrap()
+                        opening_doc_messages_stream(host.clone(), chat.into(), options)
+                            .await
+                            .unwrap()
                     } else {
                         since_doc_messages_stream(host.clone(), chat.into(), options, known.clone())
                             .await

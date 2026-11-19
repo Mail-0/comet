@@ -2,9 +2,6 @@
 //! linked against the whole crate, so a handful of tests each cost more to
 //! link than to run.
 
-mod pi_resume;
-mod osc7501;
-mod codex_subagents;
-mod claude_subagents;
 mod local_profiles;
+mod osc7501;
 mod self_presence;

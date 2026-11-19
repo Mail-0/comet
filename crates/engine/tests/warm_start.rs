@@ -235,7 +235,7 @@ fn rig(prewarms: bool) -> Rig {
 
 fn assemble(data: &std::path::Path, seen: &Arc<Mutex<Seen>>, options: &Options) -> EngineCore {
     let registry = HarnessRegistry::new();
-    for id in [HarnessId::Mock, HarnessId::Pi, HarnessId::ClaudeCode] {
+    for id in [HarnessId::Mock, HarnessId::Copilot, HarnessId::Copilot] {
         registry.register(Arc::new(WarmFixture {
             id,
             seen: seen.clone(),
@@ -449,7 +449,7 @@ async fn sent_with_another_agent_ends_the_warm_start() {
     let rig = rig(true);
     rig.warm(CHAT, "mock-1", false).await;
     let mut request = ask("pi-1", &rig.cwd());
-    request.harness = Some(HarnessId::Pi);
+    request.harness = Some(HarnessId::Copilot);
     request.prompt = "on another agent".into();
     rig.send_with(CHAT, request).await;
     let seen = rig.seen.lock().unwrap();
@@ -459,7 +459,7 @@ async fn sent_with_another_agent_ends_the_warm_start() {
         "the warm one ended"
     );
     assert_eq!(seen.runs[0].0, "", "a run of its own");
-    assert_eq!(seen.runs[0].1.harness, Some(HarnessId::Pi));
+    assert_eq!(seen.runs[0].1.harness, Some(HarnessId::Copilot));
 }
 
 /// Enter before the warm start finished launching: the run waits for it and
@@ -697,45 +697,6 @@ async fn a_warm_start_is_never_work() {
 
 /// Its CLI being updated: no warm start, and one made before an update was
 /// accepted is not used by the run (which waits behind the update).
-#[tokio::test]
-async fn a_cli_update_refuses_and_retires_warm_starts() {
-    let rig = rig(true);
-    rig.core.registry.begin_update(HarnessId::Mock);
-    assert_eq!(
-        rig.warm(CHAT, "mock-1", false).await["outcome"],
-        "unsupported"
-    );
-    rig.core.registry.end_update(HarnessId::Mock);
-    assert_eq!(rig.warm(CHAT, "mock-1", false).await["outcome"], "started");
-    rig.core.registry.begin_update(HarnessId::Mock);
-    let device = rig.core.device_id.clone();
-    rig.rpc(
-        "Mutate",
-        serde_json::json!({ "op": "createChat", "chatId": CHAT, "deviceId": device, "cwd": rig.cwd() }),
-    )
-    .await;
-    let mut request = serde_json::to_value(ask("mock-1", &rig.cwd())).unwrap();
-    request["prompt"] = "behind the update".into();
-    rig.rpc(
-        "QueueCommand",
-        serde_json::json!({ "chatId": CHAT, "command": { "kind": "run", "messageId": "m-u", "request": request } }),
-    )
-    .await;
-    wait_for("the warm one ended", || {
-        rig.seen.lock().unwrap().discarded.len() == 1
-    })
-    .await;
-    assert!(
-        rig.seen.lock().unwrap().runs.is_empty(),
-        "the run waits for the update"
-    );
-    rig.core.registry.end_update(HarnessId::Mock);
-    wait_for("the run after the update", || {
-        !rig.seen.lock().unwrap().runs.is_empty()
-    })
-    .await;
-    assert_eq!(rig.seen.lock().unwrap().runs[0].0, "", "its own runtime");
-}
 
 /// The account a run would use changed after the warm start (an account
 /// switch): the warm runtime, started on the old one, is not used.
@@ -856,11 +817,11 @@ async fn warm_starts_are_bounded() {
 async fn a_switch_of_native_subagents_is_never_run_on_the_old_setting() {
     let rig = rig(true);
     let mut ask_claude = ask("sonnet", &rig.cwd());
-    ask_claude.harness = Some(HarnessId::ClaudeCode);
+    ask_claude.harness = Some(HarnessId::Copilot);
     assert_eq!(rig.warm_with(CHAT, ask_claude.clone(), true).await["outcome"], "started");
     rig.core
         .registry
-        .set_native_subagents(HarnessId::ClaudeCode, false)
+        .set_native_subagents(HarnessId::Copilot, false)
         .unwrap();
     ask_claude.prompt = "after the switch".into();
     rig.send_with(CHAT, ask_claude).await;

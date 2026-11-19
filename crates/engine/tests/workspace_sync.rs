@@ -102,7 +102,7 @@ fn registry() -> Arc<HarnessRegistry> {
         step_delay: Duration::from_millis(60),
     }));
     registry.register(Arc::new(ScriptedHarness {
-        id: HarnessId::Cursor,
+        id: HarnessId::Copilot,
         text: "From cursor",
         step_delay: Duration::from_millis(10),
     }));
@@ -532,7 +532,7 @@ async fn claimed_chat_row_records_the_run_harness() {
     let core = assemble(dir.path(), "dev-a");
 
     let request = RunRequest {
-        harness: Some(HarnessId::Cursor),
+        harness: Some(HarnessId::Copilot),
         ..run_request("go do it")
     };
     queue_run_with(&core, "chat-glyph", "cmd-glyph-1", "m-1", request);
@@ -543,7 +543,7 @@ async fn claimed_chat_row_records_the_run_harness() {
                 .ok()
                 .flatten()
                 .and_then(|c| c.config)
-                .is_some_and(|c| c.harness == HarnessId::Cursor)
+                .is_some_and(|c| c.harness == HarnessId::Copilot)
         },
         "claimed row carries the dispatched harness",
     )
@@ -600,7 +600,7 @@ async fn chat_config_selects_the_run_harness() {
             Some("space-cfg"),
             None,
             Some(ChatConfig {
-                harness: HarnessId::Cursor,
+                harness: HarnessId::Copilot,
                 model: None,
                 reasoning: None,
                 model_options: Default::default(),

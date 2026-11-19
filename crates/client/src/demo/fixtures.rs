@@ -57,8 +57,8 @@ pub(crate) fn chats() -> Vec<DemoChat> {
         device,
         title,
         preview,
-        harness: ClaudeCode,
-        model: "claude-fable-5",
+        harness: Copilot,
+        model: "copilot",
         reasoning: XHigh,
         branch: None,
         pr: None,
@@ -93,7 +93,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             last_ago_ms: 2 * MIN,
             created_ago_ms: 2 * HOUR,
             seen: false,
-            model: "claude-opus-5",
+            model: "copilot",
             ..chat(
                 "chat-picker",
                 Some("space-zeron"),
@@ -103,8 +103,8 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             )
         },
         DemoChat {
-            harness: Codex,
-            model: "gpt-5.6-terra",
+            harness: Copilot,
+            model: "copilot",
             reasoning: High,
             branch: Some("fix/tool-colors"),
             pr: Some((77, Closed, "Refine tool group colors")),
@@ -151,8 +151,8 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             last_ago_ms: 80 * MIN,
             seen: false,
             sleep: Some((-30 * MIN, DAY)),
-            harness: Codex,
-            model: "gpt-6-astra",
+            harness: Copilot,
+            model: "copilot",
             reasoning: Ultra,
             ..chat(
                 "chat-ios-scroll",
@@ -176,7 +176,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
         },
         DemoChat {
             last_ago_ms: 2 * HOUR,
-            model: "claude-sonnet-5",
+            model: "copilot",
             reasoning: Medium,
             ..chat(
                 "chat-home",
@@ -233,8 +233,8 @@ pub(crate) fn chats() -> Vec<DemoChat> {
         },
         DemoChat {
             parent: Some("chat-veil"),
-            harness: Codex,
-            model: "gpt-5.6-terra",
+            harness: Copilot,
+            model: "copilot",
             reasoning: High,
             last_ago_ms: 6 * MIN,
             ..chat(
@@ -259,8 +259,8 @@ pub(crate) fn chats() -> Vec<DemoChat> {
         },
         DemoChat {
             archived: true,
-            harness: Codex,
-            model: "gpt-5.5",
+            harness: Copilot,
+            model: "copilot",
             reasoning: High,
             last_ago_ms: 6 * DAY,
             created_ago_ms: 7 * DAY,

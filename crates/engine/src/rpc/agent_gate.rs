@@ -224,8 +224,8 @@ impl EngineRpc {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json};
     use crate::registry::HarnessRegistry;
+    use serde_json::{Value, json};
     use zeron_proto::{HarnessId, agent_messages};
     use zeron_rpc::{Caller, RpcService, methods, with_caller};
 
@@ -234,7 +234,7 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             std::sync::Arc::new(HarnessRegistry::new()),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();

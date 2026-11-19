@@ -38,6 +38,7 @@ pub fn question(header: impl Into<String>, question: impl Into<String>) -> UserI
         multi_select: false,
         prefill: None,
         multiline: false,
+        mcp_connect: None,
     }
 }
 
@@ -109,6 +110,7 @@ mod tests {
             vec![UserInputAnswer {
                 question_id: q.id.clone(),
                 labels: labels.iter().map(|l| l.to_string()).collect(),
+                payload: None,
             }]
         };
         assert!(approved(&q, &answer(&["Yes"])));

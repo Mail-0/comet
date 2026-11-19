@@ -279,6 +279,7 @@ fn question_script() -> Vec<UserInputQuestion> {
             prefill: None,
             multiline: false,
             multi_select: false,
+            mcp_connect: None,
         },
         UserInputQuestion {
             id: "q-gates".into(),
@@ -292,6 +293,7 @@ fn question_script() -> Vec<UserInputQuestion> {
             prefill: None,
             multiline: false,
             multi_select: true,
+            mcp_connect: None,
         },
     ]
 }
@@ -462,7 +464,9 @@ impl Harness for MockHarness {
                     send("I'll run the test suite first.\n\n");
                     tokio::time::sleep(pause).await;
                     let question = crate::approval::command("Mock", "cargo test --workspace");
-                    let answers = request_input(vec![question.clone()]).await.unwrap_or_default();
+                    let answers = request_input(vec![question.clone()])
+                        .await
+                        .unwrap_or_default();
                     if crate::approval::approved(&question, &answers) {
                         let _ = tx.send(AgentEvent::ToolCall {
                             id: "mock-approved-tool".into(),

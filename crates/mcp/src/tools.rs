@@ -31,7 +31,7 @@ pub(crate) use plugins::is_plugin_tool_name;
 /// Default and ceiling for the blocking waits.
 const MAX_BATCH: usize = 32;
 /// Cloud runs these agents (Codex and Claude Code): a Cloud chat's harness.
-const CLOUD_HARNESSES: &[HarnessId] = &[HarnessId::ClaudeCode, HarnessId::Codex];
+const CLOUD_HARNESSES: &[HarnessId] = &[HarnessId::Copilot];
 const DEFAULT_WAIT: Duration = Duration::from_secs(600);
 /// A device seen this recently is online (the app's sidebar says the same).
 const ONLINE_SECS: i64 = 70;
@@ -1013,7 +1013,10 @@ impl Tools {
             ),
             Err(error) => anyhow::bail!("{error}"),
         };
-        let name = devices.iter().find(|d| d.id == device).map(|d| d.name.clone());
+        let name = devices
+            .iter()
+            .find(|d| d.id == device)
+            .map(|d| d.name.clone());
         Ok(json!({
             "device": { "id": device, "name": name, "local": device == local },
             "stats": stats,
@@ -1125,11 +1128,7 @@ impl Tools {
         let (spaces, sessions) = tokio::try_join!(self.zeron.spaces(), self.zeron.sessions())?;
         let mut summary = summarize_chat(&chat, &spaces, &sessions);
         // The chat's facts don't depend on reaching its host.
-        match self
-            .zeron
-            .window_of(&chat, TranscriptWindow::tail(1))
-            .await
-        {
+        match self.zeron.window_of(&chat, TranscriptWindow::tail(1)).await {
             Ok(view) => {
                 let rendered = render_entries(&view.entries, RenderOptions::default());
                 summary["messageCount"] = json!(view.info.total);
@@ -1168,9 +1167,14 @@ impl Tools {
             .filter(|parent| !zeron_proto::voice::is_orchestrator_chat(parent))
         };
         anyhow::ensure!(
-            !matches!(args.kind, Some(ChatKind::Side | ChatKind::Subagent)) || parent_chat_id.is_some(),
+            !matches!(args.kind, Some(ChatKind::Side | ChatKind::Subagent))
+                || parent_chat_id.is_some(),
             "kind {} requires a parent or origin chat",
-            if args.kind == Some(ChatKind::Side) { "side" } else { "subagent" }
+            if args.kind == Some(ChatKind::Side) {
+                "side"
+            } else {
+                "subagent"
+            }
         );
         // A child is a subagent unless asked for as a side chat: delegated
         // work lists under its parent's Subagents, not its side chats.
@@ -1275,13 +1279,21 @@ impl Tools {
         });
         // A Cloud machine's catalog is checked when it runs, not here; an
         // engine predating modes lists none and runs with full access.
-        if let Some(info) = harnesses.iter().find(|h| h.id == harness).filter(|_| !args.cloud) {
+        if let Some(info) = harnesses
+            .iter()
+            .find(|h| h.id == harness)
+            .filter(|_| !args.cloud)
+        {
             let modes = &info.access_modes;
             anyhow::ensure!(
                 access.is_full_access() || modes.contains(&access),
                 "{harness:?} on device {device_id} cannot run {} (accessModes: {})",
                 access.label(),
-                modes.iter().map(|m| m.label()).collect::<Vec<_>>().join(", ")
+                modes
+                    .iter()
+                    .map(|m| m.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             anyhow::ensure!(
                 !args.plan || info.supports_plan,
@@ -1700,6 +1712,7 @@ impl Tools {
             .map(|a| UserInputAnswer {
                 question_id: a.question_id,
                 labels: a.labels,
+                payload: None,
             })
             .collect();
         let command_id = self
@@ -1990,12 +2003,12 @@ fn default_harness(harnesses: &[HarnessInfo]) -> anyhow::Result<HarnessId> {
     let real = |h: &&HarnessInfo| h.id != HarnessId::Mock;
     harnesses
         .iter()
-        .find(|h| h.id == HarnessId::ClaudeCode && h.connected())
+        .find(|h| h.id == HarnessId::Copilot && h.connected())
         .or_else(|| harnesses.iter().filter(real).find(|h| h.connected()))
         .or_else(|| {
             harnesses
                 .iter()
-                .find(|h| h.id == HarnessId::ClaudeCode && h.available())
+                .find(|h| h.id == HarnessId::Copilot && h.available())
         })
         .or_else(|| {
             harnesses
@@ -2221,26 +2234,47 @@ mod tests {
 
     #[tokio::test]
     async fn device_stats_asks_the_chosen_device_and_names_it() {
-        let def = catalog().into_iter().find(|d| d.name == DEVICE_STATS).expect("listed");
+        let def = catalog()
+            .into_iter()
+            .find(|d| d.name == DEVICE_STATS)
+            .expect("listed");
         assert_eq!(def.input_schema["properties"]["device"]["type"], "string");
-        assert!(def.input_schema.get("required").is_none(), "device is optional");
+        assert!(
+            def.input_schema.get("required").is_none(),
+            "device is optional"
+        );
 
         let stats = json!({
             "os": { "name": "Darwin", "arch": "arm64" },
             "memory": { "totalBytes": 34359738368u64, "availableBytes": null },
             "zeron": { "engineVersion": "0.2.139" }
         });
-        let world = Arc::new(World { stats: Some(stats.clone()), ..Default::default() });
+        let world = Arc::new(World {
+            stats: Some(stats.clone()),
+            ..Default::default()
+        });
         let tools = tools(world.clone(), Origin::default());
         assert!(tools.has(DEVICE_STATS));
 
         // Local: no target, the engine answers for itself.
         let local = tools.call(DEVICE_STATS, json!({})).await.unwrap();
-        assert_eq!(local["device"], json!({ "id": "dev-local", "name": "Laptop", "local": true }));
-        assert_eq!(local["stats"], stats, "the report passes through as is, nulls kept");
+        assert_eq!(
+            local["device"],
+            json!({ "id": "dev-local", "name": "Laptop", "local": true })
+        );
+        assert_eq!(
+            local["stats"], stats,
+            "the report passes through as is, nulls kept"
+        );
         // By name: routed to that device.
-        let remote = tools.call(DEVICE_STATS, json!({ "device": "worker" })).await.unwrap();
-        assert_eq!(remote["device"], json!({ "id": "dev-remote", "name": "Worker", "local": false }));
+        let remote = tools
+            .call(DEVICE_STATS, json!({ "device": "worker" }))
+            .await
+            .unwrap();
+        assert_eq!(
+            remote["device"],
+            json!({ "id": "dev-remote", "name": "Worker", "local": false })
+        );
         let reads = world.reads.lock().unwrap().clone();
         let targets: Vec<&Value> = reads
             .iter()
@@ -2250,14 +2284,21 @@ mod tests {
         assert_eq!(targets, [&Value::Null, &json!("dev-remote")]);
 
         // Not one of this account's devices: refused before anything is asked.
-        let error = tools.call(DEVICE_STATS, json!({ "device": "someone-elses" })).await.unwrap_err();
+        let error = tools
+            .call(DEVICE_STATS, json!({ "device": "someone-elses" }))
+            .await
+            .unwrap_err();
         assert!(error.contains("no device matches"), "{error}");
         assert_eq!(world.reads.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn device_stats_says_when_a_device_is_away_or_this_engine_is_old() {
-        let dark = Arc::new(World { stats: Some(json!({})), remote_dark: true, ..Default::default() });
+        let dark = Arc::new(World {
+            stats: Some(json!({})),
+            remote_dark: true,
+            ..Default::default()
+        });
         let error = tools(dark, Origin::default())
             .call(DEVICE_STATS, json!({ "device": "dev-remote" }))
             .await
@@ -2265,7 +2306,10 @@ mod tests {
         assert!(error.contains("offline"), "{error}");
 
         let old = Arc::new(World::default());
-        let error = tools(old, Origin::default()).call(DEVICE_STATS, json!({})).await.unwrap_err();
+        let error = tools(old, Origin::default())
+            .call(DEVICE_STATS, json!({}))
+            .await
+            .unwrap_err();
         assert!(error.contains("too old to report stats"), "{error}");
     }
 
@@ -2333,7 +2377,10 @@ mod tests {
         let world = Arc::new(World::default());
         let outside = tools(world.clone(), Origin::default());
         assert!(!outside.has("show_image"));
-        assert!(!outside.has("wait_on_background"), "a wait is a chat's agent's to say");
+        assert!(
+            !outside.has("wait_on_background"),
+            "a wait is a chat's agent's to say"
+        );
         assert!(
             outside
                 .call("show_image", json!({ "path": path }))
@@ -2792,7 +2839,13 @@ mod tests {
             json!({ "name": "wait_on_background", "arguments": { "task_ids": ["b1"] } }),
         )
         .await;
-        assert!(call["error"]["message"].as_str().unwrap().contains("unknown tool"), "{call}");
+        assert!(
+            call["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown tool"),
+            "{call}"
+        );
     }
 
     fn origin(chat: &str) -> Origin {
@@ -2828,10 +2881,16 @@ mod tests {
         // Asking for more is lowered to its own, silently, and said in the
         // reply: no full-access child, no wider sandbox.
         let capped = tools
-            .call("create_chat", json!({"access": "full-access", "sandbox": "danger-full-access"}))
+            .call(
+                "create_chat",
+                json!({"access": "full-access", "sandbox": "danger-full-access"}),
+            )
             .await
             .unwrap();
-        assert!(capped["accessCapped"].as_str().unwrap().contains("no more"), "{capped}");
+        assert!(
+            capped["accessCapped"].as_str().unwrap().contains("no more"),
+            "{capped}"
+        );
         let writes = world.writes.lock().unwrap();
         let created: Vec<&Value> = writes
             .iter()
@@ -3094,11 +3153,19 @@ mod tests {
             (json!({"kind":"chat"}), "chat", Value::Null),
             (json!({"kind":"chat", "parent":"  "}), "chat", Value::Null),
             (json!({"kind":"side"}), "side", json!("chat-alpha-1")),
-            (json!({"kind":"subagent"}), "subagent", json!("chat-alpha-1")),
+            (
+                json!({"kind":"subagent"}),
+                "subagent",
+                json!("chat-alpha-1"),
+            ),
             // A child of your own chat, kind omitted: a subagent.
             (json!({}), "subagent", json!("chat-alpha-1")),
             (json!({"parent":"Beta"}), "subagent", json!("chat-beta-2")),
-            (json!({"kind":"side", "parent":"Beta"}), "side", json!("chat-beta-2")),
+            (
+                json!({"kind":"side", "parent":"Beta"}),
+                "side",
+                json!("chat-beta-2"),
+            ),
         ] {
             let created = from_chat.call("create_chat", args).await.unwrap();
             assert_eq!(created["kind"], kind);
@@ -3126,7 +3193,9 @@ mod tests {
         );
         // An explicit parent from outside any chat: a subagent of it.
         assert_eq!(
-            root.call("create_chat", json!({"parent":"Alpha"})).await.unwrap()["kind"],
+            root.call("create_chat", json!({"parent":"Alpha"}))
+                .await
+                .unwrap()["kind"],
             "subagent"
         );
     }
@@ -3440,14 +3509,20 @@ mod tests {
             let writes = world.writes.lock().unwrap();
             let (method, params) = writes.last().unwrap();
             assert_eq!(method, methods::QUEUE_COMMAND);
-            assert!(params.get("targetDeviceId").is_none(), "a local doc write, which wakes the host");
+            assert!(
+                params.get("targetDeviceId").is_none(),
+                "a local doc write, which wakes the host"
+            );
         }
         let read = tools
             .call("read_chat", json!({"chat":"Beta"}))
             .await
             .unwrap();
         assert!(read["total"].as_u64().unwrap() > 0);
-        let info = tools.call("get_chat", json!({"chat":"Beta"})).await.unwrap();
+        let info = tools
+            .call("get_chat", json!({"chat":"Beta"}))
+            .await
+            .unwrap();
         assert!(info["messageCount"].as_u64().unwrap() > 0);
     }
 

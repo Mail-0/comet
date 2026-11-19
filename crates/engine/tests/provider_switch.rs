@@ -107,8 +107,8 @@ impl Harness for Fake {
     }
 }
 
-const CLAUDE: HarnessId = HarnessId::ClaudeCode;
-const CODEX: HarnessId = HarnessId::Codex;
+const CLAUDE: HarnessId = HarnessId::Copilot;
+const CODEX: HarnessId = HarnessId::Mock;
 
 struct Rig {
     core: EngineCore,

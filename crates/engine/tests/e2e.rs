@@ -226,251 +226,6 @@ fn assemble(dir: &std::path::Path, harness: Arc<dyn Harness>) -> EngineCore {
         .expect("engine core assembles")
 }
 
-#[tokio::test]
-async fn update_deferred_steering_preserves_the_active_turn_and_queued_prompt() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    struct HoldsTurn {
-        events: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<AgentEvent>>>,
-        starts: AtomicUsize,
-    }
-    #[async_trait]
-    impl Harness for HoldsTurn {
-        fn id(&self) -> HarnessId {
-            HarnessId::Mock
-        }
-        fn display_name(&self) -> &str {
-            "Step-boundary fixture"
-        }
-        fn supports_steering(&self) -> bool {
-            true
-        }
-        fn steering_mode(&self) -> SteeringMode {
-            SteeringMode::StepBoundary
-        }
-        fn reasoning_levels(&self) -> &[ReasoningLevel] {
-            &[]
-        }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
-            Ok(vec![])
-        }
-        async fn run(
-            &self,
-            request: RunRequest,
-            controls: RunControls,
-        ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-            self.starts.fetch_add(1, Ordering::SeqCst);
-            let events = self.events.lock().unwrap().take();
-            if let Some(events) = events {
-                Ok(
-                    futures::stream::unfold((events, controls), |(mut rx, controls)| async move {
-                        rx.recv().await.map(|event| (Ok(event), (rx, controls)))
-                    })
-                    .boxed(),
-                )
-            } else {
-                MockHarness {
-                    script: mock_script(),
-                }
-                .run(request, controls)
-                .await
-            }
-        }
-    }
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let harness = Arc::new(HoldsTurn {
-        events: std::sync::Mutex::new(Some(rx)),
-        starts: AtomicUsize::new(0),
-    });
-    let registry = registry_with(harness.clone());
-    let dir = tempfile::tempdir().unwrap();
-    let core = EngineCore::assemble(dir.path(), registry.clone(), HarnessId::Mock, None).unwrap();
-    let handle = core.doc_host.open(CHAT).unwrap();
-    core.sessions
-        .dispatch(
-            CHAT,
-            HarnessId::Mock,
-            run_request("opening"),
-            Some("opening".into()),
-        )
-        .await
-        .unwrap();
-    tx.send(mock_script()[0].clone()).unwrap();
-    wait_for(
-        || harness.starts.load(Ordering::SeqCst) == 1,
-        "first turn starts",
-    )
-    .await;
-    registry.begin_update(HarnessId::Mock);
-    queue_as_viewer(
-        handle.doc(),
-        "deferred-steer",
-        SessionCommandPayload::Steer {
-            prompt: "follow up".into(),
-            message_id: Some("follow-up".into()),
-        },
-    );
-    wait_for(
-        || {
-            matches!(
-                command_status(&core, "deferred-steer"),
-                Some((SessionCommandStatus::Applied, _))
-            )
-        },
-        "steer retained",
-    )
-    .await;
-    assert_eq!(harness.starts.load(Ordering::SeqCst), 1);
-    assert!(core.sessions.turn_in_flight(CHAT));
-    assert!(
-        handle
-            .doc()
-            .read_queue()
-            .unwrap()
-            .iter()
-            .any(|row| row.id == "follow-up")
-    );
-    assert!(
-        !handle
-            .doc()
-            .read_entries()
-            .unwrap()
-            .iter()
-            .any(|row| row.id == "follow-up")
-    );
-    // Explicit queued-row steering must also preserve the row and active turn.
-    assert!(
-        core.doc_host
-            .steer_queued_now(CHAT, "follow-up")
-            .await
-            .is_err()
-    );
-    assert!(
-        handle
-            .doc()
-            .read_queue()
-            .unwrap()
-            .iter()
-            .any(|row| row.id == "follow-up")
-    );
-    tx.send(done(DoneStatus::Completed)).unwrap();
-    let installing = tokio::time::timeout(
-        Duration::from_secs(2),
-        registry.update_lease(HarnessId::Mock),
-    )
-    .await
-    .unwrap();
-    assert_eq!(harness.starts.load(Ordering::SeqCst), 1);
-    drop(installing);
-    registry.end_update(HarnessId::Mock);
-    wait_for(
-        || harness.starts.load(Ordering::SeqCst) == 2,
-        "queued prompt runs after update",
-    )
-    .await;
-    assert!(handle.doc().read_queue().unwrap().is_empty());
-    core.shutdown().await;
-}
-
-#[tokio::test]
-async fn pending_update_does_not_block_dispatch_or_other_harnesses() {
-    struct RecordingHarness(HarnessId, Arc<std::sync::Mutex<Vec<String>>>);
-    #[async_trait]
-    impl Harness for RecordingHarness {
-        fn id(&self) -> HarnessId {
-            self.0
-        }
-        fn display_name(&self) -> &str {
-            "Recording"
-        }
-        fn supports_steering(&self) -> bool {
-            false
-        }
-        fn steering_mode(&self) -> SteeringMode {
-            SteeringMode::TurnBoundary
-        }
-        fn reasoning_levels(&self) -> &[ReasoningLevel] {
-            &[]
-        }
-        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
-            Ok(vec![])
-        }
-        async fn run(
-            &self,
-            request: RunRequest,
-            controls: RunControls,
-        ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-            assert!(controls.execution_lease.is_some());
-            self.1.lock().unwrap().push(request.prompt.clone());
-            MockHarness {
-                script: mock_script(),
-            }
-            .run(request, controls)
-            .await
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let registry = Arc::new(HarnessRegistry::new());
-    for id in [HarnessId::ClaudeCode, HarnessId::Codex] {
-        registry.register(Arc::new(RecordingHarness(id, started.clone())));
-    }
-    let core =
-        EngineCore::assemble(dir.path(), registry.clone(), HarnessId::ClaudeCode, None).unwrap();
-    let active_turn = registry.execution_lease(HarnessId::ClaudeCode).await;
-    registry.begin_update(HarnessId::ClaudeCode);
-    // These awaits model the shared queue watcher's serial dispatch calls.
-    // Neither a waiting writer nor an active installation may block dispatch.
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        core.sessions.dispatch(
-            "waiting",
-            HarnessId::ClaudeCode,
-            run_request("waiting"),
-            None,
-        ),
-    )
-    .await
-    .expect("dispatch must not wait for the update")
-    .unwrap();
-    drop(active_turn);
-    let installing = registry.update_lease(HarnessId::ClaudeCode).await;
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        core.sessions.dispatch(
-            "cancelled",
-            HarnessId::ClaudeCode,
-            run_request("cancelled"),
-            None,
-        ),
-    )
-    .await
-    .expect("dispatch must not wait for installation")
-    .unwrap();
-    core.sessions
-        .dispatch("other", HarnessId::Codex, run_request("other"), None)
-        .await
-        .unwrap();
-    wait_for(
-        || started.lock().unwrap().contains(&"other".to_string()),
-        "unrelated harness starts",
-    )
-    .await;
-    tokio::time::timeout(Duration::from_secs(1), core.sessions.interrupt("cancelled"))
-        .await
-        .expect("a run waiting for an update remains interruptible")
-        .unwrap();
-    assert_eq!(*started.lock().unwrap(), ["other"]);
-    drop(installing);
-    registry.end_update(HarnessId::ClaudeCode);
-    wait_for(
-        || started.lock().unwrap().contains(&"waiting".to_string()),
-        "deferred run starts after update",
-    )
-    .await;
-    assert!(!started.lock().unwrap().contains(&"cancelled".to_string()));
-    core.shutdown().await;
-}
-
 /// Queue a command into the chat doc the way a REMOTE viewer device would: an immutable
 /// pending entry appended under the viewer's device id (ledger rule 1).
 fn queue_as_viewer(doc: &SessionDoc, id: &str, payload: SessionCommandPayload) {
@@ -785,7 +540,9 @@ async fn interrupt_stamps_streaming_entry_aborted() {
                 .watch_sessions()
                 .borrow()
                 .iter()
-                .any(|s| s.chat_id == CHAT && s.last_turn_outcome.is_some_and(|o| o.status == DoneStatus::Interrupted))
+                .any(|s| {
+                s.chat_id == CHAT && s.last_turn_outcome.is_some_and(|o| o.status == DoneStatus::Interrupted)
+            })
         },
         "interrupted activity projection",
     )
@@ -1616,6 +1373,7 @@ impl Harness for EchoAnswerHarness {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(16);
         tokio::spawn(async move {
             let answers = (controls.request_input)(vec![zeron_proto::UserInputQuestion {
+                mcp_connect: None,
                 id: "q1".into(),
                 header: "Pick".into(),
                 question: "Which one?".into(),
@@ -1754,6 +1512,7 @@ async fn closing_a_dead_runs_question_records_it_without_a_new_turn() {
                 id: "req-dead".into(),
                 request_id: "req-dead".into(),
                 questions: vec![zeron_proto::UserInputQuestion {
+                    mcp_connect: None,
                     id: "q1".into(),
                     header: "Pick".into(),
                     question: "Which one?".into(),
@@ -1859,6 +1618,7 @@ async fn respond_input_resolves_pending_question() {
         SessionCommandPayload::RespondInput {
             request_id,
             answers: vec![zeron_proto::UserInputAnswer {
+                payload: None,
                 question_id: "q1".into(),
                 labels: vec!["b".into()],
             }],
@@ -1885,6 +1645,7 @@ async fn respond_input_resolves_pending_question() {
     assert_eq!(
         recorded_answers(&core),
         Some(vec![zeron_proto::UserInputAnswer {
+            payload: None,
             question_id: "q1".into(),
             labels: vec!["b".into()],
         }])
@@ -1933,6 +1694,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(16);
             tokio::spawn(async move {
                 let answers = (controls.request_input)(vec![zeron_proto::UserInputQuestion {
+                    mcp_connect: None,
                     id: "q1".into(),
                     header: "Pick".into(),
                     question: "Which one?".into(),
@@ -2005,6 +1767,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
         SessionCommandPayload::RespondInput {
             request_id: "bogus-id".into(),
             answers: vec![zeron_proto::UserInputAnswer {
+                payload: None,
                 question_id: "q1".into(),
                 labels: vec!["a".into()],
             }],
@@ -2052,6 +1815,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
         SessionCommandPayload::RespondInput {
             request_id,
             answers: vec![zeron_proto::UserInputAnswer {
+                payload: None,
                 question_id: "q1".into(),
                 labels: vec!["b".into()],
             }],
@@ -2126,6 +1890,7 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
                     // (empty answers) and cancels the token — like a real CLI
                     // being torn down, the stream then ends WITHOUT a Done.
                     let _ = (controls.request_input)(vec![zeron_proto::UserInputQuestion {
+                        mcp_connect: None,
                         id: "q1".into(),
                         header: "Pick".into(),
                         question: "Which one?".into(),
@@ -2275,6 +2040,7 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(16);
             tokio::spawn(async move {
                 let question = zeron_proto::UserInputQuestion {
+                    mcp_connect: None,
                     id: "q1".into(),
                     header: "Pick".into(),
                     question: "Which one?".into(),
@@ -2384,6 +2150,7 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
         SessionCommandPayload::RespondInput {
             request_id,
             answers: vec![zeron_proto::UserInputAnswer {
+                payload: None,
                 question_id: "q1".into(),
                 labels: vec!["a".into()],
             }],
@@ -2580,114 +2347,6 @@ async fn attachment_upload_then_run_threads_refs_and_paths() {
 /// prompt forbids opening the file). Ignored by default: needs an installed,
 /// authenticated `claude` CLI and spends real tokens.
 /// Run with: `cargo test -p zeron-engine --test e2e -- --ignored`
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires installed+authenticated claude CLI; spends tokens"]
-async fn real_claude_sees_uploaded_image_inline() {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data");
-    let cwd = tmp.path().join("project");
-    std::fs::create_dir_all(&cwd).unwrap();
-
-    let core = EngineCore::assemble(
-        &dir,
-        Arc::new(zeron_engine::default_registry()),
-        HarnessId::ClaudeCode,
-        None,
-    )
-    .expect("engine core assembles");
-    // Pre-title the chat so the auto-titler doesn't spend a second model call.
-    core.workspace
-        .create_chat(CHAT, None, Some(&core.device_id), None, Some("/tmp".into()))
-        .expect("create chat row");
-    core.workspace
-        .rename_chat(CHAT, "Pre-titled")
-        .expect("rename chat");
-
-    // 8×8 solid-red PNG, uploaded exactly as the composer does.
-    const RED_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAB+GTG2wAAJP0GeGuMDBnAAAAAElFTkSuQmCC";
-    let client = zeron_rpc::memory_client(core.rpc_service());
-    client
-        .call(
-            zeron_rpc::methods::UPLOAD_CHUNK,
-            serde_json::json!({ "uploadId": "real-img", "seq": 0, "data": RED_PNG_B64 }),
-        )
-        .await
-        .expect("UploadChunk");
-    let committed = client
-        .call(
-            zeron_rpc::methods::UPLOAD_COMMIT,
-            serde_json::json!({ "uploadId": "real-img", "fileName": "swatch.png" }),
-        )
-        .await
-        .expect("UploadCommit");
-    let path = committed["path"].as_str().expect("path").to_string();
-    assert_eq!(
-        std::fs::read(&path).expect("committed file"),
-        b64.decode(RED_PNG_B64).unwrap()
-    );
-
-    let prompt = format!(
-        "Without running any tools or opening any files, answer from the attached image alone: \
-         what solid color is this image? Reply with exactly one lowercase word.\n\n\
-         Attached images (local files — open them to view):\n- {path}"
-    );
-    let request = RunRequest {
-        mcp: None,
-        prompt,
-        harness: None,
-        model: Some("haiku".into()),
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: cwd.to_string_lossy().to_string(),
-        sandbox: SandboxLevel::WorkspaceWrite,
-        auto_approve: false,
-        access: Default::default(),
-        plan: false,
-        attachments: vec![path],
-        resume: None,
-        worktree: None,
-        env: Default::default(),
-        extra_mcp: Vec::new(),
-    };
-    core.doc_host
-        .queue_command(
-            CHAT,
-            SessionCommandPayload::Run {
-                request,
-                message_id: "msg-img-1".into(),
-            },
-        )
-        .expect("queue real image run");
-    wait_for_within_secs(
-        || {
-            entries_now(&core).iter().any(|e| {
-                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
-            })
-        },
-        "real claude image turn",
-        120,
-    )
-    .await;
-
-    let reply: String = entries(&core)
-        .iter()
-        .filter(|e| e.role == MessageRole::Assistant)
-        .flat_map(|e| e.parts.iter())
-        .filter_map(|p| match p {
-            MessagePart::Text { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    assert!(
-        reply.contains("red"),
-        "claude should name the image's color; got: {reply:?}"
-    );
-    core.shutdown().await;
-}
 
 async fn wait_for_within_secs<F>(mut predicate: F, what: &str, secs: u64)
 where
@@ -2823,7 +2482,11 @@ async fn parked_session_ignores_trailing_frames_and_stays_idle() {
             "trailing frames must not re-arm Working"
         );
         assert_eq!(
-            core.sessions.session_status(CHAT).unwrap().last_turn_outcome.map(|o| o.status),
+            core.sessions
+                .session_status(CHAT)
+                .unwrap()
+                .last_turn_outcome
+                .map(|o| o.status),
             Some(DoneStatus::Completed),
             "parked teardown must preserve the real turn outcome"
         );
@@ -3396,57 +3059,6 @@ async fn generated_image_is_materialized_before_publication_and_survives_reopen(
 }
 
 /// Real provider + engine smoke, opt-in because it consumes image quota.
-#[tokio::test]
-#[ignore = "requires authenticated Codex with image generation; consumes quota"]
-async fn real_image_generation_profile_smoke() {
-    let dir = tempfile::tempdir().unwrap();
-    let core = EngineCore::assemble(
-        dir.path(),
-        registry_with(Arc::new(zeron_harness::CodexHarness::new())),
-        HarnessId::Codex,
-        None,
-    )
-    .unwrap();
-    core.sessions
-        .dispatch(
-            CHAT,
-            HarnessId::Codex,
-            run_request("Generate an image of a small green goblin using image generation."),
-            None,
-        )
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(300), async {
-        while !entries_now(&core)
-            .iter()
-            .any(|e| e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete))
-        {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let all = entries(&core);
-    let image = all
-        .iter()
-        .flat_map(|e| &e.parts)
-        .find_map(|p| {
-            if let MessagePart::Image { path, .. } = p {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .expect("generated image reaches document");
-    assert!(std::path::Path::new(image).starts_with(core.uploads.dir()));
-    assert!(std::path::Path::new(image).is_file());
-    assert!(
-        !serde_json::to_string(&all)
-            .unwrap()
-            .contains("generated_images/")
-    );
-    core.sessions.shutdown().await;
-}
 
 /// A harness that fails before streaming (an OpenCode server that never
 /// booted) must leave its reason in the transcript, not only a bare

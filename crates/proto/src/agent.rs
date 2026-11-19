@@ -2,102 +2,46 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The wire prefix of an agent added from the ACP registry: its harness
-/// slug is `acp.<registry id>` (`acp.gemini`), kept apart from the built-in
-/// slugs (the registry also lists agents Zeron drives itself, `cursor`,
-/// `devin`, …) and safe as a directory name on every platform.
-pub const REGISTRY_SLUG_PREFIX: &str = "acp.";
-
-/// An agent added from the ACP registry, by its interned slug
-/// (`acp.<registry id>`). Interned so [`HarnessId`] stays `Copy` and its
-/// slug `&'static`: the set is bounded by what a device has ever added or
-/// been asked about (the registry lists tens of agents), so the leak is too.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RegistryAgent(&'static str);
-
-impl RegistryAgent {
-    /// The agent for a registry id (`gemini`), or `None` for one that isn't
-    /// a registry id (the registry's ids are lowercase letters, digits, `-`,
-    /// `_` and `.`, at most 64 long).
-    pub fn new(registry_id: &str) -> Option<Self> {
-        let valid = !registry_id.is_empty()
-            && registry_id.len() <= 64
-            && registry_id
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'))
-            && registry_id.as_bytes()[0].is_ascii_alphanumeric();
-        valid.then(|| Self(intern(&format!("{REGISTRY_SLUG_PREFIX}{registry_id}"))))
-    }
-
-    /// From a harness slug (`acp.gemini`).
-    pub fn from_slug(slug: &str) -> Option<Self> {
-        Self::new(slug.strip_prefix(REGISTRY_SLUG_PREFIX)?)
-    }
-
-    /// The registry's own id (`gemini`).
-    pub fn registry_id(self) -> &'static str {
-        &self.0[REGISTRY_SLUG_PREFIX.len()..]
-    }
-
-    /// The harness slug (`acp.gemini`).
-    pub fn slug(self) -> &'static str {
-        self.0
-    }
-}
-
-impl std::fmt::Debug for RegistryAgent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-fn intern(slug: &str) -> &'static str {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    static SLUGS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut slugs = SLUGS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(known) = slugs.get(slug) {
-        return known;
-    }
-    let leaked: &'static str = Box::leak(slug.to_owned().into_boxed_str());
-    slugs.insert(leaked);
-    leaked
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HarnessId {
-    ClaudeCode,
-    Codex,
-    Cursor,
-    /// Cognition's Devin agent, driven over ACP (`devin acp`).
-    Devin,
-    /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
-    Grok,
-    /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
-    Hermes,
-    /// Vercel fx, driven by its native ACP server.
-    Fx,
-    /// The Pi coding agent (pi.dev), driven over its native JSONL RPC protocol.
-    Pi,
-    /// SST's opencode agent, driven natively over its own HTTP/SSE server
-    /// protocol (`opencode serve` — the same wire the opencode desktop app
-    /// speaks).
-    Opencode,
-    /// google's antigravity agent over acp (`agy_acp_server`, installed from
-    /// its pinned release archive).
-    Antigravity,
-    /// Meta's Muse Code agent, driven natively over the Muse Session Protocol
-    /// (MSP: `muse` speaking JSON-RPC on stdio).
-    Muse,
-    /// Test harness; never shown in production pickers.
+    #[default]
+    Copilot,
     Mock,
-    /// An agent added from the ACP registry (`acp.<registry id>`), driven by
-    /// the generic ACP harness from its registry entry: every registry
-    /// agent goes through this one path.
-    Registry(RegistryAgent),
+    Unknown(&'static str),
+}
+
+impl HarnessId {
+    pub const ALL: [HarnessId; 2] = [Self::Copilot, Self::Mock];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Copilot => "copilot",
+            Self::Mock => "mock",
+            Self::Unknown(slug) => slug,
+        }
+    }
+
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|id| id.as_str() == slug)
+    }
+
+    fn legacy(slug: &str) -> Self {
+        let slug = match slug {
+            "claude-code" => "claude-code",
+            "codex" => "codex",
+            "cursor" => "cursor",
+            "devin" => "devin",
+            "grok" => "grok",
+            "hermes" => "hermes",
+            "fx" => "fx",
+            "pi" => "pi",
+            "opencode" => "opencode",
+            "antigravity" => "antigravity",
+            "muse" => "muse",
+            _ => "unknown",
+        };
+        Self::Unknown(slug)
+    }
 }
 
 impl Serialize for HarnessId {
@@ -109,106 +53,63 @@ impl Serialize for HarnessId {
 impl<'de> Deserialize<'de> for HarnessId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let slug = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
-        HarnessId::from_slug(&slug).ok_or_else(|| {
-            serde::de::Error::unknown_variant(
-                &slug,
-                &[
-                    "claude-code",
-                    "codex",
-                    "cursor",
-                    "devin",
-                    "grok",
-                    "hermes",
-                    "fx",
-                    "pi",
-                    "opencode",
-                    "antigravity",
-                    "muse",
-                    "mock",
-                    "acp.<registry id>",
-                ],
-            )
-        })
-    }
-}
-
-impl HarnessId {
-    /// Every built-in harness, in declaration order (a registry agent is
-    /// one a device added: the engine's registry lists those).
-    pub const ALL: [HarnessId; 12] = [
-        HarnessId::ClaudeCode,
-        HarnessId::Codex,
-        HarnessId::Cursor,
-        HarnessId::Devin,
-        HarnessId::Grok,
-        HarnessId::Hermes,
-        HarnessId::Fx,
-        HarnessId::Pi,
-        HarnessId::Opencode,
-        HarnessId::Antigravity,
-        HarnessId::Muse,
-        HarnessId::Mock,
-    ];
-
-    /// The wire slug (`claude-code`, `codex`, ...) — what serde writes.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            HarnessId::ClaudeCode => "claude-code",
-            HarnessId::Codex => "codex",
-            HarnessId::Cursor => "cursor",
-            HarnessId::Devin => "devin",
-            HarnessId::Grok => "grok",
-            HarnessId::Hermes => "hermes",
-            HarnessId::Fx => "fx",
-            HarnessId::Pi => "pi",
-            HarnessId::Opencode => "opencode",
-            HarnessId::Antigravity => "antigravity",
-            HarnessId::Muse => "muse",
-            HarnessId::Mock => "mock",
-            HarnessId::Registry(agent) => agent.slug(),
-        }
-    }
-
-    /// Inverse of [`Self::as_str`]; `None` for a slug this build does not know.
-    pub fn from_slug(slug: &str) -> Option<HarnessId> {
-        if let Some(agent) = RegistryAgent::from_slug(slug) {
-            return Some(HarnessId::Registry(agent));
-        }
-        Self::ALL.into_iter().find(|id| id.as_str() == slug)
-    }
-
-    /// The registry agent this is, if it is one.
-    pub fn registry(self) -> Option<RegistryAgent> {
-        match self {
-            HarnessId::Registry(agent) => Some(agent),
-            _ => None,
-        }
+        Ok(Self::from_slug(&slug).unwrap_or_else(|| Self::legacy(&slug)))
     }
 }
 
 #[cfg(test)]
-mod registry_slug_tests {
+mod harness_id_tests {
     use super::*;
 
     #[test]
-    fn registry_agents_round_trip_as_namespaced_slugs() {
-        let id = HarnessId::from_slug("acp.gemini").expect("a registry slug");
-        assert_eq!(id.as_str(), "acp.gemini");
-        assert_eq!(id.registry().map(RegistryAgent::registry_id), Some("gemini"));
-        assert_eq!(serde_json::to_value(id).unwrap(), serde_json::json!("acp.gemini"));
-        let back: HarnessId = serde_json::from_value(serde_json::json!("acp.gemini")).unwrap();
-        assert_eq!(back, id);
-        // Interned: the same slug is the same id, whichever way it came.
-        assert_eq!(RegistryAgent::new("gemini").map(HarnessId::Registry), Some(id));
-        // A built-in's slug stays the built-in, never a registry agent.
-        assert_eq!(HarnessId::from_slug("cursor"), Some(HarnessId::Cursor));
-        let cursor: HarnessId = serde_json::from_value(serde_json::json!("claude-code")).unwrap();
-        assert_eq!(cursor, HarnessId::ClaudeCode);
-        // Not a registry id: refused, as an unknown slug always was.
-        for bad in ["acp.", "acp.Gemini", "acp.../x", "acp.-x", "gemini", "acp.a/b"] {
-            assert_eq!(HarnessId::from_slug(bad), None, "{bad}");
+    fn supported_harnesses_round_trip() {
+        for id in HarnessId::ALL {
+            let json = serde_json::to_string(&id).unwrap();
+            assert_eq!(serde_json::from_str::<HarnessId>(&json).unwrap(), id);
         }
-        assert!(serde_json::from_value::<HarnessId>(serde_json::json!("nope")).is_err());
+        assert_eq!(HarnessId::default(), HarnessId::Copilot);
+    }
+
+    #[test]
+    fn legacy_ids_remain_readable_but_are_not_supported() {
+        for slug in [
+            "claude-code",
+            "codex",
+            "cursor",
+            "devin",
+            "grok",
+            "hermes",
+            "fx",
+            "pi",
+            "opencode",
+            "antigravity",
+            "muse",
+        ] {
+            let id: HarnessId = serde_json::from_value(serde_json::json!(slug)).unwrap();
+            assert!(matches!(id, HarnessId::Unknown(_)));
+            assert_eq!(id.as_str(), slug);
+            assert_eq!(HarnessId::from_slug(slug), None);
+        }
+    }
+
+    #[test]
+    fn arbitrary_slugs_use_a_bounded_fallback() {
+        for slug in [
+            "",
+            "acp.gemini",
+            "acp.other",
+            "future-agent",
+            &"x".repeat(65536),
+        ] {
+            let id: HarnessId = serde_json::from_value(serde_json::json!(slug)).unwrap();
+        assert_eq!(id, HarnessId::Unknown("unknown"));
+        }
+    }
+
+    #[test]
+    fn non_string_ids_are_rejected() {
+        assert!(serde_json::from_str::<HarnessId>("null").is_err());
+        assert!(serde_json::from_str::<HarnessId>("42").is_err());
     }
 }
 
@@ -1168,6 +1069,16 @@ pub struct UserInputQuestion {
     pub prefill: Option<String>,
     #[serde(default)]
     pub multiline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_connect: Option<McpConnectSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConnectSpec {
+    pub agent_id: String,
+    pub preset_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1175,6 +1086,8 @@ pub struct UserInputQuestion {
 pub struct UserInputAnswer {
     pub question_id: String,
     pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1557,15 +1470,15 @@ mod tests {
     #[test]
     fn harness_id_uses_kebab_case() {
         assert_eq!(
-            serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
-            "\"claude-code\""
+            serde_json::to_string(&HarnessId::Copilot).unwrap(),
+            "\"copilot\""
         );
     }
 
     #[test]
     fn harness_update_status_uses_stable_wire_names() {
         let status = HarnessUpdateStatus {
-            harness: HarnessId::ClaudeCode,
+            harness: HarnessId::Copilot,
             installed_version: Some("1.0.0".into()),
             latest_version: Some("1.1.0".into()),
             channel: Some("stable".into()),
@@ -1584,7 +1497,7 @@ mod tests {
         let json = serde_json::to_value(&status).unwrap();
         // Older peers neither send nor expect the compatibility fields.
         assert!(json.get("compatibility").is_none() && json.get("heldBack").is_none());
-        assert_eq!(json["harness"], "claude-code");
+        assert_eq!(json["harness"], "copilot");
         assert_eq!(json["installedVersion"], "1.0.0");
         assert_eq!(json["policy"], "auto-when-idle");
         assert_eq!(json["phase"], "waiting-for-idle");

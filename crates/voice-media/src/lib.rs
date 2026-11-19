@@ -507,7 +507,7 @@ mod tests {
             let helper = installed_helper(&codex).unwrap();
             std::fs::write(
                 &helper,
-                include_bytes!("../../harness/tests/fixtures/fake-codex-voice-host.py"),
+                include_bytes!("fake-voice-host.py"),
             )
             .unwrap();
             std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();

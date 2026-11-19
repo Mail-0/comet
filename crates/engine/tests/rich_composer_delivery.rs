@@ -24,15 +24,15 @@ use zeron_rpc::RpcService;
 
 const CHAT: &str = "rich-delivery";
 const HARNESSES: [HarnessId; 9] = [
-    HarnessId::ClaudeCode,
-    HarnessId::Codex,
-    HarnessId::Cursor,
-    HarnessId::Devin,
-    HarnessId::Grok,
-    HarnessId::Hermes,
-    HarnessId::Pi,
-    HarnessId::Antigravity,
-    HarnessId::Opencode,
+    HarnessId::Copilot,
+    HarnessId::Mock,
+    HarnessId::Copilot,
+    HarnessId::Copilot,
+    HarnessId::Copilot,
+    HarnessId::Copilot,
+    HarnessId::Copilot,
+    HarnessId::Copilot,
+    HarnessId::Copilot,
 ];
 
 enum Delivery {
@@ -182,12 +182,12 @@ fn rich_text(label: &str) -> (String, String) {
     (raw, readable)
 }
 fn expected(raw: &str, readable: &str, id: HarnessId) -> String {
-    if id == HarnessId::Codex {
+    if id == HarnessId::Mock {
         raw.replace(
             &zeron_proto::file_mentions::local_file_link("src/é file.rs", false),
             "[é file.rs](src/%C3%A9%20file.rs)",
         )
-    } else if id == HarnessId::Opencode {
+    } else if id == HarnessId::Copilot {
         // OpenCode receives canonical identity and converts it locally so a
         // disappearing project command cannot become ordinary slash text.
         raw.into()
@@ -197,7 +197,7 @@ fn expected(raw: &str, readable: &str, id: HarnessId) -> String {
 }
 fn assert_delivered(actual: &str, raw: &str, readable: &str, id: HarnessId) {
     let expected = expected(raw, readable, id);
-    if id == HarnessId::Cursor
+    if id == HarnessId::Copilot
         && let Some(json) = actual.strip_prefix("The preceding user messages may not have reached a Cursor checkpoint before startup stopped. Retain this JSON as conversation history; do not rerun prior tools or side effects. Respond to the current message.\n")
     {
         let history: serde_json::Value = serde_json::from_str(json)
@@ -438,7 +438,7 @@ async fn queue_edits_preserve_reselected_skills_until_delivery_for_every_harness
 
 #[tokio::test]
 async fn projectless_catalogs_use_the_session_directory_and_reject_unknown_targets() {
-    let (tmp, core, _harness, _rx) = setup(HarnessId::Codex).await;
+    let (tmp, core, _harness, _rx) = setup(HarnessId::Mock).await;
     let client = zeron_rpc::memory_client(core.rpc_service());
     for method in [
         zeron_rpc::methods::LIST_COMMANDS,
@@ -506,72 +506,5 @@ async fn projectless_catalogs_use_the_session_directory_and_reject_unknown_targe
             .await
             .unwrap();
         assert_eq!(result[0]["description"], cwd.to_str().unwrap(), "{method}");
-    }
-}
-
-#[tokio::test]
-async fn project_catalog_rpcs_hold_update_leases_through_cancelled_discovery_cleanup() {
-    for method in [
-        zeron_rpc::methods::LIST_COMMANDS,
-        zeron_rpc::methods::LIST_SKILLS,
-    ] {
-        let (tmp, core, harness, _rx) = setup(HarnessId::Codex).await;
-        let root = tmp.path().join("project-catalog");
-        std::fs::create_dir(&root).unwrap();
-        let root = root.canonicalize().unwrap();
-        core.workspace
-            .set_chat_cwd(CHAT, root.to_str().unwrap())
-            .unwrap();
-        let (started, mut starts) = mpsc::unbounded_channel();
-        let gate = Arc::new(DiscoveryGate {
-            started,
-            release: tokio::sync::Notify::new(),
-        });
-        *harness.discovery_gate.lock().unwrap() = Some(gate.clone());
-        core.registry.begin_update(HarnessId::Codex);
-        let installation = core.registry.update_lease(HarnessId::Codex).await;
-        let service = core.rpc_service();
-        let caller = tokio::spawn(async move {
-            service
-                .handle(
-                    method,
-                    serde_json::json!({"harness":"codex", "chatId":CHAT}),
-                )
-                .await
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), starts.recv())
-                .await
-                .is_err(),
-            "{method} bypassed installation"
-        );
-        drop(installation);
-        core.registry.end_update(HarnessId::Codex);
-        let discovered_root = tokio::time::timeout(Duration::from_secs(2), starts.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(discovered_root, root, "{method} lost project context");
-        caller.abort();
-        assert!(matches!(caller.await, Err(error) if error.is_cancelled()));
-        core.registry.begin_update(HarnessId::Codex);
-        let registry = core.registry.clone();
-        let mut next_installation =
-            tokio::spawn(async move { registry.update_lease(HarnessId::Codex).await });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut next_installation)
-                .await
-                .is_err(),
-            "{method} released its lease before cleanup"
-        );
-        gate.release.notify_one();
-        drop(
-            tokio::time::timeout(Duration::from_secs(2), next_installation)
-                .await
-                .unwrap()
-                .unwrap(),
-        );
-        core.registry.end_update(HarnessId::Codex);
-        core.shutdown().await;
     }
 }

@@ -55,7 +55,6 @@ pub enum SteerOutcome {
     /// Delivered into the live run's steering mailbox.
     Accepted,
     /// A live run owns the turn, but an update prevents accepting another prompt.
-    DeferredByUpdate,
     /// No live steerable run — the caller should dispatch the prompt as a new turn.
     NotSteerable,
 }
@@ -149,7 +148,7 @@ impl Drop for VoiceCall {
 }
 
 struct RunHandle {
-    voice: Option<zeron_harness::codex::realtime::RealtimeHandle>,
+    voice: Option<zeron_harness::realtime::RealtimeHandle>,
     voice_active: Arc<VoiceActivity>,
     run_id: String,
     steerable: bool,
@@ -597,7 +596,8 @@ impl SessionsEngine {
             Arc::new(zeron_mcp::Tools::new(Arc::new(zeron_mcp::Zeron::with_client(
                 zeron_rpc::memory_client(zeron_rpc::agent_service(service.clone(), chat)),
                 origin.clone(),
-            ))))
+            ),
+            )))
         });
         let endpoint = zeron_mcp::http::McpHttpServer::bind(factory).await?;
         *lock(&self.inner.mcp_endpoint) = Some(Arc::new(endpoint));
@@ -1030,15 +1030,6 @@ impl SessionsEngine {
         self.inner.note_provider_switch(chat_id, harness_id, doc);
     }
 
-    /// Whether an accepted agent update gates the chat's live run, so a new
-    /// prompt waits in the queue rather than joining that run's transcript.
-    pub fn live_run_update_pending(&self, chat_id: &str) -> bool {
-        let harness = lock(&self.inner.runs)
-            .get(chat_id)
-            .map(|h| h.runtime_config.harness_id);
-        harness.is_some_and(|harness| self.inner.registry.update_pending(harness))
-    }
-
     /// The chat's live run accepts steering into its mailbox.
     pub fn live_run_steerable(&self, chat_id: &str) -> bool {
         lock(&self.inner.runs)
@@ -1112,7 +1103,7 @@ impl SessionsEngine {
         }
         self.dispatch_inner(
             chat_id,
-            HarnessId::Codex,
+            HarnessId::Copilot,
             request,
             None,
             false,
@@ -1127,7 +1118,7 @@ impl SessionsEngine {
         &self,
         chat_id: &str,
     ) -> Option<(
-        zeron_harness::codex::realtime::RealtimeHandle,
+        zeron_harness::realtime::RealtimeHandle,
         tokio::sync::broadcast::Receiver<zeron_proto::voice::VoiceEvent>,
         Arc<VoiceActivity>,
     )> {
@@ -1260,7 +1251,7 @@ impl SessionsEngine {
             if idle {
                 // No prompt rides an idle start, so nothing could carry an
                 // in-place reconfiguration: only the runtime as is will do.
-                return if route == Some(false) && harness_id == HarnessId::Codex {
+                return if route == Some(false) {
                     Ok(run_id)
                 } else {
                     Err(EngineError::Other("incompatible live runtime".into()))
@@ -1295,11 +1286,7 @@ impl SessionsEngine {
                     // OpenCode must see the canonical selection before it
                     // decodes the provider command: a project-scoped command
                     // can disappear between composer discovery and delivery.
-                    prompt: if harness_id == HarnessId::Opencode {
-                        delivered.to_owned()
-                    } else {
-                        zeron_proto::invocation::harness_prompt(delivered, harness_id)
-                    },
+                    prompt: zeron_proto::invocation::harness_prompt(delivered, harness_id),
                     message_id: Some(user_id.clone()),
                     // Images ride the mailbox too: replacing the runtime just
                     // to inline them killed its background work.
@@ -1309,13 +1296,7 @@ impl SessionsEngine {
                     config: reconfigure.then(|| Box::new(request.clone())),
                 };
                 if let Ok(permit) = steer_tx.reserve().await {
-                    // Commit the reserved slot atomically with the update
-                    // marker. An accepted update releases the slot instead, and
-                    // the prompt takes the fresh-run path behind the update.
-                    self.inner
-                        .registry
-                        .while_update_clear(harness_id, || {
-                            let mut pending = lock(&ledger);
+                    let mut pending = lock(&ledger);
                             pending.push_back(RoutedSteer {
                                 prompt: request.prompt.clone(),
                                 message_id: user_id.clone(),
@@ -1324,8 +1305,7 @@ impl SessionsEngine {
                                 request: Some(Box::new(request.clone())),
                             });
                             permit.send(message);
-                        })
-                        .is_some()
+                    true
                 } else {
                     false
                 }
@@ -1507,10 +1487,9 @@ impl SessionsEngine {
         let turn = TurnControl::default();
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fork_history_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (voice_handle, realtime, _voice_events) = zeron_harness::codex::realtime::channel();
         let voice_active = Arc::new(VoiceActivity::default());
         let controls = RunControls {
-            realtime: (harness_id == HarnessId::Codex).then_some(realtime),
+            realtime: None,
             execution_lease: None,
             request_input,
             steering: steer_rx,
@@ -1569,7 +1548,7 @@ impl SessionsEngine {
         runs.insert(
             chat_id.to_string(),
             RunHandle {
-                voice: (harness_id == HarnessId::Codex).then_some(voice_handle),
+                voice: None,
                 voice_active: voice_active.clone(),
                 run_id: run_id.clone(),
                 steerable: harness.supports_steering(),
@@ -1831,11 +1810,7 @@ impl SessionsEngine {
             Box::new(request)
         });
         let message = SteerMessage {
-            prompt: if harness_id == HarnessId::Opencode {
-                delivered.to_owned()
-            } else {
-                zeron_proto::invocation::harness_prompt(delivered, harness_id)
-            },
+            prompt: zeron_proto::invocation::harness_prompt(delivered, harness_id),
             message_id: Some(user_id.clone()),
             attachments,
             config: None,
@@ -1845,11 +1820,7 @@ impl SessionsEngine {
         let Ok(permit) = steer_tx.reserve().await else {
             return Ok(SteerOutcome::NotSteerable);
         };
-        let accepted = self.inner.registry.while_update_clear(harness_id, || {
-            // Serialize mailbox acceptance with confirmation and Done-time
-            // inspection: a fast consumer must never outrun its ledger entry.
-            // The update marker is checked in the same critical section, so an
-            // accepted update releases the reserved slot instead.
+        {
             let mut pending = lock(&ledger);
             pending.push_back(RoutedSteer {
                 prompt: prompt.to_string(),
@@ -1859,9 +1830,6 @@ impl SessionsEngine {
                 request: sent_with,
             });
             permit.send(message);
-        });
-        if accepted.is_none() {
-            return Ok(SteerOutcome::DeferredByUpdate);
         }
         let handle = self.doc_handle(chat_id)?;
         handle.write_user_message(&user_id, prompt, issued_at.min(now_ms()))?;
@@ -2821,14 +2789,23 @@ impl Inner {
         // expired (`plugins::agents`; told only if it's one of those).
         let problem = match event {
             AgentEvent::Error { message } => Some(message.as_str()),
-            AgentEvent::Done { error: Some(error), .. } => Some(error.as_str()),
+            AgentEvent::Done {
+                error: Some(error), ..
+            } => Some(error.as_str()),
             _ => None,
         };
         if let (Some(message), Some(plugins)) = (problem, self.plugins.get()) {
             plugins.agents().observe_problem(chat_id, message);
         }
         // Its final reply, told with its `turn.finished` (`messages.read`).
-        if let (AgentEvent::Done { result: Some(reply), .. }, Some(plugins)) = (event, self.plugins.get()) {
+        if let (
+            AgentEvent::Done {
+                result: Some(reply),
+                ..
+            },
+            Some(plugins),
+        ) = (event, self.plugins.get())
+        {
             plugins.agents().observe_reply(chat_id, reply);
         }
         if let Some(hub) = lock(&self.hubs).get(chat_id) {
@@ -3065,7 +3042,10 @@ impl Inner {
         // once, for every device. (An ask already open when it was put to
         // sleep is no such moment, so that one doesn't wake it.)
         if status != was
-            && matches!(status, SessionStatus::AwaitingInput | SessionStatus::Errored)
+            && matches!(
+                status,
+                SessionStatus::AwaitingInput | SessionStatus::Errored
+            )
             && let Some(ws) = self.workspace()
             && let Err(error) = ws.wake_chat(chat_id, now)
         {
@@ -3162,7 +3142,10 @@ impl Inner {
     ) -> Option<(zeron_proto::McpServer, Option<zeron_mcp::http::Grant>)> {
         let command = crate::managed::mcp_executable()?.to_str()?.to_owned();
         let mut env: std::collections::BTreeMap<String, String> = [
-            (zeron_proto::McpServer::CHAT_ID_ENV.to_owned(), chat_id.to_owned()),
+            (
+                zeron_proto::McpServer::CHAT_ID_ENV.to_owned(),
+                chat_id.to_owned(),
+            ),
             ("ZERON_DEVICE_ID".to_owned(), self.device_id.clone()),
         ]
         .into_iter()
@@ -3898,11 +3881,7 @@ fn native_command(prompt: &str, harness: HarnessId) -> bool {
     if selected {
         return true;
     }
-    let delivered = if harness == HarnessId::Codex {
-        invocation::invocation_prompt(prompt)
-    } else {
-        invocation::harness_prompt(prompt, harness)
-    };
+    let delivered = invocation::harness_prompt(prompt, harness);
     invocation::leading_command(&delivered)
         .is_some_and(|(name, _)| invocation::valid_skill_command_name(name))
 }
@@ -4099,7 +4078,9 @@ const HEARTBEAT_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
 /// heartbeat old.
 fn touch_due(session: &Session, now: chrono::DateTime<Utc>) -> bool {
     zeron_proto::view::session_expires(session)
-        && now.signed_duration_since(session.updated_at).num_milliseconds()
+        && now
+            .signed_duration_since(session.updated_at)
+            .num_milliseconds()
             >= zeron_proto::view::SESSION_HEARTBEAT_MS
 }
 
@@ -4455,68 +4436,6 @@ struct RunResumeState {
     started: Arc<std::sync::atomic::AtomicBool>,
 }
 
-fn cursor_unstarted_history(
-    doc: &SessionDoc,
-    current_id: &str,
-    prompt: &str,
-    has_session: bool,
-) -> Result<String, DocError> {
-    // Convert each message before JSON encoding. Rewriting canonical chips in
-    // the encoded envelope can introduce unescaped quotes or newlines and can
-    // cause Cursor's current message to be converted twice.
-    let prompt = zeron_proto::invocation::harness_prompt(prompt, HarnessId::Cursor);
-    let entries = doc.read_entries()?;
-    let preceding: Vec<_> = entries
-        .iter()
-        .take_while(|entry| entry.id != current_id)
-        .collect();
-    // With an existing session, only bridge the tail whose assistant never
-    // produced content. A process can die before writing its SDK-side receipt,
-    // even though an older session ID still exists.
-    let after = if has_session {
-        preceding
-            .iter()
-            .rposition(|entry| {
-                entry.role == MessageRole::Assistant
-                    && entry.parts.iter().any(|part| match part {
-                        MessagePart::Text { text, .. } | MessagePart::Reasoning { text, .. } => {
-                            !text.is_empty()
-                        }
-                        MessagePart::Tool { .. } | MessagePart::Input { .. } => true,
-                        _ => false,
-                    })
-            })
-            .map_or(0, |i| i + 1)
-    } else {
-        0
-    };
-    let previous: Vec<String> = preceding
-        .iter()
-        .skip(after)
-        .filter(|entry| entry.role == MessageRole::User)
-        .map(|entry| {
-            entry
-                .parts
-                .iter()
-                .filter_map(|part| match part {
-                    MessagePart::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .filter(|text| !text.is_empty())
-        .map(|text| zeron_proto::invocation::harness_prompt(&text, HarnessId::Cursor))
-        .collect();
-    if previous.is_empty() {
-        return Ok(prompt);
-    }
-    Ok(format!(
-        "The preceding user messages may not have reached a Cursor checkpoint before startup stopped. Retain this JSON as conversation history; do not rerun prior tools or side effects. Respond to the current message.\n{}",
-        serde_json::json!({"previousUserMessages": previous, "currentUserMessage": prompt})
-    ))
-}
-
 #[allow(clippy::too_many_arguments)]
 /// Why an agent's [`SessionsEngine::await_background`] can't be honoured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4622,7 +4541,12 @@ async fn drive_run(
         && let Some(taken) = warm.take()
     {
         inner
-            .discard_taken(harness.as_ref(), &chat_id, taken, "native subagents switched")
+            .discard_taken(
+                harness.as_ref(),
+                &chat_id,
+                taken,
+                "native subagents switched",
+            )
             .await;
     }
     if let Some(taken) = warm.as_mut()
@@ -4794,15 +4718,6 @@ async fn drive_run(
     }
     let prepared = if let Some(refused) = auto_unavailable(&request, harness.access_modes()) {
         Err(refused)
-    } else if harness_id == HarnessId::Cursor {
-        cursor_unstarted_history(
-            &doc,
-            &resume_state.user_message_id,
-            &request.prompt,
-            request.resume.is_some(),
-        )
-        .map(|prompt| request.prompt = prompt)
-        .map_err(|e| zeron_harness::HarnessError::Protocol(e.to_string()))
     } else {
         Ok(())
     };
@@ -4810,16 +4725,6 @@ async fn drive_run(
     // The pending-update marker still orders new subprocesses after installation.
     // Share the lease with the adapter so child cleanup outlives this event loop.
     let mut _execution_lease = None;
-    // A warm start holds its CLI's lease from before its launch, so no update
-    // came between; one accepted since ends it here (the run waits behind
-    // the update as any other).
-    if warm.is_some() && inner.registry.update_pending(harness_id)
-        && let Some(taken) = warm.take()
-    {
-        inner
-            .discard_taken(harness.as_ref(), &chat_id, taken, "its CLI is being updated")
-            .await;
-    }
     let started = match prepared {
         Ok(()) => {
             let lease = match warm.as_ref() {
@@ -4837,10 +4742,8 @@ async fn drive_run(
                     listener(&chat_id, &request.cwd);
                 }
                 let mut wire_request = request;
-                if !matches!(harness_id, HarnessId::Cursor | HarnessId::Opencode) {
-                    wire_request.prompt =
-                        zeron_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
-                }
+                wire_request.prompt =
+                    zeron_proto::invocation::harness_prompt(&wire_request.prompt, harness_id);
                 // Everything the agent starts inherits its chat, which is how
                 // preview discovery tells its dev servers from the user's own.
                 wire_request.env.insert(
@@ -4857,7 +4760,10 @@ async fn drive_run(
                     // Preparing can decide the chat's account (a plugin's
                     // `run.preparing` pin): the session parks on what it
                     // really started with, not on what dispatch read before.
-                    let now = inner.registry.run_credential(harness_id, Some(&chat_id)).await;
+                    let now = inner
+                        .registry
+                        .run_credential(harness_id, Some(&chat_id))
+                        .await;
                     let binary = {
                         let mut runs = lock(&inner.runs);
                         let handle = runs.get_mut(&chat_id).filter(|h| h.run_id == run_id);
@@ -4883,7 +4789,9 @@ async fn drive_run(
                     if let Some(why) = stale
                         && let Some(taken) = warm.take()
                     {
-                        inner.discard_taken(harness.as_ref(), &chat_id, taken, why).await;
+                        inner
+                            .discard_taken(harness.as_ref(), &chat_id, taken, why)
+                            .await;
                     }
                 }
                 tracing::debug!(target: "first_word", chat = %chat_id, "drive_run: prepared");
@@ -5160,21 +5068,24 @@ async fn drive_run(
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_millis);
-    let session_idle = idle_override.unwrap_or(
-        if zeron_proto::voice::is_orchestrator_chat(&chat_id) {
+    let session_idle =
+        idle_override.unwrap_or(if zeron_proto::voice::is_orchestrator_chat(&chat_id) {
             std::time::Duration::from_secs(5 * 60)
         } else if stops_when_idle {
             AGENT_IDLE_STOP
         } else {
             SESSION_IDLE
-        },
-    );
+        });
     // A chat open nowhere: the shorter window, from the later of the turn's
     // end and its last viewer leaving (only where the short window applies).
     let short_window = idle_override.is_none()
         && stops_when_idle
         && !zeron_proto::voice::is_orchestrator_chat(&chat_id);
-    let unwatched_idle = if short_window { UNWATCHED_IDLE_STOP } else { session_idle };
+    let unwatched_idle = if short_window {
+        UNWATCHED_IDLE_STOP
+    } else {
+        session_idle
+    };
     // Viewers coming and going: the window is worked out again.
     let mut viewers_changed = inner.viewers.sender().subscribe();
     // A live subagent stretches the window, but never unbounded: every
@@ -5364,27 +5275,6 @@ async fn drive_run(
                         idle_since = Some(tokio::time::Instant::now());
                     }
                     continue;
-                }
-                // An accepted update must not wait behind a warm between-turn
-                // child for the full idle-reaper window. The completed turn is
-                // already durable, so retire the parked process cleanly and let
-                // the queued exclusive lease proceed.
-                _ = tokio::time::sleep_until(tokio::time::Instant::now()),
-                    if idle_since.is_some()
-                        && !resume_state.voice_active.live()
-                        && inner.registry.update_pending(harness_id)
-                        && !turn.background_live()
-                        && (subagents.is_empty()
-                            || last_subagent_activity.is_none_or(|at| at.elapsed() >= subagent_silence)) =>
-                {
-                    if let Some(token) = lock(&inner.runs)
-                        .get(&chat_id)
-                        .filter(|h| h.run_id == run_id)
-                        .map(|h| h.interrupt_token.clone())
-                    {
-                        token.cancel();
-                    }
-                    break SessionStatus::Idle;
                 }
                 // Idle reaper (zeron SESSION_IDLE_MS): a parked persistent session
                 // nobody returned to within its window releases its child. The turn
@@ -6388,11 +6278,7 @@ async fn drive_run(
             // PERSISTENT SESSION: a cleanly completed turn on a steerable
             // harness PARKS instead of ending — child + mailbox stay warm for
             // the next routed dispatch; per-turn state resets for it.
-            if (*status == DoneStatus::Completed || stopped_in_place)
-                && steerable
-                && !interrupted
-                && !inner.registry.update_pending(harness_id)
-            {
+            if (*status == DoneStatus::Completed || stopped_in_place) && steerable && !interrupted {
                 folded.clear();
                 dirty = false;
                 entry_id = new_id();
@@ -6415,7 +6301,13 @@ async fn drive_run(
                         outcome,
                         grace: None,
                     });
-                    inner.set_status_with_completion(&chat_id, SessionStatus::Idle, false, None, None);
+                    inner.set_status_with_completion(
+                        &chat_id,
+                        SessionStatus::Idle,
+                        false,
+                        None,
+                        None,
+                    );
                     inner.set_waiting(&chat_id, Some(zeron_proto::SessionWaiting { since, on }));
                     continue;
                 }
@@ -6597,7 +6489,10 @@ mod tests {
 
         let long_ago = now - chrono::Duration::minutes(20);
         assert!(!touch_due(&session_at(SessionStatus::Idle, long_ago), now));
-        assert!(!touch_due(&session_at(SessionStatus::Errored, long_ago), now));
+        assert!(!touch_due(
+            &session_at(SessionStatus::Errored, long_ago),
+            now
+        ));
         let mut subagents = session_at(SessionStatus::Idle, long_ago);
         subagents.running_subagents = 1;
         assert!(touch_due(&subagents, now));
@@ -6614,103 +6509,20 @@ mod tests {
         let window = std::time::Duration::from_millis(STREAM_COMMIT_MS);
         let start = tokio::time::Instant::now();
         assert_eq!(next_commit(None), start, "a turn's first token");
-        assert_eq!(next_commit(Some(start)), start + window, "just committed: a window on");
+        assert_eq!(
+            next_commit(Some(start)),
+            start + window,
+            "just committed: a window on"
+        );
         tokio::time::advance(window * 3).await;
-        assert_eq!(next_commit(Some(start)), tokio::time::Instant::now(), "quiet since");
+        assert_eq!(
+            next_commit(Some(start)),
+            tokio::time::Instant::now(),
+            "quiet since"
+        );
         tokio::time::advance(window / 2).await;
         let recent = tokio::time::Instant::now() - window / 4;
         assert_eq!(next_commit(Some(recent)), recent + window);
-    }
-
-    #[test]
-    fn cursor_recovery_converts_rich_messages_before_json_encoding() {
-        let doc = zeron_doc::SessionDoc::init("cursor-rich-recovery").unwrap();
-        let skill = zeron_proto::invocation::Invocation::Skill {
-            name: "review \"quoted\"".into(),
-            path: "/repo/quoted \"path\"/SKILL.md".into(),
-            command: None,
-        }
-        .link();
-        let previous = format!("Previous {skill}\nSecond line with \\ and \"quotes\"");
-        doc.push_message(&zeron_doc::SessionMessageEntry {
-            id: "u1".into(),
-            role: zeron_doc::MessageRole::User,
-            parts: vec![zeron_doc::MessagePart::Text {
-                id: "u1-text".into(),
-                text: previous.clone(),
-            }],
-            created_at: 0,
-            device_id: "test".into(),
-            status: None,
-            continuation_of: None,
-            duration_ms: None,
-        })
-        .unwrap();
-        let current = format!("Current {skill}\nKeep **Markdown**");
-        let delivered = super::cursor_unstarted_history(&doc, "u2", &current, false).unwrap();
-        let (_, json) = delivered.split_once('\n').unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            parsed["currentUserMessage"],
-            zeron_proto::invocation::harness_prompt(&current, zeron_proto::HarnessId::Cursor)
-        );
-        assert_eq!(
-            parsed["previousUserMessages"][0],
-            zeron_proto::invocation::harness_prompt(&previous, zeron_proto::HarnessId::Cursor)
-        );
-    }
-
-    #[test]
-    fn cursor_without_a_session_id_retains_only_preceding_user_messages() {
-        let doc = zeron_doc::SessionDoc::init("cursor-unstarted").unwrap();
-        for (id, role, text) in [
-            (
-                "u1",
-                zeron_doc::MessageRole::User,
-                "first interrupted request",
-            ),
-            ("a1", zeron_doc::MessageRole::Assistant, "partial output"),
-            ("u2", zeron_doc::MessageRole::User, "current request"),
-            ("u3", zeron_doc::MessageRole::User, "future pending request"),
-        ] {
-            doc.push_message(&zeron_doc::SessionMessageEntry {
-                id: id.into(),
-                role,
-                parts: vec![zeron_doc::MessagePart::Text {
-                    id: format!("{id}-text"),
-                    text: text.into(),
-                }],
-                created_at: 0,
-                device_id: "test".into(),
-                status: None,
-                continuation_of: None,
-                duration_ms: None,
-            })
-            .unwrap();
-        }
-        assert_eq!(
-            super::cursor_unstarted_history(&doc, "u1", "first interrupted request", false)
-                .unwrap(),
-            "first interrupted request"
-        );
-        let prompt = super::cursor_unstarted_history(&doc, "u2", "current request", false).unwrap();
-        assert!(prompt.contains("first interrupted request"));
-        assert!(prompt.contains("current request"));
-        assert!(!prompt.contains("partial output"));
-        assert!(!prompt.contains("future pending request"));
-        assert!(prompt.contains("do not rerun prior tools or side effects"));
-        assert_eq!(
-            super::cursor_unstarted_history(&doc, "u2", "current request", true).unwrap(),
-            "current request",
-            "content from the preceding turn is already in the native session"
-        );
-        assert!(
-            super::cursor_unstarted_history(&doc, "u3", "future pending request", true)
-                .unwrap()
-                .contains("current request"),
-            "an unacknowledged prompt after an older checkpoint must survive"
-        );
-        assert_eq!(doc.read_entries().unwrap().len(), 4);
     }
 
     use zeron_proto::{HarnessId, RunRequest, SandboxLevel};
@@ -6961,7 +6773,8 @@ mod tests {
 
         let bare = SessionsEngine::new(
             "host".into(),
-            Arc::new(RunJournal::open(dir.path().join("journals-bare")).unwrap()),
+            Arc::new(RunJournal::open(dir.path().join("journals-bare"))
+        .unwrap()),
             Arc::new(HarnessRegistry::new()),
         );
         let dropped = bare
@@ -6987,7 +6800,7 @@ mod tests {
     async fn journal_harness_session_matches_forward_scan() {
         fn started(id: &str, cwd: &str) -> AgentEvent {
             AgentEvent::SessionStarted {
-                harness: zeron_proto::HarnessId::ClaudeCode,
+                harness: zeron_proto::HarnessId::Copilot,
                 model: "m".into(),
                 tools: Vec::new(),
                 cwd: cwd.into(),
@@ -7106,7 +6919,7 @@ mod tests {
         );
         for (chat, events, want) in cases {
             for event in &events {
-                sessions.inner.journal.append(chat, event).unwrap();
+            sessions.inner.journal.append(chat, event).unwrap();
             }
             let want = want.map(|(id, cwd)| (id.to_string(), cwd.to_string()));
             let replayed = sessions.inner.journal.replay(chat, 0).unwrap();
@@ -7123,7 +6936,10 @@ mod tests {
         std::io::Write::write_all(&mut f, b"{\"seq\":3,\"event\":{\"type\":\"done\"").unwrap();
         assert_eq!(
             sessions.inner.journal_harness_session("started-only"),
-            Some(("s1".into(), "/a".into(), Some(zeron_proto::HarnessId::ClaudeCode)))
+            Some((
+                "s1".into(),
+                "/a".into(),
+                Some(zeron_proto::HarnessId::Copilot)))
         );
     }
 
@@ -7175,7 +6991,7 @@ mod tests {
     #[async_trait::async_trait]
     impl zeron_harness::Harness for IdleStartupFixture {
         fn id(&self) -> HarnessId {
-            HarnessId::Codex
+            HarnessId::Copilot
         }
         fn display_name(&self) -> &str {
             "Offline idle fixture"
@@ -7214,7 +7030,7 @@ mod tests {
                 }
             } else {
                 AgentEvent::SessionStarted {
-                    harness: HarnessId::Codex,
+                    harness: HarnessId::Copilot,
                     model: "fixture".into(),
                     tools: vec![],
                     cwd: request.cwd,
@@ -7256,7 +7072,7 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             Arc::new(registry),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();
@@ -7267,7 +7083,8 @@ mod tests {
         request.prompt.clear();
         core.sessions
             .inner
-            .remember_harness_session("idle", "old-native-thread", &request.cwd, HarnessId::Codex);
+            .remember_harness_session("idle", "old-native-thread", &request.cwd, HarnessId::Copilot,
+        );
         core.sessions.start_idle("idle", request).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
@@ -7278,7 +7095,7 @@ mod tests {
                 } else {
                     core.sessions
                         .inner
-                        .resume_for("idle", "/tmp", HarnessId::Codex)
+                        .resume_for("idle", "/tmp", HarnessId::Copilot)
                         .as_deref()
                         == Some("new-native-thread")
                 };
@@ -7332,20 +7149,20 @@ mod tests {
     fn live_routing_requires_the_same_runtime_configuration() {
         let initial = request();
         let config = RuntimeConfig::new(
-            HarnessId::Grok,
+            HarnessId::Copilot,
             &initial,
-            Arc::new(zeron_harness::AcpHarness::grok()),
+            Arc::new(zeron_harness::mock::MockHarness { script: Vec::new() }),
         );
 
         let mut follow_up = initial.clone();
         follow_up.prompt = "second".into();
         follow_up.resume = Some("session-1".into());
-        assert!(config.can_route(HarnessId::Grok, &follow_up));
-        assert!(!config.can_route(HarnessId::Devin, &follow_up));
+        assert!(config.can_route(HarnessId::Copilot, &follow_up));
+        assert!(!config.can_route(HarnessId::Mock, &follow_up));
 
         // Images ride the mailbox: they never force a replacement runtime.
         follow_up.attachments.push("/tmp/image.png".into());
-        assert!(config.can_route(HarnessId::Grok, &follow_up));
+        assert!(config.can_route(HarnessId::Copilot, &follow_up));
 
         // Another client's spelling of the same option value is the same runtime.
         let mut spelled = initial.clone();
@@ -7353,49 +7170,21 @@ mod tests {
             .model_options
             .insert("fastMode".into(), serde_json::json!(true));
         let config = RuntimeConfig::new(
-            HarnessId::Grok,
+            HarnessId::Copilot,
             &spelled,
-            Arc::new(zeron_harness::AcpHarness::grok()),
+            Arc::new(zeron_harness::mock::MockHarness { script: Vec::new() }),
         );
         follow_up
             .model_options
             .insert("fastMode".into(), serde_json::json!("true"));
-        assert!(config.can_route(HarnessId::Grok, &follow_up));
+        assert!(config.can_route(HarnessId::Copilot, &follow_up));
 
         follow_up.model = Some("grok-4.5".into());
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
+        assert!(!config.can_route(HarnessId::Copilot, &follow_up));
         follow_up.model = initial.model.clone();
 
         follow_up.reasoning = Some(zeron_proto::ReasoningLevel::Medium);
-        assert!(!config.can_route(HarnessId::Grok, &follow_up));
-    }
-
-    #[test]
-    fn claude_routing_compares_what_the_cli_launches_with() {
-        let claude = || -> Arc<dyn Harness> { Arc::new(zeron_harness::ClaudeHarness::new()) };
-        let mut initial = request();
-        initial.model = Some("claude-opus-5-5".into());
-        initial
-            .model_options
-            .insert("fastMode".into(), serde_json::json!(false));
-        let config = RuntimeConfig::new(HarnessId::ClaudeCode, &initial, claude());
-
-        // The CLI never reads the sandbox level; an option that launches no
-        // flag in either spelling is the same runtime.
-        let mut follow_up = initial.clone();
-        follow_up.sandbox = SandboxLevel::DangerFullAccess;
-        follow_up.model_options.clear();
-        follow_up.worktree = None;
-        assert!(config.can_route(HarnessId::ClaudeCode, &follow_up));
-
-        follow_up
-            .model_options
-            .insert("fastMode".into(), serde_json::json!("true"));
-        assert!(!config.can_route(HarnessId::ClaudeCode, &follow_up));
-        follow_up.model_options.clear();
-
-        follow_up.cwd = "/elsewhere".into();
-        assert!(!config.can_route(HarnessId::ClaudeCode, &follow_up));
+        assert!(!config.can_route(HarnessId::Copilot, &follow_up));
     }
 
     #[test]
@@ -7875,7 +7664,7 @@ mod tests {
 
     #[test]
     fn a_leading_path_is_not_a_native_command() {
-        for harness in [HarnessId::ClaudeCode, HarnessId::Codex, HarnessId::Opencode] {
+        for harness in [HarnessId::Copilot, HarnessId::Mock] {
             assert!(native_command("/compact", harness), "{harness:?}");
             assert!(
                 native_command("  /review the tests", harness),
@@ -7895,8 +7684,7 @@ mod tests {
         }
         .link();
         assert!(native_command(
-            &format!("{selected} the parser"),
-            HarnessId::ClaudeCode
+            &format!("{selected} the parser"), HarnessId::Copilot
         ));
     }
 
@@ -7993,8 +7781,10 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         };
         turn.set_wakes_on_background(wakes);
-        feed.send(AgentEvent::TextDelta { text: "on it".into() }).unwrap();
-        WakeRig { core, feed, turn, chat, _dir: dir }
+        feed.send(AgentEvent::TextDelta { text: "on it".into(),
+        }).unwrap();
+        WakeRig { core, feed, turn, chat, _dir: dir,
+        }
     }
 
     fn waiting_agent(id: &str) -> zeron_proto::WaitingOn {
@@ -8049,7 +7839,8 @@ mod tests {
         assert!(s.waiting.is_none());
 
         // The wake turn's own end is the one finish.
-        rig.feed.send(AgentEvent::TextDelta { text: "all done".into() }).unwrap();
+        rig.feed.send(AgentEvent::TextDelta { text: "all done".into(),
+            }).unwrap();
         rig.feed.send(done(DoneStatus::Completed)).unwrap();
         let s = settled(&rig).await;
         assert_eq!(s.status, SessionStatus::Idle);

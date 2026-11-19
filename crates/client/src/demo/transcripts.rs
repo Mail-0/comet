@@ -574,6 +574,7 @@ fn picker(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                     request_id: "req-1".into(),
                     questions: vec![
                         UserInputQuestion {
+                            mcp_connect: None,
                             id: "q1".into(),
                             header: "Catalog source".into(),
                             question:
@@ -589,6 +590,7 @@ fn picker(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                             multi_select: false,
                         },
                         UserInputQuestion {
+                            mcp_connect: None,
                             id: "q2".into(),
                             header: "Harnesses".into(),
                             question: "Which harnesses should the picker offer on phones?".into(),
@@ -914,16 +916,29 @@ fn easing(host: &str, now: i64) -> Vec<SessionMessageEntry> {
         })),
     };
     vec![
-        user("m1", now - 360_000, "Would a spring read calmer than the power curve for the veil?"),
+        user(
+            "m1",
+            now - 360_000,
+            "Would a spring read calmer than the power curve for the veil?",
+        ),
         assistant(
             "m2",
             host,
             now - 340_000,
             vec![
-                text("t0", "A critically damped spring settles in ~2.4τ, but it overshoots nothing and can't be retimed mid-fade — the `1 − (1−p)^1.6` curve keeps the cadence-tracking duration. Keep the curve; use the spring only for the follow scroll."),
-                text("t1", "The fade still needs its EMA window, so I'll ask the timing chat."),
+                text(
+                    "t0",
+                    "A critically damped spring settles in ~2.4τ, but it overshoots nothing and can't be retimed mid-fade — the `1 − (1−p)^1.6` curve keeps the cadence-tracking duration. Keep the curve; use the spring only for the follow scroll.",
+                ),
+                text(
+                    "t1",
+                    "The fade still needs its EMA window, so I'll ask the timing chat.",
+                ),
                 tool("k1", send, false, None),
-                text("t2", "Track α = 0.2: it settles within five appends and ignores a single slow chunk."),
+                text(
+                    "t2",
+                    "Track α = 0.2: it settles within five appends and ignores a single slow chunk.",
+                ),
             ],
         ),
     ]
@@ -939,13 +954,24 @@ fn side(host: &str, now: i64) -> Vec<SessionMessageEntry> {
     );
     vec![
         user("m1", now - 300_000, "What EMA window does the veil use?"),
-        assistant("m2", host, now - 280_000, vec![text("t0", "α = 0.2 over inter-append gaps, seeded from the first two chunks.")]),
+        assistant(
+            "m2",
+            host,
+            now - 280_000,
+            vec![text(
+                "t0",
+                "α = 0.2 over inter-append gaps, seeded from the first two chunks.",
+            )],
+        ),
         user("m3", now - 120_000, &sent),
         assistant(
             "m4",
             host,
             now - 100_000,
-            vec![text("t0", "Track α = 0.2: it settles within five appends and ignores a single slow chunk. I've replied to your chat with the numbers.")],
+            vec![text(
+                "t0",
+                "Track α = 0.2: it settles within five appends and ignores a single slow chunk. I've replied to your chat with the numbers.",
+            )],
         ),
     ]
 }
@@ -1142,6 +1168,7 @@ pub(crate) fn asking() -> Vec<Step> {
     vec![
         Step::Text("Before I continue I need one decision:".into()),
         Step::Question(vec![UserInputQuestion {
+            mcp_connect: None,
             id: "q1".into(),
             header: "Scope".into(),
             question: "Should the fix cover Android too?".into(),

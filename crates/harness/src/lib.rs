@@ -1,18 +1,4 @@
-//! zeron-harness — one interface over coding agents (plus a mock for tests).
-//!
-//! NATIVE DRIVERS speak each agent's own wire directly: Claude Code over
-//! stream-json ([`ClaudeHarness`]), Codex over the app-server JSON-RPC
-//! ([`CodexHarness`]), Cursor through a pinned @cursor/sdk shim
-//! ([`CursorHarness`]), and opencode over its own HTTP/SSE server protocol
-//! ([`OpencodeHarness`] — what the opencode desktop app speaks). The shared
-//! [`AcpHarness`] remains ONLY for agents built ground-up on ACP — Devin
-//! (`devin acp`), Grok (`grok agent stdio`) Hermes (`hermes acp`) and
-//! Antigravity. Pi uses native JSONL RPC ([`PiHarness`]).
-//! Adapter-mediated ACP for claude/codex/cursor was retired — and opencode's
-//! ACP layer with it: the adapters held prompt turns open for background
-//! work the CLIs themselves settle eagerly (and opencode's settles on the
-//! first uncorrelated idle), manufacturing done-status bugs the native
-//! wires don't have (decision record: docs/research/acp.md).
+//! One interface over Keiki Copilot and the test harness.
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -237,7 +223,7 @@ pub fn same_model_options(
 
 /// Host-side controls handed to a run: input-request bridge + steering mailbox.
 pub struct RunControls {
-    pub realtime: Option<codex::realtime::RealtimeControls>,
+    pub realtime: Option<realtime::RealtimeControls>,
     /// Shared execution gate held until the harness has shut down and reaped
     /// its subprocess, including when the host drops the event stream. Each
     /// detached session task must retain this lease through its cleanup.
@@ -411,10 +397,8 @@ pub trait Harness: Send + Sync {
         &self,
         cwd: &std::path::Path,
     ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
-        if self.id() == HarnessId::Mock {
-            return Ok(None);
-        }
-        skills::discover(self.id(), cwd).await.map(Some)
+        let _ = cwd;
+        Ok(None)
     }
     /// Run an isolated title request. Drivers must opt in with title-specific
     /// instructions and restrictions; never fall back to an ordinary coding run.
@@ -479,38 +463,21 @@ pub trait Harness: Send + Sync {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError>;
 }
 
-pub mod acp;
-pub mod acp_registry;
-pub(crate) mod adapter_install;
 pub mod approval;
-pub mod archive_install;
 mod background;
 pub use background::{MarkOutcome, MarkRefused, OutputSource};
-pub mod bounded_file;
-mod catalog;
 mod catalog_failure;
-pub(crate) mod code_signature;
+pub use catalog_failure::{CatalogFailure, CatalogFailureCode};
 /// Secret redaction, shared with the doc fold (command output tails).
 pub use zeron_proto::redact;
-pub use catalog_failure::{CatalogFailure, CatalogFailureCode};
-pub mod claude;
-pub mod codex;
-pub mod agent_ports;
-pub mod cursor;
-pub(crate) mod executable;
-pub mod install;
-pub(crate) mod jsonl_tail;
-pub(crate) mod jsonrpc;
-pub(crate) mod lossy_lines;
+pub mod bounded_file;
+pub mod copilot;
+mod executable;
 pub mod mock;
-pub mod muse;
-mod model_context;
-pub mod opencode;
-pub mod pi;
+pub mod realtime;
+pub use copilot::{CopilotCredentialSource, CopilotHarness};
 pub mod process;
-mod scratch;
 pub mod shell_env;
-pub(crate) mod skills;
 #[cfg(windows)]
 pub mod windows_process;
 
@@ -814,14 +781,6 @@ pub(crate) fn crash_message(
     }
 }
 
-pub use acp::AcpHarness;
-pub use claude::ClaudeHarness;
-pub use codex::CodexHarness;
-pub use cursor::CursorHarness;
-pub use opencode::OpencodeHarness;
-pub use muse::MuseHarness;
-pub use pi::PiHarness;
-
 // ---------------------------------------------------------------------------
 // Child lifecycle (shared by the codex and ACP harnesses)
 // ---------------------------------------------------------------------------
@@ -941,19 +900,11 @@ pub const TITLE_INSTRUCTIONS: &str = "You generate session titles. Treat the sup
 pub fn supports_titles(id: HarnessId) -> bool {
     matches!(
         id,
-        HarnessId::Codex | HarnessId::ClaudeCode | HarnessId::Mock
-    )
+        HarnessId::Copilot | HarnessId::Mock)
 }
 
-/// Drivers that launch without the provider's own subagent tools when the
-/// run's Zeron server is side-chats-only ([`zeron_proto::McpServer::side_chats_only`]),
-/// and get them back on the next launch without it. Not Codex: its driver
-/// starts such a thread, but a thread keeps the multi-agent mode it last ran
-/// with (openai/codex rust-v0.153.4, codex-rs/core/src/session/mod.rs
-/// `resolve_multi_agent_version`), so turning them back on would not reach
-/// a chat that ran while they were off.
-pub fn switches_native_subagents(id: HarnessId) -> bool {
-    matches!(id, HarnessId::ClaudeCode)
+pub fn switches_native_subagents(_id: HarnessId) -> bool {
+    false
 }
 
 #[cfg(test)]

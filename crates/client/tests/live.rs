@@ -80,7 +80,7 @@ fn host_rows(now: chrono::DateTime<Utc>) -> (Device, Space, Chat) {
             observed_at: now,
         }),
         config: Some(ChatConfig {
-            harness: HarnessId::ClaudeCode,
+            harness: HarnessId::Copilot,
             model: Some("claude-opus-5".into()),
             reasoning: None,
             model_options: Default::default(),
@@ -1098,9 +1098,9 @@ async fn await_chat(client: &Client, chat: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn immediate_exit_after_first_send_recovers_new_chat_on_each_host_platform() {
     for (platform, harness) in [
-        ("windows", HarnessId::Codex),
-        ("macos", HarnessId::Cursor),
-        ("linux", HarnessId::ClaudeCode),
+        ("windows", HarnessId::Mock),
+        ("macos", HarnessId::Copilot),
+        ("linux", HarnessId::Copilot),
     ] {
         let edge = MockEdge::start().await;
         let host = HostRegistry::start(&edge).await;

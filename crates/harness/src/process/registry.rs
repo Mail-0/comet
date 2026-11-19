@@ -3,7 +3,7 @@
 //! A clean shutdown already tears every agent down (`owned::Child`,
 //! `shutdown_child`). An engine that is SIGKILLed or crashes runs none of
 //! that, and its agents are adopted by init and keep running: a bench that
-//! killed its engine found five `claude --print` still running eight
+//! killed its engine found five agent processes still running eight
 //! minutes later. Per OS:
 //!
 //! - **Windows:** each agent is created inside its own Job Object with
@@ -61,9 +61,6 @@ pub struct Record {
     /// Its working directory (the chat's worktree, for a chat's run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
-    /// Claude Code's config dir as the agent sees it: where a refresh of
-    /// its login (or of a Claude it runs) takes its lock.
-    pub claude_config: PathBuf,
 }
 
 #[cfg(unix)]
@@ -111,36 +108,17 @@ pub fn spawn(command: &mut Command) -> std::io::Result<Child> {
             .get_program()
             .to_string_lossy()
             .into_owned();
-        let claude_config = claude_config_of(command);
         #[cfg(target_os = "linux")]
         let child = linux::spawn(command)?;
         #[cfg(not(target_os = "linux"))]
         let child = command.spawn()?;
         if let Some(pid) = child.id() {
-            record(pid as i32, program, cwd, claude_config);
+            record(pid as i32, program, cwd);
         }
         Ok(child)
     }
     #[cfg(not(unix))]
     command.spawn()
-}
-
-/// The Claude config dir `command` will run with: its own environment over
-/// this process's.
-#[cfg(unix)]
-fn claude_config_of(command: &Command) -> PathBuf {
-    let var = |name: &str| match command
-        .as_std()
-        .get_envs()
-        .find(|(key, _)| *key == std::ffi::OsStr::new(name))
-    {
-        Some((_, value)) => value.map(std::ffi::OsString::from),
-        None => std::env::var_os(name),
-    };
-    crate::claude::refresh_lock::config_dir_with(
-        var("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
-        var("CLAUDE_CONFIG_DIR"),
-    )
 }
 
 /// This process, as its ledger names it.
@@ -159,7 +137,7 @@ fn ledger_name(engine: Engine) -> String {
 }
 
 #[cfg(unix)]
-fn record(pid: i32, program: String, cwd: Option<PathBuf>, claude_config: PathBuf) {
+fn record(pid: i32, program: String, cwd: Option<PathBuf>) {
     let mut state = state();
     if state.dirs.is_empty() {
         // No engine in this process keeps a ledger (a CLI, a test).
@@ -185,7 +163,6 @@ fn record(pid: i32, program: String, cwd: Option<PathBuf>, claude_config: PathBu
         program,
         pgid,
         cwd,
-        claude_config,
     });
     write_ledgers(&mut state);
 }
@@ -408,7 +385,6 @@ const GRACE: Duration = Duration::from_secs(5);
 /// The longest the sweep waits out a login refresh before leaving the
 /// agent for the next engine start.
 #[cfg(unix)]
-const LOGIN_WAIT: Duration = Duration::from_secs(300);
 
 /// [`sweep`] on a thread of its own: the engine starts without waiting
 /// for it.
@@ -520,44 +496,23 @@ pub async fn sweep(data_dir: &Path) -> Vec<(i32, Verdict)> {
     }
 }
 
-/// End one recorded agent and everything it started, if [`judge`] allows:
-/// SIGTERM, then SIGKILL after [`GRACE`]. A login refresh in flight is
-/// waited out first (up to [`LOGIN_WAIT`]; then it is left for later).
+/// End one recorded agent and everything it started, if ownership is proven.
 #[cfg(unix)]
 async fn end(record: &Record, engine: Engine) -> Verdict {
-    let deadline = tokio::time::Instant::now() + LOGIN_WAIT;
-    loop {
-        let refreshing = crate::claude::refresh_lock::refresh_in_flight(&record.claude_config);
-        let recorder = Recorder {
+    let recorder = Recorder {
             pid: engine.pid,
             alive: super::still_same(engine.pid, Some(engine.start)),
         };
-        match judge(record, observe(record.pid).as_ref(), recorder, refreshing) {
-            Verdict::LoginRefreshing => {
-                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if left.is_zero() {
-                    return Verdict::LoginRefreshing;
-                }
-                crate::claude::refresh_lock::settle(&record.claude_config, left).await;
-            }
-            Verdict::End => {
-                // What it started, while it is still there to trace them
-                // from (shells in groups and sessions of their own).
-                let mut tree = vec![super::Tracked {
+    let verdict = judge(record, observe(record.pid).as_ref(), recorder, false);
+    if verdict == Verdict::End {
+        let mut tree = vec![super::Tracked {
                     pid: record.pid,
                     start: Some(record.start),
                 }];
                 tree.extend(super::descendants(record.pid as u32).await);
-                // A refresh may have begun meanwhile.
-                if crate::claude::refresh_lock::refresh_in_flight(&record.claude_config) {
-                    continue;
-                }
-                super::terminate_tree(&tree, GRACE).await;
-                return Verdict::End;
-            }
-            other => return other,
-        }
+        super::terminate_tree(&tree, GRACE).await;
     }
+    verdict
 }
 
 /// Linux: agents get `PR_SET_PDEATHSIG`, forked from a thread that lives as
@@ -644,10 +599,9 @@ mod tests {
             pid: 4242,
             start: 1_700_000_000_000_000,
             exe: "/bin/bash".into(),
-            program: "/home/me/.local/bin/claude".into(),
+            program: "/home/me/.local/bin/test-agent".into(),
             pgid: 4242,
             cwd: Some("/tmp/worktree".into()),
-            claude_config: "/tmp/home/.claude".into(),
         }
     }
 
@@ -792,16 +746,6 @@ mod tests {
             ..orphan()
         };
         assert_eq!(judge(&record(), Some(&reused), DEAD, true), Verdict::Reused);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_claude_config_follows_the_commands_own_environment() {
-        let mut command = Command::new("claude");
-        command.env("CLAUDE_CONFIG_DIR", "/tmp/cfg");
-        assert_eq!(claude_config_of(&command), PathBuf::from("/tmp/cfg"));
-        command.env("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/tmp/secure");
-        assert_eq!(claude_config_of(&command), PathBuf::from("/tmp/secure"));
     }
 
     /// The death signal is armed on Linux: an agent of a process that is

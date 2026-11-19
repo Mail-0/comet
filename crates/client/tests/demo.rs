@@ -330,6 +330,7 @@ fn questions_answer_through_respond_input() {
 
 fn zeron_proto_answer(question_id: &str, label: &str) -> zeron_client::UserInputAnswer {
     zeron_client::UserInputAnswer {
+        payload: None,
         question_id: question_id.into(),
         labels: vec![label.into()],
     }
@@ -613,10 +614,10 @@ fn provider_switch_needs_a_host_that_switches() {
             .session_config(chat)
             .expect("demo chats have a config");
         use zeron_proto::HarnessId;
-        config.harness = if config.harness == HarnessId::Codex {
-            HarnessId::ClaudeCode
+        config.harness = if config.harness == HarnessId::Mock {
+            HarnessId::Copilot
         } else {
-            HarnessId::Codex
+            HarnessId::Mock
         };
         config.model = None;
         (client.set_session_config(chat, &config), config.harness)

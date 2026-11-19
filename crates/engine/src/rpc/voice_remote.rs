@@ -37,7 +37,7 @@ impl EngineRpc {
             }),
             methods::PREPARE_VOICE_V2 => {
                 let request: wire::Prepare = parse_params(p)?;
-                if request.config.harness != HarnessId::Codex {
+                if request.config.harness != HarnessId::Copilot {
                     return Err(failure(VoiceRejection::WrongHarness));
                 }
                 if request.voice.as_ref().is_some_and(|v| v.len() > 128) {

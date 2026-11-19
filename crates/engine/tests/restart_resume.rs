@@ -726,10 +726,10 @@ async fn switched_native_subagents_replace_the_parked_session() {
     let registry = Arc::new(HarnessRegistry::new());
     registry.register(Arc::new(PersistentHarness {
         runs_started: runs_started.clone(),
-        id: HarnessId::ClaudeCode,
+        id: HarnessId::Copilot,
         side_chats_only: side_chats_only.clone(),
     }));
-    let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::ClaudeCode, None)
+    let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::Copilot, None)
         .expect("engine core assembles");
     // A served IPC port: runs carry Zeron's own MCP server.
     core.sessions.set_ipc_port(27699);
@@ -750,7 +750,7 @@ async fn switched_native_subagents_replace_the_parked_session() {
     assert_eq!(*runs_started.lock().unwrap(), 1, "same setting: same child");
 
     registry
-        .set_native_subagents(HarnessId::ClaudeCode, false)
+        .set_native_subagents(HarnessId::Copilot, false)
         .unwrap();
     queue_run(&core, "third", "/tmp", "msg-user-3");
     wait_for(
@@ -780,10 +780,10 @@ async fn a_parked_side_chat_stays_warm_when_native_subagents_switch() {
     let registry = Arc::new(HarnessRegistry::new());
     registry.register(Arc::new(PersistentHarness {
         runs_started: runs_started.clone(),
-        id: HarnessId::ClaudeCode,
+        id: HarnessId::Copilot,
         side_chats_only: side_chats_only.clone(),
     }));
-    let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::ClaudeCode, None)
+    let core = EngineCore::assemble(&dir, registry.clone(), HarnessId::Copilot, None)
         .expect("engine core assembles");
     core.sessions.set_ipc_port(27699);
     core.workspace
@@ -813,7 +813,7 @@ async fn a_parked_side_chat_stays_warm_when_native_subagents_switch() {
     )
     .await;
     registry
-        .set_native_subagents(HarnessId::ClaudeCode, false)
+        .set_native_subagents(HarnessId::Copilot, false)
         .unwrap();
     queue_run(&core, "second", "/tmp", "msg-user-2");
     wait_for(
@@ -1378,7 +1378,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
         EngineCore::assemble(
             &dir,
             Arc::new(zeron_engine::default_registry()),
-            HarnessId::ClaudeCode,
+            HarnessId::Copilot,
             None,
         )
         .expect("engine core assembles")

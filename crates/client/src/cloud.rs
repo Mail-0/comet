@@ -374,40 +374,10 @@ impl Client {
     /// carries no window.
     pub async fn vault_usage(
         &self,
-        provider: VaultProvider,
-        slot: &str,
+        _provider: VaultProvider,
+        _slot: &str,
     ) -> Result<Option<(Vec<zeron_proto::AgentUsageWindow>, Option<String>)>> {
-        let harness = match provider {
-            VaultProvider::Claude => zeron_proto::HarnessId::ClaudeCode,
-            VaultProvider::Codex => zeron_proto::HarnessId::Codex,
-            _ => return Ok(None),
-        };
-        if self.inner.is_demo() {
-            let window = |label: &str, used: f32, hours: i64| zeron_proto::AgentUsageWindow {
-                label: label.into(),
-                used_fraction: used,
-                resets_at: Some(Utc::now() + chrono::Duration::hours(hours)),
-            };
-            return Ok(Some((
-                vec![window("Session", 0.52, 2), window("Week", 0.27, 80)],
-                None,
-            )));
-        }
-        #[derive(Deserialize)]
-        struct Usage {
-            body: serde_json::Value,
-        }
-        let usage = self
-            .cloud_call::<Usage>(
-                reqwest::Method::GET,
-                &["vault", "accounts", provider.as_str(), slot, "usage"],
-                &[],
-                None,
-                "Cloud account usage",
-            )
-            .await
-            .map_err(Failure::into_error)?;
-        Ok(zeron_proto::plan_usage::from_reply(harness, &usage.body))
+        Ok(None)
     }
 
     /// `DELETE /vault/{org}/accounts/{provider}/{slot}`.

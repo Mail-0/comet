@@ -29,7 +29,7 @@ pub const CLOUD_ACCOUNT_CAPABILITY: &str = "cloud-account";
 pub const CLOUD_SESSION_CAPABILITY: &str = "cloud-session";
 
 /// Harnesses a Cloud device offers in v1 (wire `HarnessId` names).
-pub const CLOUD_HARNESSES: &[&str] = &["codex", "claude-code"];
+pub const CLOUD_HARNESSES: &[&str] = &["copilot"];
 
 /// A Cloud session machine's own setup steps — started or woke, cloned the
 /// project, checked out the session branch — shown as tool chips that open

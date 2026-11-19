@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/keiki-model",
+    "crates/keiki-api",
+    "crates/copilot",
     "crates/voice",
     "crates/voice-media",
     "crates/voice-session",
@@ -43,6 +46,13 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+keiki-model = { path = "crates/keiki-model" }
+keiki-api = { path = "crates/keiki-api" }
+zeron-copilot = { path = "crates/copilot" }
+base64 = "0.22"
+rand = "0.9"
+url = "2"
+percent-encoding = "2"
 zeron-voice-session = { path = "crates/voice-session" }
 zeron-orb = { path = "crates/orb" }
 zeron-veil = { path = "crates/veil" }

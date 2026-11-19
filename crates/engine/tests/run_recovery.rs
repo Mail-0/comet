@@ -1058,7 +1058,7 @@ async fn a_rejected_resume_in_a_switched_chat_starts_fresh_and_says_so() {
     registry.register(Arc::new(ScriptedHarness::completing(&mock_log, "hs-mock")));
     // Pi's first session is lost after a while; every later one sticks.
     registry.register(Arc::new(AsProvider {
-        id: HarnessId::Pi,
+        id: HarnessId::Copilot,
         cli: None,
         script: ScriptedHarness {
             requests: pi_log.clone(),
@@ -1092,10 +1092,10 @@ async fn a_rejected_resume_in_a_switched_chat_starts_fresh_and_says_so() {
         }
     };
     turn(HarnessId::Mock, "one", "msg-user-1", 1).await;
-    turn(HarnessId::Pi, "two", "msg-user-2", 2).await;
+    turn(HarnessId::Copilot, "two", "msg-user-2", 2).await;
     turn(HarnessId::Mock, "three", "msg-user-3", 3).await;
     // Back on Pi: the chat's record of Pi's session names `hs-pi`, gone now.
-    turn(HarnessId::Pi, "four", "msg-user-4", 4).await;
+    turn(HarnessId::Copilot, "four", "msg-user-4", 4).await;
     {
         let log = pi_log.lock().unwrap();
         assert_eq!(log.len(), 3, "{log:#?}");
@@ -1111,7 +1111,7 @@ async fn a_rejected_resume_in_a_switched_chat_starts_fresh_and_says_so() {
     );
     // The new session replaces the dead one.
     turn(HarnessId::Mock, "five", "msg-user-5", 5).await;
-    turn(HarnessId::Pi, "six", "msg-user-6", 6).await;
+    turn(HarnessId::Copilot, "six", "msg-user-6", 6).await;
     assert_eq!(pi_log.lock().unwrap()[3].resume.as_deref(), Some("hs-pi-2"));
     core.shutdown().await;
 }

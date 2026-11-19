@@ -156,7 +156,7 @@ mod tests {
         let core = crate::EngineCore::assemble_with_profile(
             crate::EngineProfile::local(temp.path()).unwrap(),
             std::sync::Arc::new(HarnessRegistry::new()),
-            HarnessId::Codex,
+            HarnessId::Copilot,
             None,
         )
         .unwrap();
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(row.config, Some(config("b")));
 
         core.workspace
-            .set_chat_harness_session(&first, "codex-thread", "/home/me", Some(HarnessId::Codex));
+            .set_chat_harness_session(&first, "codex-thread", "/home/me", Some(HarnessId::Copilot));
         let doc = core.doc_host.open(&first).unwrap();
         for i in 0..ROTATE_AFTER {
             doc.write_user_message(&format!("m{i}"), "hi", i as i64)
@@ -188,7 +188,7 @@ mod tests {
         let inherited = Some(crate::workspace_host::StoredHarnessSession {
             session_id: "codex-thread".into(),
             cwd: Some("/home/me".into()),
-            harness: Some(HarnessId::Codex),
+            harness: Some(HarnessId::Copilot),
         });
         let next = rpc.voice_chat(config("b")).await.unwrap();
         assert_ne!(next, first);

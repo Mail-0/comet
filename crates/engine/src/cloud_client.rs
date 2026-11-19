@@ -33,7 +33,7 @@ struct AccountList {
 use zeron_rpc::{RpcError, RpcReply, TokenError, TokenSource, methods, parse_params};
 
 use crate::EngineError;
-use crate::agent_accounts::{AgentAccounts, CaptureSink};
+use crate::agent_accounts::AgentAccounts;
 use crate::http_error::describe_http_error;
 
 /// Edge calls here are a few DO hops; the vault adds, for GitHub polls and
@@ -667,39 +667,6 @@ impl CloudClient {
         .await
     }
 
-    /// `PUT /vault/{orgId}/credentials/codex` with
-    /// `{material: {authJson}, authorizedDevices}` — a `codex login` result.
-    pub async fn put_codex_auth(
-        &self,
-        auth_json: serde_json::Value,
-        authorized_devices: Vec<String>,
-    ) -> Result<VaultStatus, EngineError> {
-        self.put_credential(
-            VaultProvider::Codex,
-            serde_json::json!({ "authJson": auth_json }),
-            authorized_devices,
-        )
-        .await
-    }
-
-    /// `PUT /vault/{orgId}/credentials/claude` with
-    /// `{material: {claudeAiOauth}, authorizedDevices}` — a Claude sign-in
-    /// through Claude's own OAuth flow.
-    pub async fn put_claude_auth(
-        &self,
-        claude_ai_oauth: serde_json::Value,
-        authorized_devices: Vec<String>,
-        profile: Option<VaultAccountProfile>,
-    ) -> Result<VaultStatus, EngineError> {
-        self.put_credential_with(
-            VaultProvider::Claude,
-            serde_json::json!({ "claudeAiOauth": claude_ai_oauth }),
-            authorized_devices,
-            profile,
-        )
-        .await
-    }
-
     async fn put_credential(
         &self,
         provider: VaultProvider,
@@ -1080,7 +1047,7 @@ fn failed(error: EngineError) -> RpcError {
 /// Answer one Cloud / vault method for this runtime's user.
 pub(crate) async fn dispatch(
     cloud: CloudClient,
-    accounts: &AgentAccounts,
+    _accounts: &AgentAccounts,
     method: &str,
     raw: serde_json::Value,
 ) -> Result<RpcReply, RpcError> {
@@ -1243,65 +1210,7 @@ pub(crate) async fn dispatch(
             let accounts = cloud.github_activate(&p.slot).await.map_err(failed)?;
             RpcReply::value(&serde_json::json!({ "accounts": accounts }))
         }
-        methods::VAULT_CONNECT_CODEX | methods::VAULT_CONNECT_CLAUDE => {
-            let p: DevicesParams = params(raw)?;
-            // Refuse before any browser opens: nowhere to upload to.
-            if !cloud.is_available() {
-                return Err(RpcError::Failed(UNAVAILABLE.into()));
-            }
-            let harness = if method == methods::VAULT_CONNECT_CODEX {
-                HarnessId::Codex
-            } else {
-                HarnessId::ClaudeCode
-            };
-            let capture = vault_upload_sink(cloud, harness, p.authorized_devices);
-            let start = accounts
-                .start_capture_login(harness, capture)
-                .await
-                .map_err(failed)?;
-            RpcReply::value(&start)
-        }
         other => Err(RpcError::UnknownMethod(other.to_string())),
-    }
-}
-
-/// Where a capture-only sign-in on this device lands: the vault, as a login
-/// of `harness`'s subscription provider usable by `devices`.
-pub(crate) fn vault_upload_sink(
-    cloud: CloudClient,
-    harness: HarnessId,
-    devices: Vec<String>,
-) -> CaptureSink {
-    Arc::new(move |captured| {
-        let cloud = cloud.clone();
-        let devices = devices.clone();
-        Box::pin(async move {
-            let uploaded = if harness == HarnessId::Codex {
-                cloud.put_codex_auth(captured, devices).await
-            } else {
-                let (credential, profile) = split_capture(captured);
-                cloud.put_claude_auth(credential, devices, profile).await
-            };
-            uploaded.map(drop).map_err(|e| e.to_string())
-        })
-    })
-}
-
-/// A captured sign-in: `{credential, profile}` (Claude's, with the identity
-/// its profile reported) or the bare credential (Codex's `auth.json`, whose
-/// id token names the account).
-pub(crate) fn split_capture(
-    captured: serde_json::Value,
-) -> (serde_json::Value, Option<VaultAccountProfile>) {
-    match captured {
-        serde_json::Value::Object(mut map) if map.contains_key("credential") => {
-            let credential = map.remove("credential").unwrap_or_default();
-            let profile = map
-                .remove("profile")
-                .and_then(|p| serde_json::from_value::<VaultAccountProfile>(p).ok());
-            (credential, profile)
-        }
-        other => (other, None),
     }
 }
 
@@ -1666,7 +1575,9 @@ mod tests {
                 serde_json::json!({"chatId": "chat-1", "deviceId": "cloud-s1",
                     "spaceId": "sp-1", "state": "deleting", "createdAt": 3}),
             ),
-            ("DELETE", "/cloud/org_1") => (200, serde_json::json!({"state": "off", "available": true})),
+            ("DELETE", "/cloud/org_1") => {
+                (200, serde_json::json!({"state": "off", "available": true}))
+            }
             ("GET", "/cloud/org_1/usage?from=2026-09-29&to=2026-09-30") => (
                 200,
                 serde_json::json!({

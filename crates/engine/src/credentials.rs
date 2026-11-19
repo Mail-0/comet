@@ -1,67 +1,9 @@
-//! Credential broker — Cloud runner only (docs/design/cloud-device.md,
-//! "Engine changes"). Laptops never construct one: their agents use the
-//! CLIs' own logins, unchanged.
-//!
-//! Right before a harness spawn the host asks the broker to fill
-//! [`RunRequest::env`] (serde-skipped, so nothing here can reach the session
-//! doc, the journal, or the wire):
-//!
-//! - **Codex**: a `codex` vault grant (ChatGPT tokens) becomes a managed
-//!   `CODEX_HOME` at `{data_dir}/cloud/codex-home` whose `auth.json` holds the
-//!   access token with an EMPTY refresh token (the vault is the only
-//!   refresher; deleting the field instead makes codex reject the file).
-//!   Else an `openai-key` grant becomes `{"OPENAI_API_KEY": key}` there.
-//!   Else nothing — codex runs on whatever native login the sandbox has.
-//!
-//!   Why a file and not the app-server's `chatgptAuthTokens` login: codex
-//!   0.159 does expose `account/login/start {type: "chatgptAuthTokens"}` and
-//!   the `account/chatgptAuthTokens/refresh` server request, but both are
-//!   marked "[UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE" in its own
-//!   schema. The file path needs no private API and is sufficient: ChatGPT
-//!   access tokens live for days, every spawn re-grants (rewriting the file
-//!   when the grant changed), the background refresher rewrites it ~10 min
-//!   before expiry while a grant is cached, and a long-lived app-server that
-//!   hits a 401 reloads `auth.json` from disk before attempting its own
-//!   refresh ("Reloading auth for account …" in codex's auth recovery), so it
-//!   picks up the rewritten token.
-//! - **Claude Code** (only ever the unmodified CLI, only on the user's own
-//!   Cloud device): (1) a `claude` vault grant (the user's subscription
-//!   sign-in) is written as `claudeAiOauth` into the CLI's own
-//!   `.credentials.json` (`$CLAUDE_CONFIG_DIR` or `~/.claude`; 0600, atomic,
-//!   sibling keys such as `mcpOAuth` preserved) with an EMPTY refresh token —
-//!   the vault owns the refresh token and this engine never sees one — and
-//!   rewritten by the background refresher ~10 min before `expiresAt`;
-//!   (2) else a native sandbox login (`claude auth login` wrote a real refresh
-//!   token) is left alone; (3) else an `anthropic-key` grant (the user's own
-//!   API key) becomes `ANTHROPIC_API_KEY`; else the run fails with Claude's
-//!   own not-logged-in error. A native login the grant displaces is backed up
-//!   (`{data_dir}/cloud/claude-native-credentials.json`) and restored when the
-//!   grant goes away.
-//! - **GitHub**: a `github` grant — a one-hour GitHub App installation token
-//!   for the session repository (the user's own GitHub token never leaves the
-//!   vault; the vault keeps a session on the login it started with, and a grant
-//!   names that login as `account`) — becomes a git credential store at
-//!   `{data_dir}/cloud/git-credentials` (0600) wired once via
-//!   `git config --global credential.https://github.com.helper`, and
-//!   `~/.config/gh/hosts.yml` for `gh` (only when absent or already
-//!   Zeron-managed). Refreshed in the background ~10 min before expiry. Never
-//!   `GH_TOKEN`/`GITHUB_TOKEN`: a run's environment is fixed at spawn, `gh`
-//!   prefers it over hosts.yml, and the token expires within the hour, so a
-//!   warm session's `gh` would start failing while `git push` kept working.
-//!   Pushes and pull requests therefore act as the App.
-//!
-//! Grants are cached per provider until 5 min before expiry; a network failure
-//! falls back to a cached, still-unexpired grant. A 4xx (`not_authorized`,
-//! `not_found`, `needs_reconnect`, revoked, kill switch) means "not connected":
-//! the cache entry and any file it backed are dropped.
+//! GitHub-only credential broker for legacy Cloud checkouts.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
-
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -94,10 +36,6 @@ pub fn github_session_refusal(reason: &str) -> Option<String> {
 }
 
 /// A Cloud run of a provider with no login anywhere on the device.
-pub const CODEX_NOT_SIGNED_IN: &str = "Codex isn't signed in on Cloud. Sign in with ChatGPT, pick an \
-     account or add an OpenAI API key in Settings → Providers → Cloud, then send again.";
-pub const CLAUDE_NOT_SIGNED_IN: &str = "Claude Code isn't signed in on Cloud. Sign in with Claude, pick an \
-     account or add an Anthropic API key in Settings → Providers → Cloud, then send again.";
 
 /// A spawn uses a cached grant only while it has at least this much life left.
 const GRANT_SLACK: Duration = Duration::from_secs(5 * 60);
@@ -119,11 +57,6 @@ const OFFLINE_MIN_VALIDITY: Duration = Duration::from_secs(30);
 const GITHUB_MAX_PAGES: usize = 10;
 const HOSTS_MARKER: &str =
     "# Managed by Zeron Cloud (GitHub grant) — delete this line to manage gh yourself.";
-
-/// `{data_dir}/cloud/codex-home` — the managed `CODEX_HOME`.
-pub fn managed_codex_home(data_dir: &Path) -> PathBuf {
-    data_dir.join("cloud").join("codex-home")
-}
 
 /// `{data_dir}/cloud/git-credentials` — the git credential store.
 pub fn git_credentials_path(data_dir: &Path) -> PathBuf {
@@ -196,18 +129,6 @@ pub struct BrokerConfig {
     pub home: PathBuf,
     /// GitHub REST base (`https://api.github.com`).
     pub github_api: String,
-    /// Claude Code's config dir (`$CLAUDE_CONFIG_DIR` or `~/.claude`) —
-    /// holds `.credentials.json`.
-    pub claude_config_dir: PathBuf,
-    /// Claude Code's state file (`~/.claude.json`, or
-    /// `$CLAUDE_CONFIG_DIR/.claude.json`).
-    pub claude_config_file: PathBuf,
-    /// Whether the engine's own environment already carries a Claude login
-    /// the CLI inherits (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, …).
-    pub claude_env_login: bool,
-    /// Whether the engine's own environment carries an OpenAI / Codex API
-    /// key the CLI inherits.
-    pub codex_env_login: bool,
     /// The session repository as `owner/name`: `github` grants are minted
     /// for its owner's App installation. `None` = no GitHub grant at all.
     pub github_repo: Option<String>,
@@ -217,24 +138,8 @@ impl BrokerConfig {
     pub fn detect(data_dir: &Path) -> Self {
         let home = crate::repos::home_dir();
         let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-        let claude_dir = env("CLAUDE_CONFIG_DIR").map(PathBuf::from);
         Self {
             data_dir: data_dir.to_path_buf(),
-            claude_config_file: claude_dir
-                .as_ref()
-                .map(|dir| dir.join(".claude.json"))
-                .unwrap_or_else(|| home.join(".claude.json")),
-            claude_config_dir: claude_dir.unwrap_or_else(|| home.join(".claude")),
-            claude_env_login: [
-                "ANTHROPIC_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN",
-                "CLAUDE_CODE_OAUTH_TOKEN",
-            ]
-            .iter()
-            .any(|name| env(name).is_some()),
-            codex_env_login: ["OPENAI_API_KEY", "CODEX_API_KEY"]
-                .iter()
-                .any(|name| env(name).is_some()),
             github_api: env("ZERON_GITHUB_API_URL")
                 .unwrap_or_else(|| "https://api.github.com".into()),
             github_repo: crate::runner::session()
@@ -265,22 +170,7 @@ struct Inner {
     /// The user's git identity, looked up once per GitHub login.
     git_identity: tokio::sync::Mutex<Option<(String, GitIdentity)>>,
     refresher: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Whether this machine's Codex CLI can start ([`CredentialBroker::ensure_codex_starts`]).
-    codex_check: tokio::sync::Mutex<CodexCheck>,
 }
-
-/// The Codex install check: done once it passes; a failed repair is retried
-/// after [`CODEX_REPAIR_RETRY`] (a network blip mid-install must not leave
-/// Codex broken until the machine restarts).
-#[derive(Default)]
-enum CodexCheck {
-    #[default]
-    Unchecked,
-    Passed,
-    FailedAt(Instant),
-}
-
-const CODEX_REPAIR_RETRY: Duration = Duration::from_secs(10 * 60);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -309,7 +199,6 @@ impl CredentialBroker {
                 files: tokio::sync::Mutex::new(FileState::default()),
                 git_identity: tokio::sync::Mutex::new(None),
                 refresher: Mutex::new(None),
-                codex_check: tokio::sync::Mutex::new(CodexCheck::Unchecked),
             }),
         }
     }
@@ -351,9 +240,6 @@ impl CredentialBroker {
         if let Some(grant) = self.github_grant().await {
             let _ = self.git_identity(&grant).await;
         }
-        for provider in [VaultProvider::Claude, VaultProvider::Codex] {
-            let _ = self.grant_for_run(provider).await;
-        }
     }
 
     pub fn shutdown(&self) {
@@ -366,6 +252,9 @@ impl CredentialBroker {
 
     /// A grant valid for at least 5 more minutes (cached or fresh).
     pub async fn grant(&self, provider: VaultProvider) -> GrantOutcome {
+        if provider != VaultProvider::Github {
+            return GrantOutcome::NotConnected("Only GitHub grants are supported".into());
+        }
         self.grant_within(provider, GRANT_SLACK, None).await
     }
 
@@ -525,7 +414,7 @@ impl CredentialBroker {
     /// credentials.
     pub async fn prepare(
         &self,
-        harness: HarnessId,
+        _harness: HarnessId,
         request: &mut RunRequest,
     ) -> Result<(), String> {
         // GitHub: the credential store and hosts.yml (refreshed in place),
@@ -551,28 +440,6 @@ impl CredentialBroker {
             }
             GrantOutcome::Unavailable(_) => {}
         }
-        if harness == HarnessId::Codex {
-            self.ensure_codex_starts().await;
-        }
-        match harness {
-            HarnessId::Codex => match self.codex_home().await {
-                Some(home) => {
-                    request
-                        .env
-                        .insert("CODEX_HOME".into(), home.to_string_lossy().into_owned());
-                }
-                None if self.codex_native_login() => {}
-                None => return Err(CODEX_NOT_SIGNED_IN.into()),
-            },
-            HarnessId::ClaudeCode => match self.prepare_claude().await {
-                Some(key) => {
-                    request.env.insert("ANTHROPIC_API_KEY".into(), key);
-                }
-                None if self.claude_has_login() => {}
-                None => return Err(CLAUDE_NOT_SIGNED_IN.into()),
-            },
-            _ => {}
-        }
         Ok(())
     }
 
@@ -581,80 +448,8 @@ impl CredentialBroker {
     /// the grant's generation, so another account (or a refreshed token) reads
     /// as different. `None` while the vault can't be reached: unknown is not
     /// a change.
-    pub async fn credential(&self, harness: HarnessId) -> Option<String> {
-        let (login, key, native) = match harness {
-            HarnessId::Codex => (
-                VaultProvider::Codex,
-                VaultProvider::OpenaiKey,
-                self.codex_native_login(),
-            ),
-            HarnessId::ClaudeCode => (
-                VaultProvider::Claude,
-                VaultProvider::AnthropicKey,
-                self.claude_native_login(),
-            ),
-            _ => return None,
-        };
-        let generation = |grant: Grant| format!("{}:{}", grant.provider, grant.generation);
-        match self.grant_for_run(login).await {
-            GrantOutcome::Granted(grant) => return Some(generation(grant)),
-            GrantOutcome::Unavailable(_) => return None,
-            GrantOutcome::NotConnected(_) => {}
-        }
-        if native {
-            return Some("native".into());
-        }
-        match self.grant_for_run(key).await {
-            GrantOutcome::Granted(grant) => Some(generation(grant)),
-            GrantOutcome::NotConnected(_) => Some("none".into()),
-            GrantOutcome::Unavailable(_) => None,
-        }
-    }
-
-    /// Before the first Codex run: a machine image whose global npm Codex
-    /// lacks its native binary (an optional dependency) fails every spawn,
-    /// so reinstall it once. Later runs wait on a repair in progress.
-    async fn ensure_codex_starts(&self) {
-        let mut check = self.inner.codex_check.lock().await;
-        match *check {
-            CodexCheck::Passed => return,
-            CodexCheck::FailedAt(at) if at.elapsed() < CODEX_REPAIR_RETRY => return,
-            _ => {}
-        }
-        *check = match zeron_harness::codex::npm_repair::repair().await {
-            Ok(zeron_harness::codex::npm_repair::Repair::NotNeeded) => CodexCheck::Passed,
-            Ok(zeron_harness::codex::npm_repair::Repair::Repaired { version }) => {
-                tracing::info!(%version, "reinstalled Codex with its native binary");
-                CodexCheck::Passed
-            }
-            Err(error) => {
-                tracing::warn!(%error, "Codex is missing its native binary and the reinstall failed");
-                CodexCheck::FailedAt(Instant::now())
-            }
-        };
-    }
-
-    /// A Codex login the sandbox has on its own (`codex login` inside it, or
-    /// an API key in the engine's environment).
-    fn codex_native_login(&self) -> bool {
-        self.inner
-            .config
-            .home
-            .join(".codex")
-            .join("auth.json")
-            .exists()
-            || self.inner.config.codex_env_login
-    }
-
-    /// Whether Claude Code has anything to sign in with: the vault's login in
-    /// its credential file, or its own.
-    fn claude_has_login(&self) -> bool {
-        self.claude_native_login()
-            || read_json(&self.claude_credentials_file()).is_some_and(|value| {
-                value["claudeAiOauth"]["accessToken"]
-                    .as_str()
-                    .is_some_and(|token| !token.is_empty())
-            })
+    pub async fn credential(&self, _harness: HarnessId) -> Option<String> {
+        None
     }
 
     /// The GitHub token (files synced), or `None` when not connected/unreachable.
@@ -692,195 +487,6 @@ impl CredentialBroker {
                 Err(github_session_refusal(&reason).unwrap_or(reason))
             }
             GrantOutcome::Unavailable(reason) => Err(reason),
-        }
-    }
-
-    /// The managed `CODEX_HOME` when a Codex credential is available.
-    pub async fn codex_home(&self) -> Option<PathBuf> {
-        let home = managed_codex_home(&self.inner.config.data_dir);
-        let auth_file = home.join("auth.json");
-        match self.grant_for_run(VaultProvider::Codex).await {
-            GrantOutcome::Granted(grant) => {
-                return self
-                    .write_codex_auth(&home, codex_chatgpt_auth_json(&grant, chrono::Utc::now()))
-                    .await
-                    .then_some(home);
-            }
-            // Offline with nothing cached: the last written file may still
-            // hold a valid token; codex reports its own error otherwise.
-            GrantOutcome::Unavailable(_) => {
-                return auth_file.exists().then_some(home);
-            }
-            GrantOutcome::NotConnected(_) => {}
-        }
-        match self.grant_for_run(VaultProvider::OpenaiKey).await {
-            GrantOutcome::Granted(grant) => self
-                .write_codex_auth(&home, codex_api_key_auth_json(&grant.access_token))
-                .await
-                .then_some(home),
-            GrantOutcome::Unavailable(_) => auth_file.exists().then_some(home),
-            GrantOutcome::NotConnected(_) => {
-                // Revoked/disconnected: never leave a stale credential behind.
-                let _files = self.inner.files.lock().await;
-                if auth_file.exists() {
-                    let _ = std::fs::remove_file(&auth_file);
-                    tracing::info!("credentials: removed the managed Codex login (no grant)");
-                }
-                None
-            }
-        }
-    }
-
-    /// Resolve Claude Code's credential for a spawn (see the module docs).
-    /// Returns the `ANTHROPIC_API_KEY` to inject, if that is the resolution;
-    /// a subscription grant goes to the CLI's own credential file instead.
-    pub async fn prepare_claude(&self) -> Option<String> {
-        match self.grant_for_run(VaultProvider::Claude).await {
-            GrantOutcome::Granted(grant) => {
-                if self.write_claude_credentials(&grant).await {
-                    return None;
-                }
-            }
-            GrantOutcome::NotConnected(_) => self.clear_claude_credentials().await,
-            // Keep whatever is on disk (the last managed token may still be
-            // valid); fall through to the other sources.
-            GrantOutcome::Unavailable(_) => {}
-        }
-        if self.claude_native_login() {
-            return None;
-        }
-        match self.grant_for_run(VaultProvider::AnthropicKey).await {
-            GrantOutcome::Granted(grant) => Some(grant.access_token),
-            _ => None,
-        }
-    }
-
-    fn claude_credentials_file(&self) -> PathBuf {
-        claude_credentials_file(&self.inner.config)
-    }
-
-    fn claude_native_backup(&self) -> PathBuf {
-        claude_native_backup(&self.inner.config)
-    }
-
-    /// The unmodified CLI's own login (`claude auth login` inside the sandbox
-    /// writes `.credentials.json` with a real refresh token), or an inherited
-    /// env login. A vault-managed login (empty refresh token) is not native.
-    fn claude_native_login(&self) -> bool {
-        self.inner.config.claude_env_login
-            || read_json(&self.claude_credentials_file())
-                .is_some_and(|value| is_native_claude_oauth(&value["claudeAiOauth"]))
-    }
-
-    /// Write the grant as `claudeAiOauth` (empty refresh token), preserving
-    /// sibling keys; back up a native login it displaces. Returns whether the
-    /// file now holds the grant.
-    async fn write_claude_credentials(&self, grant: &Grant) -> bool {
-        let _files = self.inner.files.lock().await;
-        let path = self.claude_credentials_file();
-        let mut value = match read_json_guarded(&path) {
-            Ok(value) => value.unwrap_or_else(|| json!({})),
-            Err(()) => {
-                tracing::warn!(path = %path.display(),
-                    "credentials: Claude credentials file is unreadable; not touching it");
-                return false;
-            }
-        };
-        let Some(map) = value.as_object_mut() else {
-            return false;
-        };
-        let desired = claude_oauth_json(grant);
-        if map.get("claudeAiOauth") == Some(&desired) {
-            return true;
-        }
-        if let Some(native) = map.get("claudeAiOauth")
-            && is_native_claude_oauth(native)
-        {
-            let backup = self.claude_native_backup();
-            if !backup.exists() {
-                match serde_json::to_vec(native)
-                    .map_err(|err| crate::EngineError::Other(err.to_string()))
-                    .and_then(|bytes| write_private_atomic(&backup, &bytes))
-                {
-                    Ok(()) => tracing::warn!(
-                        "credentials: a vault Claude grant replaces this sandbox's own Claude \
-                         login; the native login was backed up and returns if the grant goes away"
-                    ),
-                    Err(err) => {
-                        tracing::warn!(error = %err,
-                            "credentials: cannot back up the native Claude login; leaving it in place");
-                        return false;
-                    }
-                }
-            }
-        }
-        map.insert("claudeAiOauth".into(), desired);
-        let written = private_dir(&self.inner.config.claude_config_dir)
-            .map_err(crate::EngineError::from)
-            .and_then(|()| {
-                serde_json::to_vec_pretty(&value)
-                    .map_err(|err| crate::EngineError::Other(err.to_string()))
-            })
-            .and_then(|bytes| write_private_atomic(&path, &bytes));
-        match written {
-            Ok(()) => {
-                tracing::info!(
-                    expires_in_s = grant.remaining_ms() / 1000,
-                    "credentials: wrote the vault Claude login"
-                );
-                ensure_claude_onboarded(&self.inner.config.claude_config_file);
-                true
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "credentials: failed to write the Claude login");
-                false
-            }
-        }
-    }
-
-    /// The `claude` grant went away: drop a vault-managed `claudeAiOauth`
-    /// (restoring a backed-up native login), never a native one.
-    async fn clear_claude_credentials(&self) {
-        let _files = self.inner.files.lock().await;
-        clear_managed_claude(&self.inner.config);
-    }
-
-    /// Write `auth.json` (0600, atomic) into the managed home when its
-    /// credential differs from `desired`; seeds `config.toml` once. Returns
-    /// whether the home is usable.
-    async fn write_codex_auth(&self, home: &Path, desired: Value) -> bool {
-        let _files = self.inner.files.lock().await;
-        if let Err(err) = private_dir(home) {
-            tracing::warn!(error = %err, "credentials: cannot create the managed CODEX_HOME");
-            return false;
-        }
-        seed_codex_config(
-            home,
-            &self.inner.config.home.join(".codex").join("config.toml"),
-        );
-        let path = home.join("auth.json");
-        let current = std::fs::read(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
-        if current
-            .as_ref()
-            .is_some_and(|current| same_codex_credential(current, &desired))
-        {
-            return true;
-        }
-        let bytes = match serde_json::to_vec_pretty(&desired) {
-            Ok(bytes) => bytes,
-            Err(_) => return false,
-        };
-        match write_private_atomic(&path, &bytes) {
-            Ok(()) => {
-                tracing::info!("credentials: wrote the managed Codex login");
-                true
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "credentials: failed to write the managed Codex login");
-                false
-            }
         }
     }
 
@@ -990,44 +596,6 @@ impl CredentialBroker {
                 GrantOutcome::Unavailable(_) => {}
             }
         }
-        if let Some(grant) = self.cached_grant(VaultProvider::Claude)
-            && grant.remaining_ms() <= REFRESH_AHEAD.as_millis() as i64
-        {
-            // Claude Code access tokens live hours, not days: keep the file
-            // ahead of expiry for long-lived sessions and terminals.
-            match self
-                .grant_within(VaultProvider::Claude, REFRESH_AHEAD, None)
-                .await
-            {
-                GrantOutcome::Granted(grant) => {
-                    self.write_claude_credentials(&grant).await;
-                }
-                GrantOutcome::NotConnected(_) => self.clear_claude_credentials().await,
-                GrantOutcome::Unavailable(_) => {}
-            }
-        }
-        if let Some(grant) = self.cached_grant(VaultProvider::Codex)
-            && grant.remaining_ms() <= REFRESH_AHEAD.as_millis() as i64
-        {
-            let home = managed_codex_home(&self.inner.config.data_dir);
-            match self
-                .grant_within(VaultProvider::Codex, REFRESH_AHEAD, None)
-                .await
-            {
-                GrantOutcome::Granted(grant) => {
-                    self.write_codex_auth(
-                        &home,
-                        codex_chatgpt_auth_json(&grant, chrono::Utc::now()),
-                    )
-                    .await;
-                }
-                GrantOutcome::NotConnected(_) => {
-                    let _files = self.inner.files.lock().await;
-                    let _ = std::fs::remove_file(home.join("auth.json"));
-                }
-                GrantOutcome::Unavailable(_) => {}
-            }
-        }
     }
 
     // -- GitHub repositories ------------------------------------------------
@@ -1103,229 +671,20 @@ impl crate::registry::RunEnvironment for CredentialBroker {
 // Codex auth.json
 // ---------------------------------------------------------------------------
 
-/// The `auth.json` codex reads for a ChatGPT login. `refresh_token` MUST be
-/// present and empty: the vault is the only refresher, and codex rejects a
-/// token set without the field.
-pub fn codex_chatgpt_auth_json(grant: &Grant, now: chrono::DateTime<chrono::Utc>) -> Value {
-    let access_claims = jwt_payload(&grant.access_token).unwrap_or(Value::Null);
-    let account_id = grant.account_id.clone().or_else(|| {
-        access_claims["https://api.openai.com/auth"]["chatgpt_account_id"]
-            .as_str()
-            .map(str::to_owned)
-    });
-    let id_token = grant
-        .id_token
-        .clone()
-        .filter(|token| !token.trim().is_empty())
-        .unwrap_or_else(|| synthesize_id_token(&access_claims, account_id.as_deref(), grant));
-    json!({
-        "OPENAI_API_KEY": null,
-        "tokens": {
-            "id_token": id_token,
-            "access_token": grant.access_token,
-            "refresh_token": "",
-            "account_id": account_id,
-        },
-        "last_refresh": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-    })
-}
-
-/// `auth.json` for the user's own OpenAI API key.
-pub fn codex_api_key_auth_json(key: &str) -> Value {
-    json!({ "OPENAI_API_KEY": key })
-}
-
-/// Same credential (ignoring `last_refresh`, which we restamp).
-fn same_codex_credential(current: &Value, desired: &Value) -> bool {
-    current.get("OPENAI_API_KEY") == desired.get("OPENAI_API_KEY")
-        && current.get("tokens") == desired.get("tokens")
-}
-
-/// codex parses `id_token` (unverified) for the account's email, plan and
-/// workspace; an empty one reads as signed out. When the vault has none, mint
-/// an unsigned stand-in from the access token's own claims.
-fn synthesize_id_token(access_claims: &Value, account_id: Option<&str>, grant: &Grant) -> String {
-    let mut auth = access_claims["https://api.openai.com/auth"].clone();
-    if !auth.is_object() {
-        auth = json!({});
-    }
-    if let Some(account_id) = account_id {
-        auth["chatgpt_account_id"] = json!(account_id);
-    }
-    let email = grant
-        .account
-        .clone()
-        .filter(|account| account.contains('@'))
-        .or_else(|| {
-            access_claims["https://api.openai.com/profile"]["email"]
-                .as_str()
-                .map(str::to_owned)
-        });
-    let payload = json!({ "email": email, "https://api.openai.com/auth": auth });
-    format!(
-        "{}.{}.unsigned",
-        B64URL.encode(br#"{"alg":"none","typ":"JWT"}"#),
-        B64URL.encode(payload.to_string().as_bytes())
-    )
-}
-
-fn jwt_payload(token: &str) -> Option<Value> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = B64URL.decode(payload.trim_end_matches('=')).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-/// Seed the managed home's `config.toml` once: a copy of the user's
-/// `~/.codex/config.toml` when present, pinned to file-based credentials.
-fn seed_codex_config(home: &Path, user_config: &Path) {
-    let path = home.join("config.toml");
-    if path.exists() {
-        return;
-    }
-    let user = std::fs::read_to_string(user_config).unwrap_or_default();
-    let mut seeded = String::new();
-    if !user.contains("cli_auth_credentials_store") {
-        // Top-level key first (before any [table]): the managed auth.json is
-        // the credential, never a keyring entry.
-        seeded.push_str("cli_auth_credentials_store = \"file\"\n");
-    }
-    seeded.push_str(&user);
-    if let Err(err) = std::fs::write(&path, seeded) {
-        tracing::warn!(error = %err, "credentials: failed to seed the managed codex config.toml");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Claude Code credentials
 // ---------------------------------------------------------------------------
-
-fn claude_credentials_file(config: &BrokerConfig) -> PathBuf {
-    config.claude_config_dir.join(".credentials.json")
-}
-
-fn claude_native_backup(config: &BrokerConfig) -> PathBuf {
-    config
-        .data_dir
-        .join("cloud")
-        .join("claude-native-credentials.json")
-}
-
-/// Drop a vault-managed `claudeAiOauth` (empty refresh token), restoring a
-/// backed-up native login if one was displaced; a native login is untouched.
-fn clear_managed_claude(config: &BrokerConfig) {
-    let path = claude_credentials_file(config);
-    let Ok(Some(mut value)) = read_json_guarded(&path) else {
-        return;
-    };
-    let Some(map) = value.as_object_mut() else {
-        return;
-    };
-    let managed = map
-        .get("claudeAiOauth")
-        .is_some_and(|oauth| oauth.is_object() && !is_native_claude_oauth(oauth));
-    if !managed {
-        return;
-    }
-    let backup = claude_native_backup(config);
-    match read_json(&backup) {
-        Some(native) => {
-            map.insert("claudeAiOauth".into(), native);
-        }
-        None => {
-            map.remove("claudeAiOauth");
-        }
-    }
-    let result = serde_json::to_vec_pretty(&value)
-        .map_err(|err| crate::EngineError::Other(err.to_string()))
-        .and_then(|bytes| write_private_atomic(&path, &bytes));
-    match result {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&backup);
-            tracing::info!("credentials: removed the vault Claude login");
-        }
-        Err(err) => tracing::warn!(error = %err, "credentials: failed to clear the Claude login"),
-    }
-}
 
 /// Scrub every credential file a broker manages — a copied (forked /
 /// template) runner identity is being discarded. User files, repositories,
 /// and a native Claude login (real refresh token) are left alone.
 pub fn discard_managed_credentials(config: &BrokerConfig) {
-    let codex = managed_codex_home(&config.data_dir);
-    if codex.exists() {
-        match std::fs::remove_dir_all(&codex) {
-            Ok(()) => tracing::info!("credentials: discarded a previous managed CODEX_HOME"),
-            Err(err) => {
-                tracing::warn!(error = %err, "credentials: failed to remove the managed CODEX_HOME")
-            }
-        }
-    }
     if std::fs::remove_file(git_credentials_path(&config.data_dir)).is_ok() {
         tracing::info!("credentials: discarded previous git credentials");
     }
     let hosts = gh_hosts_path(&config.home);
     if is_managed_hosts(&hosts) {
         let _ = std::fs::remove_file(&hosts);
-    }
-    clear_managed_claude(config);
-}
-
-/// `claudeAiOauth` for a vault grant. `refreshToken` is present and EMPTY:
-/// the refresh token never leaves the vault.
-pub fn claude_oauth_json(grant: &Grant) -> Value {
-    json!({
-        "accessToken": grant.access_token,
-        "refreshToken": "",
-        "expiresAt": grant.expires_at,
-        "scopes": grant.scopes.clone().unwrap_or_default(),
-        "subscriptionType": grant.subscription_type,
-    })
-}
-
-/// A login written by the CLI itself carries a real refresh token.
-fn is_native_claude_oauth(oauth: &Value) -> bool {
-    oauth["refreshToken"]
-        .as_str()
-        .is_some_and(|token| !token.trim().is_empty())
-}
-
-fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
-}
-
-/// `Ok(None)` = missing; `Err` = present but not a JSON object (never
-/// overwrite a file we can't parse — it may hold the user's own state).
-fn read_json_guarded(path: &Path) -> Result<Option<Value>, ()> {
-    match std::fs::read(path) {
-        Ok(raw) => match serde_json::from_slice::<Value>(&raw) {
-            Ok(value) if value.is_object() => Ok(Some(value)),
-            _ => Err(()),
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(()),
-    }
-}
-
-/// Claude Code's first-run flow (theme picker, login prompt) must not block a
-/// headless sandbox: mark onboarding complete in its state file, touching
-/// nothing else (the same merge discipline as an account switch).
-fn ensure_claude_onboarded(file: &Path) {
-    let Ok(existing) = read_json_guarded(file) else {
-        return;
-    };
-    let mut value = existing.unwrap_or_else(|| json!({}));
-    let Some(map) = value.as_object_mut() else {
-        return;
-    };
-    if map.get("hasCompletedOnboarding") == Some(&Value::Bool(true)) {
-        return;
-    }
-    map.insert("hasCompletedOnboarding".into(), Value::Bool(true));
-    if let Err(err) = serde_json::to_vec_pretty(&value)
-        .map_err(|err| crate::EngineError::Other(err.to_string()))
-        .and_then(|bytes| write_private_atomic(file, &bytes))
-    {
-        tracing::warn!(error = %err, "credentials: failed to mark Claude Code onboarded");
     }
 }
 
@@ -1723,7 +1082,7 @@ mod tests {
 
     fn grant(access_token: &str) -> Grant {
         Grant {
-            provider: "codex".into(),
+            provider: "github".into(),
             access_token: access_token.into(),
             expires_at: crate::now_ms() + 3_600_000,
             account_id: Some("acct_1".into()),
@@ -1733,67 +1092,6 @@ mod tests {
             subscription_type: None,
             generation: 3,
         }
-    }
-
-    #[test]
-    fn codex_auth_json_has_an_empty_refresh_token_and_no_api_key() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-10-01T12:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let value = codex_chatgpt_auth_json(&grant("at-1"), now);
-        assert_eq!(value["OPENAI_API_KEY"], Value::Null);
-        assert!(value.as_object().unwrap().contains_key("OPENAI_API_KEY"));
-        let tokens = value["tokens"].as_object().unwrap();
-        assert_eq!(tokens["access_token"], "at-1");
-        assert_eq!(tokens["id_token"], "h.p.s");
-        assert_eq!(tokens["account_id"], "acct_1");
-        // Present AND empty — deleting the field breaks codex.
-        assert_eq!(tokens.get("refresh_token"), Some(&json!("")));
-        assert!(
-            value["last_refresh"]
-                .as_str()
-                .unwrap()
-                .starts_with("2026-10-01T12:00:00")
-        );
-        assert_eq!(
-            codex_api_key_auth_json("sk-x"),
-            json!({ "OPENAI_API_KEY": "sk-x" })
-        );
-    }
-
-    #[test]
-    fn missing_id_token_is_synthesized_from_the_access_token_claims() {
-        let claims = json!({
-            "https://api.openai.com/auth": {"chatgpt_account_id": "acct_9", "chatgpt_plan_type": "pro"},
-            "https://api.openai.com/profile": {"email": "p@example.com"},
-        });
-        let access = format!("e30.{}.sig", B64URL.encode(claims.to_string().as_bytes()));
-        let mut g = grant(&access);
-        g.id_token = None;
-        g.account_id = None;
-        g.account = None;
-        let value = codex_chatgpt_auth_json(&g, chrono::Utc::now());
-        assert_eq!(value["tokens"]["account_id"], "acct_9");
-        let id = jwt_payload(value["tokens"]["id_token"].as_str().unwrap()).unwrap();
-        assert_eq!(id["email"], "p@example.com");
-        assert_eq!(
-            id["https://api.openai.com/auth"]["chatgpt_plan_type"],
-            "pro"
-        );
-        assert_eq!(
-            id["https://api.openai.com/auth"]["chatgpt_account_id"],
-            "acct_9"
-        );
-    }
-
-    #[test]
-    fn credential_comparison_ignores_last_refresh() {
-        let a = codex_chatgpt_auth_json(&grant("at-1"), chrono::Utc::now());
-        let mut b = a.clone();
-        b["last_refresh"] = json!("1999-01-01T00:00:00Z");
-        assert!(same_codex_credential(&a, &b));
-        let c = codex_chatgpt_auth_json(&grant("at-2"), chrono::Utc::now());
-        assert!(!same_codex_credential(&a, &c));
     }
 
     #[test]
@@ -1889,30 +1187,5 @@ mod tests {
         assert_eq!(parsed.description, None);
         assert!(parsed.pushed_at > 0);
         assert!(parse_github_repo(&json!({"name": "x"})).is_none());
-    }
-
-    #[test]
-    fn config_seed_pins_file_credentials_and_keeps_the_users_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let user = dir.path().join("user-config.toml");
-        std::fs::write(
-            &user,
-            "model = \"gpt-6\"\n[mcp_servers.x]\ncommand = \"y\"\n",
-        )
-        .unwrap();
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        seed_codex_config(&home, &user);
-        let seeded = std::fs::read_to_string(home.join("config.toml")).unwrap();
-        assert!(seeded.starts_with("cli_auth_credentials_store = \"file\"\n"));
-        assert!(seeded.contains("[mcp_servers.x]"));
-        assert!(seeded.parse::<toml::Table>().is_ok(), "{seeded}");
-        // Kept afterwards (never clobbered).
-        std::fs::write(home.join("config.toml"), "model = \"mine\"\n").unwrap();
-        seed_codex_config(&home, &user);
-        assert_eq!(
-            std::fs::read_to_string(home.join("config.toml")).unwrap(),
-            "model = \"mine\"\n"
-        );
     }
 }

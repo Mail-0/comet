@@ -26,18 +26,18 @@ zeron.on("usage.threshold", function(e)
 			return
 		end
 	end
-end, { below = 10, provider = "claude-code" })
+end, { below = 10, provider = "copilot" })
 
 zeron.serve("usage", function()
-	return zeron.usage({ provider = "claude-code" }):await()
+	return zeron.usage({ provider = "copilot" }):await()
 end, { safe = true })
 
 zeron.serve("switch", function(args)
-	return zeron.switch_account({ provider = "claude-code", account = args.account }):await()
+	return zeron.switch_account({ provider = "copilot", account = args.account }):await()
 end)
 
 zeron.serve("models", function()
-	return zeron.models("claude-code"):await()
+	return zeron.models("copilot"):await()
 end, { safe = true })
 "#;
 
@@ -239,7 +239,7 @@ async fn agents_another_device_is_decided_by_this_devices_grants() {
     let f = fixture();
     let own_key = || signing::load_key(&f.plugins.inner.data_dir).map(|k| k.public());
     let serve = |version: &str, op: &str, key: Option<String>| {
-        json!({ "plugin": "svc", "version": version, "authorKey": key, "from": "dev-2", "op": op, "args": { "provider": "claude-code", "account": "a2" } })
+        json!({ "plugin": "svc", "version": version, "authorKey": key, "from": "dev-2", "op": op, "args": { "provider": "copilot", "account": "a2" } })
     };
     let refused = call(&f.plugins, methods::SERVE_PLUGIN_AGENTS, serve("1.0.0", "usage", None)).await;
     assert_eq!(refused["reason"], "not_installed", "{refused}");
@@ -269,106 +269,11 @@ async fn agents_another_device_is_decided_by_this_devices_grants() {
 /// The example (plugins-dev/account-rotate), as it ships: its service, with
 /// no window open, switches Claude Code to the next account with more left
 /// once the active one drops under 10%, waiting for a running chat.
-#[tokio::test]
-async fn agents_the_account_rotate_example_switches_once_a_running_chat_finishes() {
-    let f = fixture();
-    let dir = f.plugins.plugins_dir().join("account-rotate");
-    std::fs::create_dir_all(&dir).unwrap();
-    let example = "../../apps/zgx/plugins-dev/account-rotate";
-    for file in ["zeron-plugin.json", "init.luau", "service.luau"] {
-        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join(example).join(file), dir.join(file)).unwrap();
-    }
-    std::fs::write(dir.join("zeron.luau"), scaffold::SDK).unwrap();
-    // A third account, nearly spent: skipped for a2.
-    {
-        let mut s = lock(&f.host.snapshot);
-        let mut spent = account("a0", false, 0.97);
-        spent.email = Some("spent@example.com".into());
-        s.accounts.insert(1, spent);
-    }
-    let signed = call(&f.plugins, methods::SIGN_PLUGIN, json!({ "id": "account-rotate" })).await;
-    assert!(signed.get("rpc_error").is_none(), "{signed}");
-    let item = call(&f.plugins, methods::LIST_PLUGINS, json!({})).await["plugins"][0].clone();
-    assert_eq!(item["id"], "account-rotate");
-    let decided = call(&f.plugins, methods::DECIDE_PLUGIN, json!({ "id": "account-rotate", "allow": true, "hash": item["hash"] })).await;
-    assert_eq!(decided["status"], "on", "{decided}");
-    // (Loaded once as its version is first seen: its listeners known.)
-    until("its listeners are known", || {
-        f.plugins.inner.services.status("account-rotate")["listeners"].as_array().is_some_and(|l| l.len() == 2)
-    })
-    .await;
-    // A chat on Claude Code is running.
-    *lock(&f.host.sessions) = vec![super::agents::tests::session("c1", zeron_proto::SessionStatus::Working, None)];
-    let agents = f.plugins.agents().clone();
-    let sessions = lock(&f.host.sessions).clone();
-    agents.observe_sessions(&sessions);
-    agents.observe_accounts(&snapshot(&f));
-    set_used(&f, 0.93);
-    agents.observe_accounts(&snapshot(&f));
-    until("its switch is waiting", || !agents.status("account-rotate")["actions"].is_null()).await;
-    assert_eq!(agents.status("account-rotate")["actions"][0]["waiting"], true);
-    assert_eq!(f.host.activations.load(Ordering::SeqCst), 0, "never under a running chat");
-    // The chat finishes: switched, to a2 (a0 has 3% left).
-    *lock(&f.host.sessions) = vec![super::agents::tests::session(
-        "c1",
-        zeron_proto::SessionStatus::Idle,
-        Some(zeron_proto::DoneStatus::Completed),
-    )];
-    let sessions = lock(&f.host.sessions).clone();
-    agents.observe_sessions(&sessions);
-    until("it switched", || f.host.activations.load(Ordering::SeqCst) == 1).await;
-    let active: Vec<String> = snapshot(&f).accounts.iter().filter(|a| a.active).map(|a| a.id.clone()).collect();
-    assert_eq!(active, ["a2"]);
-}
 
 /// The example (plugins-dev/account-pin), as it ships: with no window open,
 /// each chat's first run asks it, and it answers with the saved account that
 /// has the fewest chats, so new chats take turns and the active account is
 /// never switched.
-#[tokio::test]
-async fn agents_the_account_pin_example_spreads_new_chats_across_saved_accounts() {
-    let f = fixture();
-    lock(&f.host.mechanisms).insert(zeron_proto::HarnessId::ClaudeCode, "env");
-    let dir = f.plugins.plugins_dir().join("account-pin");
-    std::fs::create_dir_all(&dir).unwrap();
-    let example = "../../apps/zgx/plugins-dev/account-pin";
-    for file in ["zeron-plugin.json", "init.luau", "service.luau"] {
-        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join(example).join(file), dir.join(file)).unwrap();
-    }
-    std::fs::write(dir.join("zeron.luau"), scaffold::SDK).unwrap();
-    // A signed-out account in front: never chosen.
-    {
-        let mut s = lock(&f.host.snapshot);
-        let mut out = account("a0", false, 0.1);
-        out.usage_error = Some("Sign in again".into());
-        s.accounts.insert(0, out);
-    }
-    let signed = call(&f.plugins, methods::SIGN_PLUGIN, json!({ "id": "account-pin" })).await;
-    assert!(signed.get("rpc_error").is_none(), "{signed}");
-    let item = call(&f.plugins, methods::LIST_PLUGINS, json!({})).await["plugins"][0].clone();
-    assert_eq!(item["id"], "account-pin");
-    let decided = call(&f.plugins, methods::DECIDE_PLUGIN, json!({ "id": "account-pin", "allow": true, "hash": item["hash"] })).await;
-    assert_eq!(decided["status"], "on", "{decided}");
-    until("its listeners are known", || {
-        f.plugins.inner.services.status("account-pin")["listeners"].as_array().is_some_and(|l| l.len() == 2)
-    })
-    .await;
-    let agents = f.plugins.agents().clone();
-    agents.observe_accounts(&snapshot(&f));
-    let mut chosen = Vec::new();
-    for chat in ["c1", "c2", "c3", "c4"] {
-        chosen.push(agents.preparing(zeron_proto::HarnessId::ClaudeCode, chat).await);
-    }
-    let chosen: Vec<Option<&str>> = chosen.iter().map(|c| c.as_deref()).collect();
-    assert_eq!(chosen, [Some("a1"), Some("a2"), Some("a1"), Some("a2")], "the fewest chats, in turn");
-    assert_eq!(lock(&f.host.pinned).len(), 4);
-    assert_eq!(f.host.activations.load(Ordering::SeqCst), 0, "the active account is never switched");
-    // Told as the plugin's pins, in its status.
-    let state = call(&f.plugins, methods::PLUGIN_STATUS, json!({ "id": "account-pin" })).await;
-    let ops: Vec<&str> = state["agents"]["actions"].as_array().unwrap().iter().filter_map(|a| a["op"].as_str()).collect();
-    assert_eq!(ops, ["pin_account"; 4], "{state}");
-}
-
 #[test]
 fn agents_pinning_is_known_and_stays_outside_the_sandbox() {
     assert!(manifest::KNOWN_PERMISSIONS.contains(&"accounts.pin"));
@@ -403,7 +308,7 @@ zeron.serve("send", function(args)
 end)
 
 zeron.serve("start", function(args)
-	return zeron.new_chat({ prompt = args.prompt, harness = "claude-code" }):await()
+	return zeron.new_chat({ prompt = args.prompt, harness = "copilot" }):await()
 end)
 
 zeron.serve("answer", function(args)

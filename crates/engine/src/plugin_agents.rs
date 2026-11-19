@@ -54,11 +54,12 @@ impl AgentHost for EngineAgentHost {
     }
 
     fn models(&self, harness: HarnessId) -> BoxFuture<'static, Result<Vec<Model>, String>> {
-        let (registry, data_dir) = (self.registry.clone(), self.data_dir.clone());
+        let registry = self.registry.clone();
         Box::pin(async move {
             let lease = Arc::new(registry.execution_lease(harness).await);
             let resolved = registry.resolve(harness).map_err(|e| e.to_string())?;
-            crate::model_catalogs::list_with_lease(&data_dir, resolved, false, Some(lease))
+            let _lease = lease;
+            resolved.models()
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -122,21 +123,19 @@ impl AgentHost for EngineAgentHost {
         }
     }
 
-    fn pin_mechanism(&self, account: &AgentAccount) -> Option<&'static str> {
-        self.accounts.pin_mechanism(account)
+    fn pin_mechanism(&self, _account: &AgentAccount) -> Option<&'static str> {
+        None
     }
 
     fn pins(&self) -> Vec<Pin> {
-        self.accounts
-            .pins()
-            .into_iter()
-            .map(|p| Pin { chat: p.chat, harness: p.harness, account: p.account, since: p.since })
-            .collect()
+        Vec::new()
     }
 
-    fn set_pin(&self, harness: HarnessId, chat: &str, account: Option<&str>) -> Result<(), String> {
-        self.accounts.set_pin(harness, chat, account);
-        Ok(())
+    fn set_pin(&self,
+        _harness: HarnessId,
+        _chat: &str,
+        _account: Option<&str>) -> Result<(), String> {
+        Err("Copilot uses the Keiki credential holder; account pinning is unavailable".into())
     }
 
     fn create_chat(&self, new: &NewChat) -> Result<(), String> {

@@ -587,6 +587,7 @@ impl SessionHandle {
         let answers = answers
             .into_iter()
             .map(|a| zc::UserInputAnswer {
+                payload: None,
                 question_id: a.question_id,
                 labels: a.labels,
             })

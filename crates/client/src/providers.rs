@@ -185,14 +185,14 @@ impl Client {
                     let Ok((mut socket, _)) = listener.accept().await else {
                         continue;
                     };
-                    let Some(path) = crate::provider_login::read_request_target(&mut socket).await
+                    let Some(path) = crate::login_callback::read_request_target(&mut socket).await
                     else {
                         continue;
                     };
                     if path.starts_with("/favicon") {
                         let _ = socket
                             .write_all(
-                                crate::provider_login::http_response("404 Not Found", &[], "")
+                                crate::login_callback::http_response("404 Not Found", &[], "")
                                     .as_bytes(),
                             )
                             .await;
@@ -220,7 +220,7 @@ impl Client {
                     if (200..400).contains(&status) {
                         let _ = socket
                             .write_all(
-                                crate::provider_login::http_response(
+                                crate::login_callback::http_response(
                                     "302 Found",
                                     &[("Location", &done_url)],
                                     "",
@@ -232,7 +232,7 @@ impl Client {
                     }
                     let _ = socket
                         .write_all(
-                            crate::provider_login::http_response(
+                            crate::login_callback::http_response(
                                 "502 Bad Gateway",
                                 &[("Content-Type", "text/plain; charset=utf-8")],
                                 "The computer didn't accept the sign-in. Go back to Zeron and try again.",
@@ -394,23 +394,16 @@ fn demo_accounts() -> AgentAccountsSnapshot {
     };
     let mut accounts = vec![
         account(
-            "demo-claude-1",
-            HarnessId::ClaudeCode,
-            "you@acme.dev",
-            "Max",
-        ),
-        account(
-            "demo-claude-2",
-            HarnessId::ClaudeCode,
-            "you@personal.dev",
-            "Pro",
-        ),
-        account("demo-codex-1", HarnessId::Codex, "you@acme.dev", "Plus"),
+        "demo-copilot",
+            HarnessId::Copilot,
+        "you@acme.dev",
+        "Keiki",
+    ),
     ];
     let forgotten = lock(&DEMO_FORGOTTEN);
     accounts.retain(|a| !forgotten.contains(&a.id));
     let active = lock(&DEMO_ACTIVE);
-    for harness in [HarnessId::ClaudeCode, HarnessId::Codex] {
+    for harness in [HarnessId::Copilot] {
         let key = serde_json::to_value(harness)
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))

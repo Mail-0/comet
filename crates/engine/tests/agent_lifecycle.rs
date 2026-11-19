@@ -52,7 +52,7 @@ struct Ledger {
 }
 
 /// `bg` in a prompt starts background work (the test ends it); `wake`
-/// schedules a wake-up (Claude's `ScheduleWakeup`) with no input seen;
+/// schedules a wake-up (`ScheduleWakeup`) with no input seen;
 /// `wake:<secs>` / `wake:stop` call it with that delay or `stop`, and
 /// `cron:<id>` / `uncron:<id>` create and delete a session cron, each
 /// answered as the CLI would.
@@ -99,19 +99,34 @@ impl Harness for Agent {
     fn stops_when_idle(&self) -> bool {
         self.stops_when_idle
     }
-    /// Claude's own reading of its user's MCP config, where the test gave
-    /// the run a config dir of its own.
     fn configured_mcp_servers(
         &self,
         request: &RunRequest,
     ) -> Vec<zeron_harness::process::KnownServer> {
-        if !request.env.contains_key("CLAUDE_CONFIG_DIR") {
-            return Vec::new();
+        #[derive(serde::Deserialize)]
+        struct Config {
+            #[serde(rename = "mcpServers")]
+            servers: std::collections::HashMap<String, Server>,
         }
-        zeron_harness::claude::configured_mcp_servers(
-            &request.env,
-            std::path::Path::new(&request.cwd),
-        )
+        #[derive(serde::Deserialize)]
+        struct Server {
+            command: String,
+            #[serde(default)]
+            args: Vec<String>,
+        }
+        request
+            .env
+            .get("MOCK_MCP_CONFIG")
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Config>(&bytes).ok())
+            .map(|config| {
+                config
+                    .servers
+                    .into_values()
+                    .map(|server| (server.command, server.args))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
@@ -806,15 +821,15 @@ async fn an_agent_whose_only_child_is_its_mcp_server_is_stopped() {
 }
 
 /// A run whose user configured an MCP server of their own (user scope, in a
-/// config dir of the test's): `config` holds `.claude.json` as written.
+/// config dir of the test's).
 #[cfg(unix)]
-fn with_user_config(prompt: &str, config: &std::path::Path, claude_json: &str) -> RunRequest {
+fn with_user_config(prompt: &str, config: &std::path::Path, config_json: &str) -> RunRequest {
     std::fs::create_dir_all(config).unwrap();
-    std::fs::write(config.join(".claude.json"), claude_json).unwrap();
+    std::fs::write(config.join("mcp.json"), config_json).unwrap();
     let mut run = request(prompt);
     run.env.insert(
-        "CLAUDE_CONFIG_DIR".into(),
-        config.to_string_lossy().into_owned(),
+        "MOCK_MCP_CONFIG".into(),
+        config.join("mcp.json").to_string_lossy().into_owned(),
     );
     run
 }
@@ -823,7 +838,7 @@ fn with_user_config(prompt: &str, config: &std::path::Path, claude_json: &str) -
 const USER_SERVER: &str =
     r#"{"mcpServers":{"mine":{"command":"sleep","args":["3605"],"env":{"TOKEN":"x"}}}}"#;
 
-/// The user's own MCP server (from their Claude config) is the agent's only
+/// The user's own MCP server (from their config) is the agent's only
 /// child: recognised, so the idle agent is stopped.
 #[cfg(unix)]
 #[tokio::test(start_paused = true)]
@@ -911,21 +926,39 @@ async fn the_idle_stop_never_ends_a_new_chat_being_written_and_always_ends_one_l
         tokio::time::sleep(Duration::from_secs(10)).await;
         assert_eq!(warm(WRITTEN, true).await, "renewed", "at {}s", step * 10);
         let parked = rig.ledger.warm.lock().unwrap().clone();
-        assert!(parked.iter().any(|k| k.starts_with(WRITTEN)), "at {}s: {parked:?}", step * 10);
+        assert!(
+            parked.iter().any(|k| k.starts_with(WRITTEN)),
+            "at {}s: {parked:?}",
+            step * 10
+        );
         if step == 5 {
-            assert!(parked.iter().any(|k| k.starts_with(OPENED)), "an open lasts a minute");
+            assert!(
+                parked.iter().any(|k| k.starts_with(OPENED)),
+                "an open lasts a minute"
+            );
         }
         if step == 7 {
-            assert!(!parked.iter().any(|k| k.starts_with(OPENED)), "never typed into: gone after a minute");
+            assert!(
+                !parked.iter().any(|k| k.starts_with(OPENED)),
+                "never typed into: gone after a minute"
+            );
         }
     }
     // Meanwhile the other chat's parked agent was stopped idle, as ever.
     rig.stopped().await;
     // Left: gone once the idle window after its last keystroke runs out.
     tokio::time::sleep(AGENT_IDLE_STOP - Duration::from_secs(5)).await;
-    assert_eq!(rig.ledger.warm.lock().unwrap().len(), 1, "kept until its window runs out");
+    assert_eq!(
+        rig.ledger.warm.lock().unwrap().len(),
+        1,
+        "kept until its window runs out"
+    );
     tokio::time::sleep(Duration::from_secs(10)).await;
-    wait_for(|| rig.ledger.warm.lock().unwrap().is_empty(), "the left one to end").await;
+    wait_for(
+        || rig.ledger.warm.lock().unwrap().is_empty(),
+        "the left one to end",
+    )
+    .await;
     assert_eq!(rig.ledger.warm_ended.lock().unwrap().len(), 2);
     rig.core.sessions.shutdown().await;
 }

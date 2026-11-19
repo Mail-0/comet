@@ -23,7 +23,7 @@ pub(crate) fn window(label: &str, used: f32, resets: i64) -> AgentUsageWindow {
 pub(crate) fn account(id: &str, active: bool, used: f32) -> AgentAccount {
     AgentAccount {
         id: id.into(),
-        harness: HarnessId::ClaudeCode,
+        harness: HarnessId::Copilot,
         email: Some(format!("{id}@example.com")),
         plan_label: Some("Max".into()),
         active,
@@ -64,7 +64,7 @@ pub(crate) fn chat(id: &str, model: &str) -> Chat {
     serde_json::from_value(json!({
         "id": id, "deviceId": "dev-1", "title": "A chat", "archived": false,
         "cwd": null, "branch": null, "checkoutId": null,
-        "config": { "harness": "claude-code", "model": model, "reasoning": "low", "modelOptions": {}, "sandbox": "danger-full-access" },
+        "config": { "harness": "copilot", "model": model, "reasoning": "low", "modelOptions": {}, "sandbox": "danger-full-access" },
         "lastMessagePreview": null, "lastMessageAt": null, "createdAt": "2026-11-01T00:00:00Z",
     }))
     .expect("a chat")
@@ -176,7 +176,7 @@ impl AgentHost for Host {
     }
 
     fn default_harness(&self) -> Option<HarnessId> {
-        Some(HarnessId::ClaudeCode)
+        Some(HarnessId::Copilot)
     }
 
     fn pin_mechanism(&self, account: &AgentAccount) -> Option<&'static str> {
@@ -307,8 +307,8 @@ async fn agents_each_op_is_refused_without_its_permission_and_answered_with_it()
         (USAGE_READ, json!({ "op": "usage" })),
         (USAGE_READ, json!({ "op": "usage_refresh" })),
         (ACCOUNTS_READ, json!({ "op": "accounts" })),
-        (ACCOUNTS_SWITCH, json!({ "op": "switch_account", "provider": "claude-code", "account": "a2" })),
-        (MODELS_READ, json!({ "op": "models", "harness": "claude-code" })),
+        (ACCOUNTS_SWITCH, json!({ "op": "switch_account", "provider": "copilot", "account": "a2" })),
+        (MODELS_READ, json!({ "op": "models", "harness": "copilot" })),
         (MODELS_READ, json!({ "op": "chat_model", "chat": "c1" })),
         (MODELS_SET, json!({ "op": "set_model", "chat": "c1", "model": "sonnet" })),
     ];
@@ -335,16 +335,16 @@ async fn agents_each_op_is_refused_without_its_permission_and_answered_with_it()
 async fn agents_reading_usage_shows_windows_and_plan_without_email_and_never_probes() {
     let f = Fixture::new();
     f.grant("p", &[USAGE_READ]);
-    let usage = f.op("p", json!({ "op": "usage", "provider": "claude-code" })).await.unwrap();
+    let usage = f.op("p", json!({ "op": "usage", "provider": "copilot" })).await.unwrap();
     let first = &usage[0];
-    assert_eq!(first["provider"], "claude-code");
+    assert_eq!(first["provider"], "copilot");
     assert_eq!(first["account"], "a1");
     assert_eq!(first["active"], true);
     assert_eq!(first["plan"], "Max");
     assert_eq!(first["windows"][0], json!({ "label": "Session", "used": 50.0, "remaining": 50.0, "resets_at": 1_000_000 }));
     assert!(first.get("email").is_none(), "usage.read never shows who");
     assert_eq!(f.host.forced.load(Ordering::SeqCst), 0, "a read never forces a probe");
-    assert!(f.op("p", json!({ "op": "usage", "provider": "codex" })).await.unwrap().as_array().unwrap().is_empty());
+    assert!(f.op("p", json!({ "op": "usage", "provider": "mock" })).await.unwrap().as_array().unwrap().is_empty());
     assert_eq!(f.op("p", json!({ "op": "usage", "provider": "nope" })).await.unwrap_err().reason, reason::NOT_FOUND);
 }
 
@@ -383,7 +383,7 @@ async fn agents_switching_makes_the_account_active_says_who_and_isnt_paced() {
     f.grant("watcher", &[ACCOUNTS_READ]);
     f.agents.observe_accounts(&f.snapshot());
     f.agents.listen("watcher", Target::Window, &[("@1".into(), "account.switched".into(), json!({}))]);
-    let done = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "a2" })).await.unwrap();
+    let done = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "a2" })).await.unwrap();
     assert_eq!(done["status"], "switched");
     assert!(f.snapshot().accounts.iter().any(|a| a.id == "a2" && a.active));
     let told = f.told();
@@ -394,14 +394,14 @@ async fn agents_switching_makes_the_account_active_says_who_and_isnt_paced() {
     assert_eq!(data["by"], json!({ "plugin": "p", "name": "Plugin p" }));
     assert_eq!(data["email"], "a2@example.com");
     // The account that's active already: refused, so nothing loops.
-    let again = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "a2" })).await.unwrap_err();
+    let again = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "a2" })).await.unwrap_err();
     assert_eq!(again.reason, reason::ALREADY);
     // Back at once: no pace.
-    let back = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "a1" })).await.unwrap();
+    let back = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "a1" })).await.unwrap();
     assert_eq!(back["status"], "switched");
     assert_eq!(f.host.activations.load(Ordering::SeqCst), 2);
     assert_eq!(f.agents.status("p")["actions"][0]["op"], "switch_account");
-    let missing = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "zz" })).await.unwrap_err();
+    let missing = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "zz" })).await.unwrap_err();
     assert_eq!(missing.reason, reason::NOT_FOUND);
 }
 
@@ -412,12 +412,12 @@ async fn agents_a_switch_happens_at_once_or_waits_when_asked() {
     *lock(&f.host.sessions) = vec![session("c1", SessionStatus::Working, None)];
     f.agents.observe_sessions(&f.host.sessions());
     // A chat running: switched at once all the same.
-    let now = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "a2" })).await.unwrap();
+    let now = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "a2" })).await.unwrap();
     assert_eq!(now["status"], "switched");
     assert_eq!(f.host.activations.load(Ordering::SeqCst), 1);
     // `when_idle`: waits for it.
     let waiting = f
-        .op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "a1", "when_idle": true }))
+        .op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "a1", "when_idle": true }))
         .await
         .unwrap();
     assert_eq!(waiting["status"], "waiting");
@@ -462,7 +462,7 @@ async fn agents_setting_a_model_checks_it_against_the_catalog_and_is_told_with_b
         (json!({ "op": "set_model", "chat": "c1", "model": "gpt" }), reason::NOT_FOUND),
         (json!({ "op": "set_model", "chat": "c1", "effort": "max" }), reason::NOT_FOUND),
         (json!({ "op": "set_model", "chat": "c1", "options": { "fast": "maybe" } }), reason::NOT_FOUND),
-        (json!({ "op": "set_model", "chat": "c1", "provider": "codex", "model": "x" }), reason::BAD_CALL),
+        (json!({ "op": "set_model", "chat": "c1", "provider": "mock", "model": "x" }), reason::BAD_CALL),
         (json!({ "op": "set_model", "chat": "c1", "model": "sonnet" }), reason::ALREADY),
         (json!({ "op": "set_model", "chat": "zz" }), reason::NOT_FOUND),
     ] {
@@ -484,7 +484,7 @@ async fn agents_a_threshold_fires_on_crossing_only_and_again_after_it_recovers()
     f.agents.listen(
         "p",
         Target::Window,
-        &[("@1".into(), "usage.threshold".into(), json!({ "below": 10, "provider": "claude-code", "window": "Session" }))],
+        &[("@1".into(), "usage.threshold".into(), json!({ "below": 10, "provider": "copilot", "window": "Session" }))],
     );
     // The first reading is only a baseline (50% left).
     f.agents.observe_accounts(&f.snapshot());
@@ -593,7 +593,7 @@ async fn agents_turn_events_need_sessions_read_and_say_how_the_turn_ended() {
     assert_eq!(hit.4["chat"], "c1", "sessions.read: which chat");
     let blind_hit = told.iter().find(|t| t.0 == "blind" && t.3 == "limit.hit").unwrap();
     assert!(blind_hit.4.get("chat").is_none(), "no sessions.read: no chat");
-    assert_eq!(blind_hit.4["provider"], "claude-code");
+    assert_eq!(blind_hit.4["provider"], "copilot");
 }
 
 #[tokio::test]
@@ -646,11 +646,11 @@ async fn agents_a_plugin_answering_its_own_changes_is_stopped_after_16() {
     f.agents.listen("p", Target::Window, &[("@1".into(), "account.switched".into(), json!({}))]);
     let mut to = ["a2", "a1"].into_iter().cycle();
     for hop in 1..=LOOP_HOPS {
-        let done = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": to.next().unwrap() })).await;
+        let done = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": to.next().unwrap() })).await;
         assert_eq!(done.unwrap()["status"], "switched", "hop {hop}");
     }
     let stopped = f
-        .op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": to.next().unwrap() }))
+        .op("p", json!({ "op": "switch_account", "provider": "copilot", "account": to.next().unwrap() }))
         .await
         .unwrap_err();
     assert_eq!(stopped.reason, reason::LOOP);
@@ -658,7 +658,7 @@ async fn agents_a_plugin_answering_its_own_changes_is_stopped_after_16() {
     assert!(f.agents.notices("p").last().unwrap().contains("Stopped a loop"));
     // The listener stays, and the next change (the one refused, made again)
     // starts over.
-    let next = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": "a2" })).await;
+    let next = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": "a2" })).await;
     assert_eq!(next.unwrap()["status"], "switched");
 }
 
@@ -670,7 +670,7 @@ async fn agents_many_changes_not_set_off_by_their_own_never_count_as_a_loop() {
     f.agents.observe_accounts(&f.snapshot());
     let mut to = ["a2", "a1"].into_iter().cycle();
     for hop in 0..(LOOP_HOPS * 3) {
-        let done = f.op("p", json!({ "op": "switch_account", "provider": "claude-code", "account": to.next().unwrap() })).await;
+        let done = f.op("p", json!({ "op": "switch_account", "provider": "copilot", "account": to.next().unwrap() })).await;
         assert_eq!(done.unwrap()["status"], "switched", "change {hop}");
     }
 }
@@ -679,7 +679,7 @@ async fn agents_many_changes_not_set_off_by_their_own_never_count_as_a_loop() {
 async fn agents_events_go_only_to_listeners_that_match() {
     let f = Fixture::new();
     f.grant("p", &[USAGE_READ]);
-    f.agents.listen("p", Target::Window, &[("@1".into(), "usage.changed".into(), json!({ "provider": "codex" }))]);
+    f.agents.listen("p", Target::Window, &[("@1".into(), "usage.changed".into(), json!({ "provider": "mock" }))]);
     f.agents.listen("p", Target::Service, &[("@1".into(), "not.an.event".into(), json!({}))]);
     f.agents.observe_accounts(&f.snapshot());
     f.set_used(0.7);
@@ -874,7 +874,7 @@ async fn messages_a_new_chat_is_made_and_sent_its_first_message() {
     let new = &created[0];
     assert_eq!(new.chat_id, id);
     assert_eq!((new.project.as_deref(), new.cwd.as_deref(), new.device.as_deref()), (Some("atlas"), Some("/work"), None));
-    assert_eq!(new.config.harness, HarnessId::ClaudeCode, "the default harness");
+    assert_eq!(new.config.harness, HarnessId::Copilot, "the default harness");
     assert_eq!((new.config.model.as_deref(), new.config.reasoning), (Some("sonnet"), Some(ReasoningLevel::High)));
     assert_eq!(f.delivered(), [(id.clone(), "Fix the build".to_string(), vec![], Delivery::Run)]);
     assert_eq!(lock(&f.host.sent_by)[0].0, id);
@@ -906,8 +906,12 @@ async fn messages_a_question_is_answered_as_respond_to_input_answers_it() {
     assert_eq!(
         answered[0].2,
         [
-            UserInputAnswer { question_id: "q1".into(), labels: vec!["Yes".into()] },
-            UserInputAnswer { question_id: "q2".into(), labels: vec!["Later".into()] },
+            UserInputAnswer {
+                payload: None,
+                question_id: "q1".into(), labels: vec!["Yes".into()] },
+            UserInputAnswer {
+                payload: None,
+                question_id: "q2".into(), labels: vec!["Later".into()] },
         ]
     );
     // A request named is answered as named; no answers is a bad call.
@@ -922,7 +926,7 @@ const PIN: &[&str] = &[ACCOUNTS_PIN, ACCOUNTS_READ, SESSIONS_READ];
 
 impl Fixture {
     fn pinning(&self) -> &Self {
-        lock(&self.host.mechanisms).insert(HarnessId::ClaudeCode, "env");
+        lock(&self.host.mechanisms).insert(HarnessId::Copilot, "env");
         self
     }
 
@@ -936,7 +940,7 @@ impl Fixture {
 }
 
 fn pin(chat: &str, account: &str) -> Json {
-    json!({ "op": "pin_account", "provider": "claude-code", "chat": chat, "account": account })
+    json!({ "op": "pin_account", "provider": "copilot", "chat": chat, "account": account })
 }
 
 #[tokio::test]
@@ -962,7 +966,7 @@ async fn a_pin_runs_a_chat_on_a_saved_account_says_who_and_shows_in_pins() {
     f.agents.observe_accounts(&f.snapshot());
     f.agents.listen("watcher", Target::Window, &[("@1".into(), "account.pinned".into(), json!({}))]);
     let done = f.op("p", pin("c1", "a2")).await.unwrap();
-    assert_eq!(done, json!({ "provider": "claude-code", "account": "a2", "chat": "c1" }));
+    assert_eq!(done, json!({ "provider": "copilot", "account": "a2", "chat": "c1" }));
     assert_eq!(lock(&f.host.pinned).len(), 1);
     let told = f.told();
     assert_eq!(told.len(), 1, "{told:?}");
@@ -972,10 +976,10 @@ async fn a_pin_runs_a_chat_on_a_saved_account_says_who_and_shows_in_pins() {
     assert_eq!(data["by"], json!({ "plugin": "p", "name": "Plugin p" }));
     assert!(data.get("chat").is_none(), "a chat's id needs sessions.read: {data}");
     let pins = f.op("p", json!({ "op": "pins" })).await.unwrap();
-    assert_eq!(pins, json!([{ "provider": "claude-code", "account": "a2", "chat": "c1", "since": 7 }]));
+    assert_eq!(pins, json!([{ "provider": "copilot", "account": "a2", "chat": "c1", "since": 7 }]));
     // Without sessions.read the rows are counted, not named.
     f.grant("q", &[ACCOUNTS_READ]);
-    assert_eq!(f.op("q", json!({ "op": "pins" })).await.unwrap(), json!([{ "provider": "claude-code", "account": "a2", "since": 7 }]));
+    assert_eq!(f.op("q", json!({ "op": "pins" })).await.unwrap(), json!([{ "provider": "copilot", "account": "a2", "since": 7 }]));
     assert_eq!(f.agents.status("p")["actions"][0]["op"], "pin_account");
     // Moving it says where it was; the same again is refused so nothing loops.
     f.op("p", pin("c1", "a1")).await.unwrap();
@@ -991,14 +995,14 @@ async fn a_pin_is_taken_back_with_no_account() {
     f.agents.listen("p", Target::Window, &[("@1".into(), "account.unpinned".into(), json!({}))]);
     f.op("p", pin("c1", "a2")).await.unwrap();
     f.told();
-    let done = f.op("p", json!({ "op": "pin_account", "provider": "claude-code", "chat": "c1" })).await.unwrap();
-    assert_eq!(done, json!({ "provider": "claude-code", "chat": "c1" }));
+    let done = f.op("p", json!({ "op": "pin_account", "provider": "copilot", "chat": "c1" })).await.unwrap();
+    assert_eq!(done, json!({ "provider": "copilot", "chat": "c1" }));
     assert!(lock(&f.host.pinned).is_empty());
     let told = f.told();
     assert_eq!(told.len(), 1, "{told:?}");
     assert_eq!(told[0].3, "account.unpinned");
     assert_eq!((told[0].4["account"].as_str(), told[0].4["chat"].as_str()), (Some("a2"), Some("c1")));
-    let nothing = f.op("p", json!({ "op": "pin_account", "provider": "claude-code", "chat": "c1" })).await.unwrap_err();
+    let nothing = f.op("p", json!({ "op": "pin_account", "provider": "copilot", "chat": "c1" })).await.unwrap_err();
     assert_eq!(nothing.reason, reason::ALREADY, "nothing was pinned");
 }
 
@@ -1012,7 +1016,7 @@ async fn a_pin_is_refused_for_what_cant_be_pinned() {
     assert_eq!(f.op("p", pin("c1", "zz")).await.unwrap_err().reason, reason::NOT_FOUND);
     assert_eq!(f.op("p", pin("nope", "a2")).await.unwrap_err().reason, reason::NOT_FOUND);
     assert_eq!(f.op("p", json!({ "op": "pin_account", "chat": "c1", "account": "a2" })).await.unwrap_err().reason, reason::BAD_CALL);
-    assert_eq!(f.op("p", json!({ "op": "pin_account", "provider": "claude-code", "account": "a2" })).await.unwrap_err().reason, reason::BAD_CALL);
+    assert_eq!(f.op("p", json!({ "op": "pin_account", "provider": "copilot", "account": "a2" })).await.unwrap_err().reason, reason::BAD_CALL);
     // An API key bills per token: spreading over it saves nothing.
     lock(&f.host.snapshot).accounts[1].auth_kind = Some(zeron_proto::AgentAuthKind::ApiKey);
     let refused = f.op("p", pin("c1", "a2")).await.unwrap_err();
@@ -1090,17 +1094,17 @@ async fn the_pre_run_hook_takes_the_listeners_account_and_pins_the_chat() {
     f.agents.observe_accounts(&f.snapshot());
     f.hook("p");
     f.answer("p", Ok(json!({ "account": "a2" })), Duration::ZERO);
-    let got = f.agents.preparing(HarnessId::ClaudeCode, "c1").await;
+    let got = f.agents.preparing(HarnessId::Copilot, "c1").await;
     assert_eq!(got.as_deref(), Some("a2"));
     assert_eq!(lock(&f.host.pinned)[0].account, "a2");
     let asked = lock(&f.sink.asked).clone();
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0].3, "run.preparing");
-    assert_eq!((asked[0].4["provider"].as_str(), asked[0].4["chat"].as_str()), (Some("claude-code"), Some("c1")));
+    assert_eq!((asked[0].4["provider"].as_str(), asked[0].4["chat"].as_str()), (Some("copilot"), Some("c1")));
     // Told as any pin: with who made it.
     assert_eq!(f.agents.status("p")["actions"][0]["op"], "pin_account");
     // A chat that has its pin isn't asked again.
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await, None);
     assert_eq!(lock(&f.sink.asked).len(), 1);
 }
 
@@ -1112,7 +1116,7 @@ async fn the_pre_run_hook_gives_up_after_its_wait_and_runs_the_chat_on_the_live_
     f.hook("p");
     f.answer("p", Ok(json!({ "account": "a2" })), Duration::from_secs(5));
     let started = Instant::now();
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await, None);
     assert!(started.elapsed() < Duration::from_secs(2), "it didn't wait for the answer");
     assert!(lock(&f.host.pinned).is_empty());
     assert!(f.agents.notices("p").iter().any(|n| n.contains("run.preparing") && n.contains("answer")), "{:?}", f.agents.notices("p"));
@@ -1129,7 +1133,7 @@ async fn the_pre_run_hook_ignores_what_it_cant_use() {
         f.answer("p", answer, Duration::ZERO);
         let chat = format!("c{}", lock(&f.sink.asked).len() + 10);
         lock(&f.host.chats).push(super::tests::chat(&chat, "opus"));
-        assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, &chat).await, None);
+        assert_eq!(f.agents.preparing(HarnessId::Copilot, &chat).await, None);
     }
     assert!(lock(&f.host.pinned).is_empty());
     // A plugin that wasn't allowed accounts.pin is never asked.
@@ -1138,14 +1142,14 @@ async fn the_pre_run_hook_ignores_what_it_cant_use() {
     g.agents.observe_accounts(&g.snapshot());
     g.hook("p");
     g.answer("p", Ok(json!({ "account": "a2" })), Duration::ZERO);
-    assert_eq!(g.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
+    assert_eq!(g.agents.preparing(HarnessId::Copilot, "c1").await, None);
     assert!(lock(&g.sink.asked).is_empty());
     // Nor is one asked about a provider with no mechanism here.
     let h = Fixture::new();
     h.grant("p", PIN);
     h.hook("p");
     h.answer("p", Ok(json!({ "account": "a2" })), Duration::ZERO);
-    assert_eq!(h.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
+    assert_eq!(h.agents.preparing(HarnessId::Copilot, "c1").await, None);
     assert!(lock(&h.sink.asked).is_empty());
 }
 
@@ -1156,8 +1160,8 @@ async fn a_chat_the_hook_passed_on_isnt_asked_again_but_can_still_be_pinned() {
     f.agents.observe_accounts(&f.snapshot());
     f.hook("p");
     f.answer("p", Ok(Json::Null), Duration::ZERO);
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await, None);
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await, None);
     assert_eq!(lock(&f.sink.asked).len(), 1, "once per chat");
     f.op("p", pin("c1", "a2")).await.unwrap();
 }
@@ -1172,7 +1176,7 @@ async fn the_first_listener_with_an_account_wins() {
     f.hook("q");
     f.answer("p", Ok(Json::Null), Duration::ZERO);
     f.answer("q", Ok(json!({ "account": "a1" })), Duration::ZERO);
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await.as_deref(), Some("a1"));
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await.as_deref(), Some("a1"));
     assert_eq!(lock(&f.sink.asked).len(), 2);
 }
 
@@ -1185,8 +1189,8 @@ async fn the_pre_run_hook_is_asked_one_chat_at_a_time_so_each_answer_sees_the_la
     f.hook("p");
     f.answer("p", Ok(json!({ "account": "a2" })), Duration::from_millis(40));
     let (a, b) = tokio::join!(
-        f.agents.preparing(HarnessId::ClaudeCode, "c1"),
-        f.agents.preparing(HarnessId::ClaudeCode, "c2"),
+        f.agents.preparing(HarnessId::Copilot, "c1"),
+        f.agents.preparing(HarnessId::Copilot, "c2"),
     );
     assert_eq!((a.as_deref(), b.as_deref()), (Some("a2"), Some("a2")));
     assert_eq!(f.sink.most_inflight.load(Ordering::SeqCst), 1, "never two asks at once");
@@ -1197,12 +1201,12 @@ async fn the_pre_run_hook_is_asked_one_chat_at_a_time_so_each_answer_sees_the_la
 async fn with_nobody_listening_the_pre_run_hook_reads_nothing_and_waits_for_no_one() {
     let f = Fixture::new();
     f.pinning().grant("p", PIN);
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await, None);
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await, None);
     assert!(lock(&f.sink.asked).is_empty());
     assert_eq!(f.host.forced.load(Ordering::SeqCst), 0);
     // It isn't remembered as passed on: a listener that arrives later is asked.
     f.agents.observe_accounts(&f.snapshot());
     f.hook("p");
     f.answer("p", Ok(json!({ "account": "a2" })), Duration::ZERO);
-    assert_eq!(f.agents.preparing(HarnessId::ClaudeCode, "c1").await.as_deref(), Some("a2"));
+    assert_eq!(f.agents.preparing(HarnessId::Copilot, "c1").await.as_deref(), Some("a2"));
 }

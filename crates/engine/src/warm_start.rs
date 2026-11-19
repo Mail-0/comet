@@ -187,7 +187,7 @@ impl SessionsEngine {
             return Ok(WarmOutcome::Unsupported);
         }
         let harness = self.inner.registry.resolve(harness_id)?;
-        if !harness.prewarms() || self.inner.registry.update_pending(harness_id) {
+        if !harness.prewarms() {
             self.warm_stop(chat_id).await;
             return Ok(WarmOutcome::Unsupported);
         }

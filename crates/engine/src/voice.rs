@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use zeron_harness::codex::realtime::{RealtimeHandle, VoiceCommand};
+use zeron_harness::realtime::{RealtimeHandle, VoiceCommand};
 use zeron_proto::{SessionStatus, voice::*};
 
 #[derive(Clone, Default)]

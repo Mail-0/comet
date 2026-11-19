@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use zeron_proto::view::{Indicator, effective_indicator};
-use zeron_proto::{Chat, ConnectivityState, HarnessUpdatePhase, HarnessUpdateStatus, Session};
+use zeron_proto::{Chat, ConnectivityState, Session};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -320,21 +320,8 @@ pub(crate) const ASKED_APART: Duration = Duration::from_secs(5);
 
 const VERSIONLESS: &str = "versionless";
 
-fn versionless_key(device: &str, harness: zeron_proto::HarnessId) -> String {
-    format!("{device}:{harness:?}:{VERSIONLESS}")
-}
-
 /// One banner per release: versioned releases deduplicate by version,
 /// versionless availability until the agent reports current again.
-fn update_key(device: &str, status: &HarnessUpdateStatus) -> Option<String> {
-    if status.phase != HarnessUpdatePhase::Available {
-        return None;
-    }
-    Some(match status.latest_version.as_deref() {
-        Some(version) => format!("{device}:{:?}:{version}", status.harness),
-        None => versionless_key(device, status.harness),
-    })
-}
 
 type Post = Box<dyn Fn(&str, &str, Option<&str>) + Send>;
 
@@ -349,7 +336,6 @@ struct Notifier {
     /// when it rings.
     settling: HashMap<String, (String, chrono::DateTime<chrono::Utc>)>,
     connectivity: ConnectivityNotificationState,
-    updates_seen: HashSet<String>,
 }
 
 impl Notifier {
@@ -362,7 +348,6 @@ impl Notifier {
             baselines: HashMap::new(),
             settling: HashMap::new(),
             connectivity: ConnectivityNotificationState::default(),
-            updates_seen: HashSet::new(),
         }
     }
 
@@ -463,52 +448,6 @@ impl Notifier {
         };
         (self.post)("Connection unavailable", body, None);
     }
-
-    /// New releases not bannered yet (a confirmed current/updated status
-    /// re-arms versionless availability).
-    fn unseen_updates(&mut self, statuses: &[HarnessUpdateStatus]) -> Vec<String> {
-        for status in statuses {
-            if matches!(
-                status.phase,
-                HarnessUpdatePhase::Current | HarnessUpdatePhase::Updated
-            ) {
-                self.updates_seen
-                    .remove(&versionless_key(&self.device, status.harness));
-            }
-        }
-        statuses
-            .iter()
-            .filter_map(|status| update_key(&self.device, status))
-            .filter(|key| !self.updates_seen.contains(key))
-            .collect()
-    }
-
-    /// Release discoveries finish independently, so the caller debounces and
-    /// this delivers one aggregate banner for everything new.
-    fn updates(&mut self, statuses: &[HarnessUpdateStatus]) {
-        let new = self.unseen_updates(statuses);
-        if new.is_empty() {
-            return;
-        }
-        let count = new.len();
-        self.updates_seen.extend(new);
-        if !self.allowed().is_some_and(|prefs| prefs.agent_updates) {
-            return;
-        }
-        let body = if count == 1 {
-            "A coding agent update is ready"
-        } else {
-            "Coding agent updates are ready"
-        };
-        (self.post)(
-            &format!(
-                "{count} agent update{} available",
-                if count == 1 { "" } else { "s" }
-            ),
-            body,
-            Some(zeron_notify::AGENT_UPDATES_TARGET),
-        );
-    }
 }
 
 /// Watch this engine's sessions, connectivity and agent updates and post
@@ -519,7 +458,6 @@ pub(crate) fn spawn(core: &crate::EngineCore, data_dir: PathBuf) -> tokio::task:
         .merged_sessions_watch(core.sessions.watch_sessions());
     let mut chats = core.workspace.watch_chats();
     let mut connectivity = core.doc_host.watch_connectivity();
-    let mut updates = core.harness_updates.watch();
     let mut notifier = Notifier::new(
         data_dir,
         core.device_id.clone(),
@@ -527,7 +465,6 @@ pub(crate) fn spawn(core: &crate::EngineCore, data_dir: PathBuf) -> tokio::task:
         Box::new(zeron_notify::post),
     );
     tokio::spawn(async move {
-        const UPDATE_DEBOUNCE: Duration = Duration::from_secs(1);
         // Seed every baseline silently.
         notifier.sessions(
             &sessions.borrow_and_update(),
@@ -535,8 +472,6 @@ pub(crate) fn spawn(core: &crate::EngineCore, data_dir: PathBuf) -> tokio::task:
             chrono::Utc::now(),
         );
         notifier.connectivity(connectivity.borrow_and_update().state, Instant::now());
-        let mut updates_due: Option<tokio::time::Instant> =
-            Some(tokio::time::Instant::now() + UPDATE_DEBOUNCE);
         loop {
             let settles_at = notifier.next_settled();
             tokio::select! {
@@ -555,11 +490,6 @@ pub(crate) fn spawn(core: &crate::EngineCore, data_dir: PathBuf) -> tokio::task:
                     let state = connectivity.borrow_and_update().state;
                     notifier.connectivity(state, Instant::now());
                 }
-                changed = updates.changed() => {
-                    if changed.is_err() { break; }
-                    updates.borrow_and_update();
-                    updates_due.get_or_insert(tokio::time::Instant::now() + UPDATE_DEBOUNCE);
-                }
                 _ = async {
                     match settles_at {
                         Some(at) => {
@@ -570,16 +500,6 @@ pub(crate) fn spawn(core: &crate::EngineCore, data_dir: PathBuf) -> tokio::task:
                     }
                 } => {
                     notifier.flush(chrono::Utc::now());
-                }
-                _ = async {
-                    match updates_due {
-                        Some(at) => tokio::time::sleep_until(at).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    updates_due = None;
-                    let statuses = updates.borrow().clone();
-                    notifier.updates(&statuses);
                 }
             }
         }
@@ -968,31 +888,5 @@ mod tests {
         notifier.sessions(&[asking], &chats, now);
         assert_eq!(posted.lock().unwrap().len(), 1);
         assert_eq!(posted.lock().unwrap()[0].1, "Waiting on your input");
-    }
-
-    #[test]
-    fn agent_updates_banner_once_per_release() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut notifier, posted, _) = notifier(dir.path());
-        let status = |phase: &str, version: Option<&str>| -> HarnessUpdateStatus {
-            serde_json::from_value(serde_json::json!({
-                "harness": "codex",
-                "phase": phase,
-                "latestVersion": version,
-            }))
-            .expect("update fixture")
-        };
-        notifier.updates(&[status("available", Some("1.2"))]);
-        notifier.updates(&[status("available", Some("1.2"))]);
-        assert_eq!(posted.lock().unwrap().len(), 1);
-        assert_eq!(
-            posted.lock().unwrap()[0].2.as_deref(),
-            Some(zeron_notify::AGENT_UPDATES_TARGET)
-        );
-        // Versionless availability re-arms after the agent reports current.
-        notifier.updates(&[status("available", None)]);
-        notifier.updates(&[status("current", None)]);
-        notifier.updates(&[status("available", None)]);
-        assert_eq!(posted.lock().unwrap().len(), 3);
     }
 }

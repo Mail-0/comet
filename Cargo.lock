@@ -645,15 +645,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "bzip2"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
-dependencies = [
- "libbz2-rs-sys",
-]
-
-[[package]]
 name = "camino"
 version = "1.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1489,15 +1480,6 @@ checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
 dependencies = [
  "derive_builder_core",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "deser-hjson"
-version = "2.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0d49a923edd92dc1ca5819822f540ea83f094ab5ac6940e4044e03c1d8e6576"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -3197,6 +3179,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "keiki-api"
+version = "0.3.9"
+dependencies = [
+ "base64 0.22.1",
+ "keiki-model",
+ "percent-encoding",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "keiki-model"
+version = "0.3.9"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3244,12 +3252,6 @@ name = "leb128"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
-
-[[package]]
-name = "libbz2-rs-sys"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
@@ -6041,19 +6043,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml_ng"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
-]
-
-[[package]]
 name = "serial"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7546,12 +7535,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8924,6 +8907,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeron-copilot"
+version = "0.3.9"
+dependencies = [
+ "keiki-api",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "zeron-proto",
+]
+
+[[package]]
 name = "zeron-doc"
 version = "0.3.9"
 dependencies = [
@@ -8981,6 +8977,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zeron-copilot",
  "zeron-doc",
  "zeron-harness",
  "zeron-launch",
@@ -9004,21 +9001,13 @@ version = "0.3.9"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
- "bzip2",
  "chrono",
- "deser-hjson",
- "filetime",
- "flate2",
  "futures",
  "libc",
  "reqwest",
  "semver",
  "serde",
  "serde_json",
- "serde_yaml_ng",
- "sha2",
- "tar",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -9026,10 +9015,9 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
+ "zeron-copilot",
  "zeron-doc",
  "zeron-proto",
- "zeron-voice-media",
- "zip",
 ]
 
 [[package]]

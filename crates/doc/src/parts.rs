@@ -1062,6 +1062,7 @@ mod tests {
             questions: vec![],
         };
         let picked = vec![UserInputAnswer {
+            payload: None,
             question_id: "q".into(),
             labels: vec!["B".into()],
         }];

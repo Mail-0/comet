@@ -1313,6 +1313,7 @@ mod input_outcome_tests {
 
     fn question(id: &str, header: &str, text: &str, options: &[&str]) -> UserInputQuestion {
         UserInputQuestion {
+            mcp_connect: None,
             id: id.into(),
             header: header.into(),
             question: text.into(),
@@ -1325,6 +1326,7 @@ mod input_outcome_tests {
 
     fn answer(id: &str, labels: &[&str]) -> UserInputAnswer {
         UserInputAnswer {
+            payload: None,
             question_id: id.into(),
             labels: labels.iter().map(|l| (*l).to_owned()).collect(),
         }

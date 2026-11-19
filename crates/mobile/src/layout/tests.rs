@@ -207,6 +207,7 @@ fn transcript_one(text: &str) -> TranscriptInput {
 #[test]
 fn question_chip_reads_what_was_answered() {
     let question = |id: &str, header: &str| zeron_proto::UserInputQuestion {
+        mcp_connect: None,
         id: id.into(),
         header: header.into(),
         question: format!("{header}?"),
@@ -234,7 +235,9 @@ fn question_chip_reads_what_was_answered() {
         let row = frame.display(0).unwrap();
         (row.copy_text, row.height)
     };
-    let picked = |id: &str, label: &str| zeron_proto::UserInputAnswer { question_id: id.into(), labels: vec![label.into()] };
+    let picked = |id: &str, label: &str| zeron_proto::UserInputAnswer {
+        payload: None,
+        question_id: id.into(), labels: vec![label.into()] };
     assert_eq!(chip(vec![question("q", "Recherche")], true, None).0, "Answered a question");
     let (closed, one_line) = chip(vec![question("q", "Recherche")], true, Some(vec![]));
     assert_eq!(closed, "Recherche → Not answered");

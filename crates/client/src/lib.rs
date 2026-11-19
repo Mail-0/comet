@@ -37,7 +37,7 @@ pub mod error;
 pub mod events;
 mod host_stream;
 mod live;
-pub mod provider_login;
+mod login_callback;
 pub mod providers;
 pub mod rpc;
 pub mod runtime;
@@ -54,7 +54,6 @@ pub use config::{
 pub use connectivity::{Connectivity, ConnectivityState, SendState};
 pub use error::ClientError;
 pub use events::{ClientEvent, ClientListener};
-pub use provider_login::{LoginProvider, ProviderLoginStart};
 pub use session::{
     AppendHint, BusyPolicy, ComposerState, Entry, HostCapabilities, HostInfo, InputRequest,
     LiveStatus, LocalEcho, OutgoingAttachment, PendingKind, PendingSend, QueueEditAction,

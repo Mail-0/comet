@@ -465,40 +465,4 @@ impl CoreClient {
         })
         .await
     }
-
-    /// Sign in to `provider` (`claude` · `codex`) for Cloud. The browser is
-    /// sent to `done_url` once the provider answers.
-    pub async fn provider_login_start(
-        &self,
-        provider: String,
-        done_url: String,
-    ) -> CoreResult<ProviderLoginInfo> {
-        let provider = match provider.as_str() {
-            "claude" => zc::LoginProvider::Claude,
-            "codex" => zc::LoginProvider::Codex,
-            other => {
-                return Err(CoreError::InvalidArgument {
-                    message: format!("{other} can't be signed in from here"),
-                });
-            }
-        };
-        let client = self.client.clone();
-        on_runtime(async move { client.provider_login_start(provider, &done_url).await })
-            .await
-            .map(|start| ProviderLoginInfo {
-                login_id: start.login_id,
-                url: start.url,
-            })
-    }
-
-    /// Wait for a started sign-in to land in Cloud's vault.
-    pub async fn provider_login_finish(&self, login_id: String) -> CoreResult<()> {
-        let client = self.client.clone();
-        on_runtime(async move { client.provider_login_finish(&login_id).await }).await
-    }
-
-    /// The auth sheet was dismissed.
-    pub fn provider_login_cancel(&self, login_id: String) {
-        self.client.provider_login_cancel(&login_id);
-    }
 }

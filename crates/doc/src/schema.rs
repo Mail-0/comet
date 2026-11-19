@@ -442,7 +442,8 @@ pub struct ListCache<T> {
 
 impl<T> Default for ListCache<T> {
     fn default() -> Self {
-        Self { items: Default::default(), bytes: 0, read_at: None, reads: 0 }
+        Self { items: Default::default(), bytes: 0, read_at: None, reads: 0,
+        }
     }
 }
 
@@ -460,7 +461,9 @@ fn json_bytes(value: &serde_json::Value) -> usize {
     match value {
         Value::String(s) => 24 + s.len(),
         Value::Array(items) => 24 + items.iter().map(json_bytes).sum::<usize>(),
-        Value::Object(fields) => 48 + fields.iter().map(|(k, v)| 24 + k.len() + json_bytes(v)).sum::<usize>(),
+        Value::Object(fields) => {
+            48 + fields.iter().map(|(k, v)| 24 + k.len() + json_bytes(v)).sum::<usize>()
+        }
         _ => 16,
     }
 }
@@ -486,7 +489,8 @@ pub struct EntryChanges {
 
 impl EntryChanges {
     pub fn all() -> Self {
-        Self { ids: Default::default(), all: true, at: None }
+        Self { ids: Default::default(), all: true, at: None,
+        }
     }
 
     /// Note the entries `event` touched. A change inside an entry has the
@@ -857,7 +861,8 @@ impl SessionDoc {
 
     /// [`push_message`](Self::push_message), but inserted before the last
     /// `from_end` entries of the messages list (clamped to its start).
-    pub fn insert_message_before_last(&self, from_end: usize, entry: &SessionMessageEntry) -> Result<(), DocError> {
+    pub fn insert_message_before_last(&self, from_end: usize, entry: &SessionMessageEntry,
+    ) -> Result<(), DocError> {
         let messages = self.doc.get_list("messages");
         let at = messages.len().saturating_sub(from_end);
         let map = messages.insert_container(at, LoroMap::new())?;
@@ -1196,7 +1201,8 @@ impl SessionDoc {
                 Some(ValueOrContainer::Value(value)) => value.to_json_value(),
                 _ => continue,
             };
-            let Some(entry) = self.parse_entry(value) else { continue };
+            let Some(entry) = self.parse_entry(value) else { continue;
+            };
             match &entry.continuation_of {
                 Some(root) if !roots.contains(root) => {
                     missing.insert(root.clone());
@@ -1212,7 +1218,9 @@ impl SessionDoc {
         entries.reverse();
         // (A continuation without its root here would show as an entry of
         // its own; the whole read joins it into its root.)
-        entries.retain(|e| e.continuation_of.as_ref().is_none_or(|root| roots.contains(root)));
+        entries.retain(|e| {
+            e.continuation_of.as_ref().is_none_or(|root| roots.contains(root))
+        });
         Ok(join_continuation_entries(entries))
     }
 
@@ -1225,15 +1233,14 @@ impl SessionDoc {
         // Each command read from the doc once, then again only when it
         // changes (`read_entries`' cache, for the ledger).
         let mut cache = self.command_cache.lock().unwrap_or_else(|e| e.into_inner());
-        let read = self.read_list_cached("commands", &mut cache, &self.command_changes, true, |value| {
-            match serde_json::from_value(value) {
+        let read = self.read_list_cached("commands", &mut cache, &self.command_changes, true, |value| match serde_json::from_value(value) {
                 Ok(entry) => Some(entry),
                 Err(err) => {
                     tracing::warn!(error = %err, "skipping malformed command entry");
                     None
                 }
-            }
-        });
+            },
+        );
         self.command_bytes.store(cache.bytes, std::sync::atomic::Ordering::Relaxed);
         Ok(read)
     }
@@ -2320,12 +2327,15 @@ mod tests {
         // reach the cache's observer only after the change already shows,
         // the window a reader on another thread can fall into.
         let loro = LoroDoc::new();
-        let _slow = loro.subscribe_root(Arc::new(|_| std::thread::sleep(std::time::Duration::from_millis(3))));
+        let _slow = loro.subscribe_root(Arc::new(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(3))
+        }));
         let doc = Arc::new(SessionDoc::from_doc(loro));
         let entry = |id: &str| SessionMessageEntry {
             id: id.into(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: "words".into() }],
+            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: "words".into(),
+            }],
             created_at: 1,
             device_id: "dev".into(),
             status: None,
@@ -2397,7 +2407,8 @@ mod tests {
         let entry = |id: &str| SessionMessageEntry {
             id: id.into(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: "words".into() }],
+            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: "words".into(),
+            }],
             created_at: 1,
             device_id: "dev".into(),
             status: None,
@@ -2452,7 +2463,8 @@ mod tests {
         let entry = |id: &str| SessionMessageEntry {
             id: id.into(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: "words".into() }],
+            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: "words".into(),
+            }],
             created_at: 1,
             device_id: "dev".into(),
             status: None,
@@ -2467,7 +2479,8 @@ mod tests {
         let loro = LoroDoc::new();
         let _probe = {
             let (shared, update, importer, seen, reader) =
-                (shared.clone(), update.clone(), importer.clone(), seen.clone(), reader.clone());
+                (shared.clone(), update.clone(), importer.clone(), seen.clone(), reader.clone(),
+            );
             loro.subscribe_root(Arc::new(move |event| {
                 let Some(doc) = shared.get() else { return };
                 match event.triggered_by {
@@ -2475,7 +2488,9 @@ mod tests {
                         if let Some(bytes) = update.lock().unwrap().take() {
                             let doc = doc.clone();
                             *importer.lock().unwrap() =
-                                Some(std::thread::spawn(move || drop(doc.import(&bytes).unwrap())));
+                                Some(std::thread::spawn(move || {
+                                drop(doc.import(&bytes).unwrap())
+                            }));
                             // (Time for the import to land, if it can.)
                             std::thread::sleep(std::time::Duration::from_millis(20));
                         }
@@ -2529,7 +2544,8 @@ mod tests {
         let entry = |id: &str, words: &str| SessionMessageEntry {
             id: id.into(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: words.into() }],
+            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: words.into(),
+            }],
             created_at: 1,
             device_id: "dev".into(),
             status: None,
@@ -2649,7 +2665,8 @@ mod tests {
         let entry = |id: &str, continuation_of: Option<&str>| SessionMessageEntry {
             id: id.into(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: format!("{id} words") }],
+            parts: vec![MessagePart::Text { id: format!("{id}-text"), text: format!("{id} words"),
+            }],
             created_at: 1,
             device_id: "dev".into(),
             status: None,
@@ -2665,10 +2682,12 @@ mod tests {
         // A reply streaming: text growing, a tool call, then finished.
         let mut writer = SegmentWriter::begin(&doc, "reply", "dev", 2).unwrap();
         assert_eq!(check(&doc, "reply begun"), 1);
-        let mut folded = vec![MessagePart::Text { id: "t".into(), text: "Hel".into() }];
+        let mut folded = vec![MessagePart::Text { id: "t".into(), text: "Hel".into(),
+        }];
         writer.sync(&folded).unwrap();
         assert_eq!(check(&doc, "first words"), 1);
-        folded[0] = MessagePart::Text { id: "t".into(), text: "Hello there".into() };
+        folded[0] = MessagePart::Text { id: "t".into(), text: "Hello there".into(),
+        };
         writer.sync(&folded).unwrap();
         assert_eq!(check(&doc, "more words"), 1);
         writer.finish(&folded, MessageStatus::Complete).unwrap();
@@ -2702,7 +2721,8 @@ mod tests {
         for n in 0..3 {
             doc.queue_command(&SessionCommandEntry {
                 id: format!("c{n}"),
-                payload: SessionCommandPayload::Steer { prompt: "focus".into(), message_id: None },
+                payload: SessionCommandPayload::Steer { prompt: "focus".into(), message_id: None,
+                },
                 issued_by: "dev".into(),
                 issued_at: n,
                 based_on: None,
@@ -2759,7 +2779,8 @@ mod tests {
         assert!(doc.read_entries().unwrap().is_empty(), "no entry of its own");
         // Kept to the newest SENT_BY_KEPT.
         for i in 0..(SENT_BY_KEPT + 5) {
-            doc.mark_sent_by(&format!("n{i}"), serde_json::json!({ "plugin": "relay", "at": 10 + i })).unwrap();
+            doc.mark_sent_by(&format!("n{i}"), serde_json::json!({ "plugin": "relay", "at": 10 + i }),
+            ).unwrap();
         }
         let all = doc.sent_by();
         assert_eq!(all.len(), SENT_BY_KEPT);
@@ -2844,7 +2865,8 @@ mod tests {
                 id: id.into(),
                 role: MessageRole::Assistant,
                 parts: (0..parts)
-                    .map(|part| MessagePart::Text { id: format!("{id}-{part}"), text: "body".into() })
+                    .map(|part| MessagePart::Text { id: format!("{id}-{part}"), text: "body".into(),
+                    })
                     .collect(),
                 created_at: 0,
                 device_id: "device".into(),
@@ -3240,6 +3262,7 @@ mod tests {
         })
         .unwrap();
         let picked = vec![zeron_proto::UserInputAnswer {
+            payload: None,
             question_id: "q".into(),
             labels: vec!["B".into()],
         }];
@@ -3266,6 +3289,7 @@ mod tests {
             questions: vec![],
             resolved: true,
             answers: Some(vec![zeron_proto::UserInputAnswer {
+                payload: None,
                 question_id: "q".into(),
                 labels: vec!["Deep dive".into()],
             }]),

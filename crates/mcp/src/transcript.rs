@@ -323,6 +323,7 @@ mod tests {
     #[test]
     fn answered_questions_join_the_tool_ledger() {
         let question = |id: &str, header: &str| zeron_proto::UserInputQuestion {
+            mcp_connect: None,
             id: id.into(),
             header: header.into(),
             question: format!("{header}?"),
@@ -346,6 +347,7 @@ mod tests {
                 input(
                     "answered",
                     Some(vec![zeron_proto::UserInputAnswer {
+                        payload: None,
                         question_id: "q".into(),
                         labels: vec!["Deep dive".into()],
                     }]),

@@ -15,8 +15,9 @@ use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 
 use zeron_sync::DocsStore;
 
-pub mod acp_registry;
 pub mod agent_accounts;
+pub mod copilot;
+pub use copilot::CopilotCredentialHolder;
 
 /// Which build this engine is: its git commit and when its executable was
 /// built (the file's modification time, in seconds), as
@@ -54,16 +55,13 @@ pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
 mod git_tree;
-pub mod harness_updates;
+pub mod heap;
 pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
-pub mod local_import;
 pub mod keep_running;
-pub mod heap;
+pub mod local_import;
 pub mod managed;
-mod hosted_models;
-mod model_catalogs;
 mod plugin_agents;
 pub mod plugins;
 pub mod profile;
@@ -74,8 +72,6 @@ pub mod repos;
 pub mod rpc;
 pub mod run_journal;
 pub mod runner;
-pub mod wake_trace;
-pub mod wake_update;
 pub mod self_schedule;
 pub mod sessions;
 pub mod source_control;
@@ -87,6 +83,8 @@ mod transcript_history;
 mod update_trial;
 pub mod uploads;
 pub mod voice;
+pub mod wake_trace;
+pub mod wake_update;
 pub mod workspace_files;
 pub mod workspace_host;
 pub mod workspace_search;
@@ -94,8 +92,7 @@ mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{
-    Auth, AuthConfig, AuthState, AuthUser, OrgMembership, ScreenHint, SignInOptions,
-};
+    Auth, AuthConfig, AuthState, AuthUser, OrgMembership, ScreenHint, SignInOptions};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
     CheckoutDiffSync, DiffFileTextPair, DiffSidecar, DiffSnapshot, TreeSnapshot, TurnSnapshot,
@@ -197,7 +194,7 @@ pub struct EngineCore {
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
-    pub harness_updates: harness_updates::HarnessUpdateCoordinator,
+    pub copilot_credentials: CopilotCredentialHolder,
     pub device_id: String,
     /// Which app windows are focused (desktop banners hold back while one is).
     pub viewport_focus: desktop_notify::ViewportFocus,
@@ -291,6 +288,7 @@ impl EngineCore {
         let device_id = load_or_create_device_id(data_dir)?;
         // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
+        let copilot_credentials = registry.copilot_credentials.clone();
         registry.load_prefs(data_dir);
         let store = Arc::new(DocsStore::open(profile.store_root())?);
         if store.recovery().is_some() {
@@ -336,7 +334,8 @@ impl EngineCore {
                     .into_iter()
                     .filter(|c| c.device_id == device_id)
                     .filter_map(|c| c.cwd)
-                    .chain(spaces.into_iter().filter(|s| s.device_id == device_id).map(|s| s.path))
+                    .chain(spaces.into_iter().filter(|s| s.device_id == device_id).map(|s| s.path),
+                    )
                     .filter(|f| !f.is_empty())
                     .collect();
                 folders.sort();
@@ -428,13 +427,6 @@ impl EngineCore {
         // against this store and pushes staged bytes to remote hosts.
         doc_host.set_uploads(uploads.clone());
         let agent_accounts_config = AgentAccountsConfig::detect(data_dir);
-        // A Cloud device's Codex runs in the broker's managed CODEX_HOME.
-        let codex_home = if runner::is_cloud_platform() {
-            credentials::managed_codex_home(data_dir)
-        } else {
-            agent_accounts_config.codex_home.clone()
-        };
-        sessions.set_generated_images(uploads.clone(), codex_home.join("generated_images"));
         let local_import = (profile.scope() == WorkspaceScope::Synced).then(|| {
             local_import::LocalImporter::new(
                 data_dir,
@@ -451,17 +443,6 @@ impl EngineCore {
         // the P2P service, which serves it to that device alone.
         let agent_accounts =
             AgentAccounts::with_callback_routes(agent_accounts_config, previews.callback_routes());
-        registry.set_account_environment(Arc::new(agent_accounts::PinRunEnvironment(
-            agent_accounts.clone(),
-        )));
-        // A chat's first run asks the plugins that pin (`run.preparing`).
-        {
-            let agents = plugins.agents().clone();
-            agent_accounts.set_pin_hook(Arc::new(move |harness, chat| {
-                let agents = agents.clone();
-                Box::pin(async move { agents.preparing(harness, &chat).await })
-            }));
-        }
         // Plugins' agent ops (usage, accounts, models: plugins/agents) reach
         // the engine as Settings and the composer do, and hear what changes.
         plugins.agents().set_host(Arc::new(plugin_agents::EngineAgentHost {
@@ -478,12 +459,6 @@ impl EngineCore {
             sessions.watch_sessions(),
             workspace.watch_chats(),
         );
-        // Agents added from the ACP registry (this engine's own, under its
-        // data dir): harnesses before the update coordinator lists them.
-        acp_registry::start(data_dir, &registry);
-        let harness_updates =
-            harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
-        harness_updates.start();
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
@@ -514,7 +489,7 @@ impl EngineCore {
             spaces_sync,
             uploads,
             agent_accounts,
-            harness_updates,
+            copilot_credentials,
             device_id,
             local_import,
             plugins,
@@ -686,7 +661,7 @@ impl EngineCore {
         .with_previews(self.previews.clone())
         .with_remote_terminals(self.remote_terminals.clone())
         .with_commands(self.commands.clone())
-        .with_harness_updates(self.harness_updates.clone())
+        .with_copilot_credentials(self.copilot_credentials.clone())
         .with_viewport_focus(self.viewport_focus.clone())
         .with_plugins(self.plugins.clone());
         if let Some(links) = self.links() {
@@ -754,7 +729,6 @@ impl EngineCore {
             .take();
         self.plugins.shutdown();
         self.previews.shutdown().await;
-        self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
         // releases the next queued row. Freeze first so quitting never starts
         // recovered work while the engine is being torn down.
@@ -1041,7 +1015,7 @@ impl Engine {
         Ok(EngineInfo {
             device_id: load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
-            cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
+            cursor_sdk_version: None,
             capabilities: {
                 let mut capabilities = zeron_proto::capabilities::current();
                 if desktop_notify::enabled() {
@@ -1219,10 +1193,12 @@ impl Engine {
                 .borrow()
                 .iter()
                 .filter(|chat| chat.device_id == preview_device)
-                .filter_map(|chat| Some((chat.id.clone(), std::path::PathBuf::from(chat.cwd.clone()?))))
+                .filter_map(|chat| {
+                    Some((chat.id.clone(), std::path::PathBuf::from(chat.cwd.clone()?)))
+                })
                 .collect(),
             terminals: preview_terminals.chats(),
-            reserved_ports: zeron_harness::agent_ports::reserved(),
+            reserved_ports: Default::default(),
             live: preview_sessions.active_count() > 0 || preview_terminals.any_open(),
         });
         // Discovery parks while nothing Zeron started is alive. A run
@@ -1275,10 +1251,6 @@ impl Engine {
         // workspace sync being enabled — the feed is the public release feed
         // (served without authentication), not an edge feature.
         let quiescent = core.update_quiescence(runner::is_cloud_platform());
-        core.harness_updates.set_compatibility_feed(format!(
-            "{}/releases/harness-compatibility.json",
-            config.edge_url.trim_end_matches('/')
-        ));
         // The release channel a macOS app install follows lives in the data
         // dir (update-channel.json), so this report follows the app's choice.
         zeron_update::channel::set_data_dir(&config.data_dir);
@@ -1297,7 +1269,8 @@ impl Engine {
             // Only this process's live engine restarts it: with its graph
             // gone there is nothing left to prepare.
             let (Some(version_change_docs), Some(version_change_registry)) =
-                (version_change_docs.upgrade(), version_change_registry.upgrade())
+                (version_change_docs.upgrade(), version_change_registry.upgrade(),
+            )
             else {
                 return;
             };
@@ -1326,15 +1299,6 @@ impl Engine {
         }
         core.set_updater(updater);
         tracing::info!(device_id = %core.device_id, "engine core assembled");
-        // Managed ACP adapters install in the background at boot (agents
-        // whose CLI is present but whose adapter isn't yet), so a first chat
-        // never waits on — or dies inside — an npm run.
-        // Not on a Cloud device: it registers only Codex + Claude Code, and
-        // a sandbox's lazy CLI shims install themselves when merely probed.
-        if !runner::is_cloud_platform() {
-            zeron_harness::acp::prewarm_managed_adapters();
-        }
-
         let host_relay = edge.as_ref().map(|edge| {
             let mut link_config =
                 zeron_rpc::LinkCacheConfig::new(edge.url.clone(), Arc::new(auth.clone()));
@@ -1352,7 +1316,8 @@ impl Engine {
             link_config.caller_proof = Some(Arc::new(move |target: &str, conn_id: &str, ts: i64| {
                 let (key, signature) =
                     plugins::signing::device_link_proof(&proof_dir, target, conn_id, ts)?;
-                Some(zeron_rpc::CallerProof { device: proof_device.clone(), key, signature })
+                Some(zeron_rpc::CallerProof { device: proof_device.clone(), key, signature,
+                    })
             }));
             let links = zeron_rpc::LinkCache::new(link_config);
             let links_for_presence = links.clone();

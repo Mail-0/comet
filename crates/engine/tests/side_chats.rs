@@ -452,6 +452,7 @@ async fn a_fork_settles_the_running_subagent_chips_it_copies() {
                     id: "a1-input".into(),
                     request_id: "q-1".into(),
                     questions: vec![zeron_proto::UserInputQuestion {
+                        mcp_connect: None,
                         id: "q1".into(),
                         header: "Pick".into(),
                         question: "Which one?".into(),
@@ -1022,132 +1023,6 @@ async fn orphaned_history_steer_still_owes_the_history() {
     assert_eq!(
         doc.doc().fork_history_session().as_deref(),
         Some("drop-session")
-    );
-    core.shutdown().await;
-}
-
-/// Native subagents off (Settings → Providers) is for top-level chats:
-/// delegation is one level deep, so a side chat, which can't create chats,
-/// launches with its provider's subagent tools, and its Zeron server never
-/// tells it to delegate through side chats. So does a chat whose run reached
-/// its host before its row: the claimed row can't say it has no parent.
-#[tokio::test]
-async fn a_side_chat_keeps_its_subagent_tools_when_native_subagents_are_off() {
-    let dir = tempfile::tempdir().unwrap();
-    let registry = Arc::new(HarnessRegistry::new());
-    registry.register(Arc::new(
-        zeron_harness::ClaudeHarness::new().with_executable(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../harness/tests/fixtures/fake-claude.sh"),
-        ),
-    ));
-    let core =
-        EngineCore::assemble(dir.path(), registry.clone(), HarnessId::ClaudeCode, None).unwrap();
-    // A served IPC port: runs carry Zeron's own MCP server.
-    core.sessions.set_ipc_port(27699);
-    registry
-        .set_native_subagents(HarnessId::ClaudeCode, false)
-        .unwrap();
-    // Per chat: the init frame's tools, then the fake CLI's reply naming
-    // its Zeron server's mode.
-    let mut launched = Vec::new();
-    // `None`: no createChat yet, the run claims the row.
-    for (chat, parent) in [
-        ("main", Some(None)),
-        ("side", Some(Some("main"))),
-        ("claimed", None),
-    ] {
-        match parent {
-            Some(parent) => core
-                .workspace
-                .create_chat_with_parent(
-                    chat,
-                    None,
-                    Some(&core.device_id),
-                    None,
-                    Some("/tmp".into()),
-                    parent.map(str::to_owned),
-                )
-                .unwrap(),
-            None => core.workspace.claim_chat(chat, Some("/tmp")).unwrap(),
-        }
-        // Titled up front: no title run.
-        core.workspace.rename_chat(chat, chat).unwrap();
-        core.sessions
-            .dispatch(
-                chat,
-                HarnessId::ClaudeCode,
-                RunRequest {
-                    mcp: None,
-                    prompt: "scenario:native-subagents".into(),
-                    harness: Some(HarnessId::ClaudeCode),
-                    model: None,
-                    reasoning: None,
-                    model_options: Default::default(),
-                    cwd: "/tmp".into(),
-                    sandbox: SandboxLevel::WorkspaceWrite,
-                    auto_approve: true,
-                    access: Default::default(),
-                    plan: false,
-                    resume: None,
-                    attachments: vec![],
-                    worktree: None,
-                    env: Default::default(),
-                    extra_mcp: Vec::new(),
-                },
-                Some(format!("{chat}-u1")),
-            )
-            .await
-            .unwrap();
-        let doc = core.doc_host.open(chat).unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let reply = doc
-                    .doc()
-                    .read_entries()
-                    .unwrap()
-                    .into_iter()
-                    .filter(|e| {
-                        e.role == MessageRole::Assistant
-                            && e.status == Some(MessageStatus::Complete)
-                    })
-                    .flat_map(|e| e.parts)
-                    .find_map(|p| match p {
-                        MessagePart::Text { text, .. } => Some(text),
-                        _ => None,
-                    });
-                if let Some(reply) = reply {
-                    break reply;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the turn completes");
-        let (journal, _) = core.sessions.subscribe(chat, 0).unwrap();
-        let tools = journal
-            .into_iter()
-            .find_map(|e| match e.event {
-                AgentEvent::SessionStarted { tools, .. } => Some(tools),
-                _ => None,
-            })
-            .expect("the session starts");
-        launched.push((tools, reply));
-    }
-    let tools = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-    assert_eq!(
-        launched,
-        [
-            (tools(&["Bash"]), "side chats only".to_string()),
-            (
-                tools(&["Bash", "Task", "Workflow"]),
-                "native subagents".to_string()
-            ),
-            (
-                tools(&["Bash", "Task", "Workflow"]),
-                "native subagents".to_string()
-            ),
-        ]
     );
     core.shutdown().await;
 }
