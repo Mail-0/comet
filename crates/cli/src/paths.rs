@@ -44,6 +44,17 @@ fn data_dir_in(home: &std::path::Path) -> PathBuf {
             if !old.exists() {
                 continue;
             }
+            let has_account_data = ["orgs", "uploads", "legacy-uploads-owner.json"]
+                .iter()
+                .any(|entry| {
+                    !matches!(
+                        std::fs::symlink_metadata(old.join(entry)),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                    )
+                });
+            if has_account_data {
+                continue;
+            }
             if let Err(error) = std::fs::rename(&old, &dir) {
                 eprintln!("could not migrate data dir {}: {error}", old.display());
                 return if dir.exists() { dir } else { old };
@@ -160,6 +171,43 @@ mod data_dir_tests {
         }
         let dir = data_dir_in(home.path());
         assert_eq!(std::fs::read_to_string(dir.join("data")).unwrap(), ".keiki");
+    }
+
+    #[test]
+    fn account_stores_and_legacy_uploads_are_not_migration_sources() {
+        for legacy in [".zeron", ".comet-native"] {
+            for entry in ["orgs", "uploads", "legacy-uploads-owner.json"] {
+                let home = tempfile::tempdir().unwrap();
+                let old = home.path().join(legacy);
+                std::fs::create_dir(&old).unwrap();
+                let sentinel = if entry.ends_with(".json") {
+                    old.join(entry)
+                } else {
+                    std::fs::create_dir_all(old.join(entry).join("old-org/old-user")).unwrap();
+                    old.join(entry).join("old-org/old-user/kept")
+                };
+                std::fs::write(&sentinel, b"untouched account data").unwrap();
+                assert_eq!(data_dir_in(home.path()), home.path().join(".keiki"));
+                assert!(!home.path().join(".keiki").exists());
+                assert!(!std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
+                assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched account data");
+            }
+        }
+    }
+
+    #[test]
+    fn a_local_only_legacy_store_can_migrate_without_moving_a_zeron_account() {
+        let home = tempfile::tempdir().unwrap();
+        let archived = home.path().join(".zeron/orgs/old-org/old-user");
+        std::fs::create_dir_all(&archived).unwrap();
+        std::fs::write(archived.join("kept"), b"untouched").unwrap();
+        let local = home.path().join(".comet-native/profiles/local");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("data"), b"local").unwrap();
+        let dir = data_dir_in(home.path());
+        assert_eq!(std::fs::read(dir.join("profiles/local/data")).unwrap(), b"local");
+        assert_eq!(std::fs::read(archived.join("kept")).unwrap(), b"untouched");
+        assert!(!std::fs::symlink_metadata(home.path().join(".zeron")).unwrap().file_type().is_symlink());
     }
 
     #[test]
