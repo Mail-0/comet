@@ -22,7 +22,6 @@ use zeron_doc::{
 };
 use zeron_engine::{
     Auth, AuthConfig, AuthState, EngineCore, EngineProfile, HarnessRegistry, RunJournal,
-    WorkspaceScope,
 };
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
@@ -284,7 +283,7 @@ fn data_dir(tmp: &tempfile::TempDir) -> std::path::PathBuf {
 }
 
 fn journal(dir: &std::path::Path) -> RunJournal {
-    RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap()
+    RunJournal::open(dir.join("profiles/local/journals")).unwrap()
 }
 
 /// Create + name the chat row so the auto-titler stays out of the request log.
@@ -366,7 +365,7 @@ fn manufacture_crash(
     events: &[AgentEvent],
 ) {
     let now = now_ms();
-    let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+    let store = DocsStore::open(dir.join("profiles/local")).unwrap();
     let doc = SessionDoc::init(CHAT).unwrap();
     let entry = |id: &str, role, text: &str, created_at, status| SessionMessageEntry {
         id: id.into(),
@@ -814,22 +813,18 @@ async fn a_shutdown_mark_over_a_finished_turn_is_ignored() {
 }
 
 /// An engine over `dir` in `scope`, its account signed out.
-fn assemble_signed_out(dir: &std::path::Path, scope: WorkspaceScope) -> EngineCore {
+fn assemble_signed_out(dir: &std::path::Path) -> EngineCore {
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(HoldingHarness {
         ask: false,
         on_interrupt: OnInterrupt::End,
     }));
-    let profile = match scope {
-        WorkspaceScope::Synced => EngineProfile::synced(dir, "dev-org", "dev-user"),
-        _ => EngineProfile::development(dir, "dev-org", "dev-user"),
-    };
+    let profile = EngineProfile::local(dir).unwrap();
     let core =
         EngineCore::assemble_with_profile(profile, Arc::new(registry), HarnessId::Mock, None)
             .expect("engine core assembles");
     core.sessions.set_ipc_port(27699);
-    let mut config = AuthConfig::new("http://127.0.0.1:9", dir.join("auth"));
-    config.workos_client_id = Some("client_test".into());
+    let config = AuthConfig::new("http://127.0.0.1:9", dir.join("auth"));
     let auth = Auth::new(config);
     assert!(matches!(auth.state(), AuthState::SignedOut));
     core.set_auth(auth);
@@ -842,7 +837,7 @@ async fn a_shutdown_after_sign_out_is_not_revived() {
     let dir = data_dir(&tmp);
     // The runtime's own shutdown decides, from the auth state: no caller
     // has to remember to.
-    let core = hold_a_turn_in(assemble_signed_out(&dir, WorkspaceScope::Synced), false).await;
+    let core = hold_a_turn_in(assemble_signed_out(&dir), false).await;
     core.shutdown().await;
     drop(core);
     assert!(journal(&dir).shutdown_interrupts().unwrap().is_empty());
@@ -851,30 +846,6 @@ async fn a_shutdown_after_sign_out_is_not_revived() {
     let core = assemble(&dir, ScriptedHarness::completing(&requests, "hs-held"));
     settle().await;
     assert!(requests.lock().unwrap().is_empty());
-    core.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_signed_out_local_engine_still_revives_after_shutdown() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = data_dir(&tmp);
-    // Signed out is a local engine's normal state, not a sign-out.
-    let core = hold_a_turn_in(
-        assemble_signed_out(&dir, WorkspaceScope::Development),
-        false,
-    )
-    .await;
-    core.shutdown().await;
-    drop(core);
-
-    let requests: RequestLog = Default::default();
-    let core = assemble(&dir, ScriptedHarness::completing(&requests, "hs-held"));
-    wait_for(
-        || complete_assistant_count(&core) == 1,
-        "the interrupted turn to be picked back up",
-    )
-    .await;
-    assert_eq!(requests.lock().unwrap().len(), 1);
     core.shutdown().await;
 }
 

@@ -23,10 +23,7 @@ pub mod update_cli;
 
 use clap::{CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 
-pub use env::{
-    DEFAULT_EDGE_URL, DEFAULT_IPC_PORT, DEFAULT_WORKOS_CLIENT_ID, edge_url_from_env, ipc_port_from,
-    ipc_port_from_env, workos_client_id_from_env,
-};
+pub use env::{DEFAULT_IPC_PORT, ipc_port_from, ipc_port_from_env};
 pub use logging::{RotatingLog, init_logging, long_running_setup, open_log_file};
 
 #[derive(Parser)]
@@ -317,7 +314,10 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         Some(Command::Update { check }) => Launch::Done(
             tokio::runtime::Runtime::new()
                 .map_err(anyhow::Error::from)
-                .and_then(|runtime| runtime.block_on(update_cli::update(&edge_url_from_env(), check))),
+                .and_then(|runtime| {
+                    let feed = zeron_update::release_feed_url().ok_or_else(|| anyhow::anyhow!("Keiki releases are not configured"))?;
+                    runtime.block_on(update_cli::update(&feed, check))
+                }),
         ),
         Some(Command::UpdateWatchdog) => Launch::Done(zeron_update::transaction::run_watchdog()),
         Some(Command::Daemon { command }) => Launch::Done(match command {

@@ -177,14 +177,9 @@ fn new_projectless_cwd(
     }
 }
 
-/// This device's advertised capabilities: the binary's, plus
-/// `cloud-session` on a Cloud session machine (device lists hide those and
-/// show the account's one Cloud device instead).
+/// This device's advertised capabilities.
 fn device_capabilities() -> Vec<String> {
     let mut capabilities = zeron_proto::capabilities::current();
-    if crate::runner::session().is_some() {
-        capabilities.push(zeron_proto::CLOUD_SESSION_CAPABILITY.to_string());
-    }
     if crate::doc_host::relay_layer_enabled() {
         capabilities.push(zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY.to_string());
     }
@@ -340,6 +335,13 @@ impl WeakWorkspaceHost {
 }
 
 impl WorkspaceHost {
+    fn require_local_device(&self, device_id: &str) -> Result<(), EngineError> {
+        if device_id != self.device_id() {
+            return Err(EngineError::Other("Only the local device is supported".into()));
+        }
+        Ok(())
+    }
+
     pub(crate) fn downgrade(&self) -> WeakWorkspaceHost {
         WeakWorkspaceHost(Arc::downgrade(&self.inner))
     }
@@ -1169,6 +1171,9 @@ impl WorkspaceHost {
         parent_chat_id: Option<String>,
         child_kind: Option<zeron_proto::ChildKind>,
     ) -> Result<(), EngineError> {
+        for device in [device_id, host].into_iter().flatten() {
+            self.require_local_device(device)?;
+        }
         if self.read(|doc| doc.chat(chat_id))?.is_some() {
             return Ok(()); // idempotent: optimistic client retries never duplicate
         }
@@ -1191,6 +1196,7 @@ impl WorkspaceHost {
                 ));
             }
         };
+        self.require_local_device(&host_device)?;
         let created_at = Utc::now();
         let cwd = match &space {
             Some(space) => cwd.unwrap_or_else(|| space.path.clone()),
@@ -1265,6 +1271,7 @@ impl WorkspaceHost {
         name: Option<String>,
         git_detected: bool,
     ) -> Result<(), EngineError> {
+        self.require_local_device(device_id)?;
         let spaces = self.read(|doc| doc.read_spaces())?;
         if spaces
             .iter()
@@ -1283,54 +1290,6 @@ impl WorkspaceHost {
                 checkout_id: None,
                 repository_id: None,
                 github_repo: None,
-                icon: None,
-                created_at: Utc::now(),
-            })
-        })?;
-        Ok(())
-    }
-
-    /// A project that lives only on Cloud: owned by the logical Cloud device
-    /// (which has no engine to stamp it), so its GitHub repository is set
-    /// here. Every session in it runs on a Cloud machine cloning that
-    /// repository. Idempotent like [`Self::create_space`]; also a no-op when
-    /// Cloud already has a project for the repository.
-    pub fn create_cloud_space(
-        &self,
-        space_id: &str,
-        device_id: &str,
-        path: &str,
-        name: Option<String>,
-        github_repo: &str,
-    ) -> Result<(), EngineError> {
-        if !device_id.starts_with(zeron_proto::CLOUD_DEVICE_PREFIX) {
-            return Err(EngineError::Other(
-                "Only Cloud projects name their repository.".into(),
-            ));
-        }
-        let spaces = self.read(|doc| doc.read_spaces())?;
-        if spaces.iter().any(|s| {
-            s.id == space_id
-                || (s.device_id == device_id
-                    && (s.path == path
-                        || s.github_repo
-                            .as_deref()
-                            .is_some_and(|repo| repo.eq_ignore_ascii_case(github_repo))))
-        }) {
-            return Ok(());
-        }
-        self.mutate(|doc| {
-            doc.upsert_space(&Space {
-                id: space_id.to_string(),
-                device_id: device_id.to_string(),
-                path: path.to_string(),
-                name,
-                git_detected: true,
-                git_checked_at: Some(Utc::now()),
-                checkout_id: None,
-                // Groups with the clones of the repository on other devices.
-                repository_id: Some(zeron_proto::view::cloud_repository_id(&spaces, github_repo)),
-                github_repo: Some(github_repo.to_string()),
                 icon: None,
                 created_at: Utc::now(),
             })
@@ -1410,55 +1369,6 @@ impl WorkspaceHost {
         }
     }
 
-    /// Cloud projects of `github_repo` that still carry another identity
-    /// than `repository_id` (a full clone's `commit:<root>`) take it, so they
-    /// group with this device's clone. Cloud projects have no engine of their
-    /// own to stamp them; only ever toward the commit form, so a shallow clone
-    /// elsewhere (remote form) can't flip them back. Returns how many moved.
-    pub fn align_cloud_spaces(
-        &self,
-        github_repo: &str,
-        repository_id: &str,
-    ) -> Result<usize, EngineError> {
-        if !repository_id.starts_with("commit:") || repository_id["commit:".len()..].contains(':') {
-            return Ok(0);
-        }
-        let stale: Vec<Space> = self
-            .read(|doc| doc.read_spaces())?
-            .into_iter()
-            .filter(|s| s.device_id.starts_with(zeron_proto::CLOUD_DEVICE_PREFIX))
-            .filter(|s| {
-                s.github_repo
-                    .as_deref()
-                    .is_some_and(|repo| repo.eq_ignore_ascii_case(github_repo))
-            })
-            .filter(|s| {
-                s.repository_id.as_deref() != Some(repository_id)
-                    && !s
-                        .repository_id
-                        .as_deref()
-                        .is_some_and(|id| id.starts_with("commit:"))
-            })
-            .collect();
-        if stale.is_empty() {
-            return Ok(0);
-        }
-        self.mutate(|doc| {
-            for space in &stale {
-                doc.set_space_git(
-                    &space.id,
-                    space.git_detected,
-                    space.checkout_id.as_deref(),
-                    Some(repository_id),
-                    space.github_repo.as_deref(),
-                    space.git_checked_at.unwrap_or_else(Utc::now),
-                )?;
-            }
-            Ok::<_, zeron_doc::DocError>(true)
-        })?;
-        Ok(stale.len())
-    }
-
     pub fn read_spaces(&self) -> Result<Vec<Space>, EngineError> {
         Ok(self.read(|doc| doc.read_spaces())?)
     }
@@ -1484,6 +1394,7 @@ impl WorkspaceHost {
     /// migration flow will drive this). Returns false when the chat doesn't
     /// exist.
     pub fn set_chat_host(&self, chat_id: &str, device_id: &str) -> Result<bool, EngineError> {
+        self.require_local_device(device_id)?;
         Ok(self.mutate(|doc| doc.set_chat_host(chat_id, device_id))?)
     }
 

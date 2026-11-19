@@ -313,7 +313,7 @@ impl KeyCache {
 
     pub fn save(&self, data_dir: &Path) {
         let bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
-        if let Err(err) = crate::runner::write_private_atomic(&data_dir.join(CACHE_FILE), &bytes) {
+        if let Err(err) = crate::private_file::write_private_atomic(&data_dir.join(CACHE_FILE), &bytes) {
             tracing::warn!(error = %err, "plugins: couldn't save the key cache");
         }
     }
@@ -382,7 +382,7 @@ impl Registration {
     pub fn save(&self, data_dir: &Path) {
         let bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
         if let Err(err) =
-            crate::runner::write_private_atomic(&data_dir.join(REGISTRATION_FILE), &bytes)
+            crate::private_file::write_private_atomic(&data_dir.join(REGISTRATION_FILE), &bytes)
         {
             tracing::warn!(error = %err, "plugins: couldn't save the key registration");
         }
@@ -415,7 +415,7 @@ fn save_owed(data_dir: &Path, owed: &[OwedRevoke]) {
         return;
     }
     let bytes = serde_json::to_vec_pretty(owed).unwrap_or_default();
-    if let Err(err) = crate::runner::write_private_atomic(&path, &bytes) {
+    if let Err(err) = crate::private_file::write_private_atomic(&path, &bytes) {
         tracing::warn!(error = %err, "plugins: couldn't keep a key to revoke");
     }
 }
@@ -538,7 +538,7 @@ pub fn set_watermark(data_dir: &Path, account: &str, at: i64) {
         .unwrap_or_default();
     map.insert(account.to_owned(), at);
     let bytes = serde_json::to_vec_pretty(&map).unwrap_or_default();
-    let _ = crate::runner::write_private_atomic(&data_dir.join(WATERMARK_FILE), &bytes);
+    let _ = crate::private_file::write_private_atomic(&data_dir.join(WATERMARK_FILE), &bytes);
 }
 
 /// How far back the first look reaches (no watermark yet: a new engine, or

@@ -701,7 +701,7 @@ impl HarnessRegistry {
 /// The production registry for this engine's platform (see
 /// [`registry_for_platform`]).
 pub fn default_registry() -> HarnessRegistry {
-    registry_for_platform(&crate::runner::device_platform())
+    registry_for_platform(std::env::consts::OS)
 }
 
 /// The production registry: MockHarness (hidden from production pickers) plus a lazy

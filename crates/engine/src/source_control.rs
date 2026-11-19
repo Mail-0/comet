@@ -360,6 +360,50 @@ pub struct GitHubCli {
 }
 
 impl GitHubCli {
+    pub async fn repositories(
+        &self,
+        query: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<zeron_proto::GithubRepo>, ChangeRequestError> {
+        #[derive(Deserialize)]
+        struct Repository {
+            full_name: String,
+            clone_url: String,
+            default_branch: String,
+            private: bool,
+            description: Option<String>,
+            pushed_at: Option<String>,
+        }
+        let query = query.unwrap_or_default().trim();
+        let search = !query.is_empty();
+        let mut args = vec![
+            "api".into(), "--method".into(), "GET".into(),
+            if search { "search/repositories".into() } else { "user/repos".into() },
+            "-F".into(), format!("per_page={}", limit.clamp(1, 100)),
+        ];
+        args.extend(if search {
+            vec!["-f".into(), format!("q={query}")]
+        } else {
+            vec!["-f".into(), "sort=pushed".into()]
+        });
+        let output = self.runner.run(ProcessRequest { args, ..github_request() })
+            .await.map_err(classify_run_error)?;
+        if !output.success { return Err(classify_github_failure(&output.stderr)); }
+        if output.stdout_truncated { return Err(ChangeRequestError::Decode); }
+        let mut value: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| ChangeRequestError::Decode)?;
+        if search { value = value.get_mut("items").ok_or(ChangeRequestError::Decode)?.take(); }
+        let repos: Vec<Repository> = serde_json::from_value(value).map_err(|_| ChangeRequestError::Decode)?;
+        Ok(repos.into_iter().map(|repo| zeron_proto::GithubRepo {
+            full_name: repo.full_name, clone_url: repo.clone_url,
+            default_branch: repo.default_branch, private: repo.private,
+            description: repo.description,
+            pushed_at: repo.pushed_at.and_then(|date| DateTime::parse_from_rfc3339(&date).ok())
+                .map_or(0, |date| date.timestamp_millis()),
+            installation_id: None, account: None, accounts: Vec::new(),
+        }).collect())
+    }
+
     /// Shared across RPC clients on this engine. Simultaneous identical reads
     /// share one provider call; distinct reads run side by side. The read runs
     /// detached, so it completes and is cached even when every caller has gone
@@ -4832,6 +4876,42 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             context.head_selectors,
             ["feature/shared"]
         );
+    }
+
+    #[tokio::test]
+    async fn repository_search_scopes_query_and_limit_at_github() {
+        let runner = FakeProcessRunner::with_responses([command_success(r#"{"items":[{
+            "full_name":"keiki/comet", "clone_url":"https://github.com/keiki/comet.git",
+            "default_branch":"main", "private":true, "description":"A local project",
+            "pushed_at":"2026-01-01T00:00:00Z"
+        }]}"#)]);
+        let repos = GitHubCli::with_runner(runner.clone()).repositories(Some(" comet in:name "), 6).await.unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].full_name, "keiki/comet");
+        assert_eq!(repos[0].default_branch, "main");
+        assert!(repos[0].private && repos[0].pushed_at > 0);
+        let requests = runner.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].args, ["api", "--method", "GET", "search/repositories", "-F", "per_page=6", "-f", "q=comet in:name"]);
+    }
+
+    #[tokio::test]
+    async fn repository_search_empty_query_lists_only_the_authenticated_accounts_repos() {
+        let runner = FakeProcessRunner::with_responses([command_success("[]")]);
+        assert!(GitHubCli::with_runner(runner.clone()).repositories(Some("  "), 1000).await.unwrap().is_empty());
+        let requests = runner.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].args, ["api", "--method", "GET", "user/repos", "-F", "per_page=100", "-f", "sort=pushed"]);
+    }
+
+    #[tokio::test]
+    async fn repository_search_surfaces_authentication_and_bad_provider_replies() {
+        let mut truncated = command_success("[]").unwrap();
+        truncated.stdout_truncated = true;
+        for response in [command_failure("authentication required"), command_success("not json"), Ok(truncated)] {
+            let runner = FakeProcessRunner::with_responses([response]);
+            assert!(GitHubCli::with_runner(runner).repositories(None, 10).await.is_err());
+        }
     }
 }
 

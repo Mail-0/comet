@@ -6251,7 +6251,6 @@ impl DocHost {
                         entry.payload,
                         SessionCommandPayload::Run { .. } | SessionCommandPayload::Steer { .. }
                     ) {
-                        crate::wake_trace::mark_command(entry.issued_at);
                         tracing::debug!(target: "first_word", chat = %handle.chat_id, "drain picked the run");
                         self.await_earlier_controls(handle, &entry.id).await;
                     }
@@ -7778,11 +7777,7 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
             }
         }
     });
-    if crate::runner::session().is_some() {
-        let settling = host.clone();
-        let settling_weak = weak.clone();
-        host.spawn_worker(async move { settling.settle_rolled_back_turn(settling_weak).await });
-    }
+
     // Initial pass: the snapshot may already carry pending commands. The
     // mirror stays lazy — it materializes on the first watch attach.
     {

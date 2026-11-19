@@ -48,6 +48,14 @@ pub mod transaction;
 pub use channel::Channel;
 pub use transaction::{UpdateReport, UpdateState};
 
+pub fn release_feed_url() -> Option<String> {
+    configured_release_feed(std::env::var("KEIKI_RELEASES_URL").ok().as_deref())
+}
+
+fn configured_release_feed(value: Option<&str>) -> Option<String> {
+    value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
 /// The version compiled into this binary: the workspace's, or a beta's
 /// (`ZERON_ENGINE_VERSION=0.2.137-beta.3` at build time). Betas of one release
 /// share a workspace version, and a running engine only knows a bundle replaced
@@ -2963,6 +2971,18 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn releases_require_an_explicit_keiki_feed() {
+        assert_eq!(configured_release_feed(None), None);
+        assert_eq!(configured_release_feed(Some(" \t")), None);
+        assert_eq!(configured_release_feed(Some(" https://releases.example.test ")), Some("https://releases.example.test".into()));
+    }
+
+    #[tokio::test]
+    async fn malformed_release_feeds_fail_without_a_fallback() {
+        assert!(fetch_latest(&configured_release_feed(Some("not-a-url")).unwrap()).await.is_err());
+    }
 
     fn managed() -> InstallKind {
         InstallKind::Managed {

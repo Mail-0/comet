@@ -345,9 +345,7 @@ impl ChatDocHandle {
         if state.relay.recently_active(LINGER_AFTER_PEER) || state.heal_owed.load(Ordering::Acquire) {
             return false;
         }
-        !(state.relaying()
-            && crate::runner::session().is_some()
-            && !state.checkpoint_covers(&self.doc.doc().oplog_vv()))
+        true
     }
 
     pub(crate) fn note_journaled(&self, ordinal: i64) {
@@ -475,9 +473,7 @@ impl DocHost {
                             last_commits = commits;
                             last_commit_at = now;
                         }
-                        if state.relaying() && crate::runner::session().is_some() {
-                            host.cloud_checkpoint_due(&handle, &state, now, last_commit_at);
-                        }
+
                         // Nothing time can move: no answer awaited, nothing to
                         // retire or heal, no Cloud checkpoint to follow, no
                         // commit since the last look. Rest until something
@@ -485,7 +481,6 @@ impl DocHost {
                         resting = room.is_some()
                             && state.caught_up()
                             && !state.heal_owed.load(Ordering::Acquire)
-                            && crate::runner::session().is_none()
                             && last_commit_at < now
                             && state.settled();
                         next_tick = if resting {
@@ -1055,8 +1050,9 @@ mod tests {
             },
         )
         .unwrap();
-        workspace.create_chat("chat", None, Some("host"), None, None).unwrap();
+        workspace.create_chat("chat", None, Some(workspace.device_id()), None, None).unwrap();
         let mut row = workspace.chat("chat").unwrap().unwrap();
+        row.device_id = "host".into();
         row.room_gen = Some(RELAY_ROOM_GEN);
         workspace.import_chat_row(&row).unwrap();
         host.set_workspace(workspace);
@@ -1110,8 +1106,9 @@ mod tests {
             cursor_sdk_version: None,
             capabilities: vec![zeron_proto::relay_gen::CHAT_RELAY_CAPABILITY.into()],
         });
-        workspace.create_chat("chat", None, Some("host"), None, None).unwrap();
+        workspace.create_chat("chat", None, Some(workspace.device_id()), None, None).unwrap();
         let mut row = workspace.chat("chat").unwrap().unwrap();
+        row.device_id = "host".into();
         row.room_gen = Some(RELAY_ROOM_GEN);
         workspace.import_chat_row(&row).unwrap();
         host.set_workspace(workspace);

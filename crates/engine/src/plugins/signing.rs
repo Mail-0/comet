@@ -274,7 +274,7 @@ fn load_or_create_locked(data_dir: &Path) -> Result<SigningKey, String> {
         return Ok(key);
     }
     let (key, der) = SigningKey::generate()?;
-    crate::runner::write_private_atomic(&data_dir.join(KEY_FILE), &der)
+    crate::private_file::write_private_atomic(&data_dir.join(KEY_FILE), &der)
         .map_err(|_| "Couldn't save this device's signing key".to_string())?;
     Ok(key)
 }

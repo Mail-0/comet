@@ -45,10 +45,6 @@ pub fn launch(config: &EngineConfig, app_exe: &Path) -> std::io::Result<Child> {
         &zeron_launch::LaunchConfig {
             data_dir: config.data_dir.clone(),
             ipc_port: config.ipc_port,
-            edge_url: config.edge_url.clone(),
-            workos_client_id: config.workos_client_id.clone(),
-            edge_token: config.edge_token.clone(),
-            org_id: config.org_id.clone(),
         },
         app_exe,
     )

@@ -236,6 +236,13 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    fn import_hosted_chat(workspace: &WorkspaceHost, id: &str, device: &str) {
+        workspace.create_chat(id, None, Some(workspace.device_id()), None, None).unwrap();
+        let mut row = workspace.chat(id).unwrap().unwrap();
+        row.device_id = device.into();
+        workspace.import_chat_row(&row).unwrap();
+    }
+
     #[tokio::test]
     async fn remote_chat_transports_carry_the_host_on_both_paths() {
         use zeron_sync::chat_client::ChatTransport;
@@ -396,11 +403,9 @@ mod tests {
         )
         .unwrap();
         for n in 0..8 {
-            workspace
-                .create_chat(&format!("a{n}"), None, Some("dead"), None, None)
-                .unwrap();
+            import_hosted_chat(&workspace, &format!("a{n}"), "dead");
         }
-        workspace.create_chat("b", None, Some("alive"), None, None).unwrap();
+        import_hosted_chat(&workspace, "b", "alive");
         // All nine owed before delivery starts: its first pass fills every
         // slot with the dead hosts (they sort first).
         for chat in (0..8).map(|n| format!("a{n}")).chain(["b".to_string()]) {
@@ -480,9 +485,7 @@ mod tests {
             },
         )
         .unwrap();
-        workspace
-            .create_chat("outgoing", None, Some("remote"), None, None)
-            .unwrap();
+        import_hosted_chat(&workspace, "outgoing", "remote");
         let config = DocHostConfig {
             device_id: "sender".into(),
             default_harness: HarnessId::Mock,

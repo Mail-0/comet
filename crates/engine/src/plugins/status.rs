@@ -65,7 +65,7 @@ impl State {
 
     pub fn save(&self, plugins_dir: &Path) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
-        crate::runner::write_private_atomic(&plugins_dir.join(STATE_FILE), &bytes)
+        crate::private_file::write_private_atomic(&plugins_dir.join(STATE_FILE), &bytes)
             .map_err(|_| "Couldn't save your plugin choices".to_string())
     }
 

@@ -493,9 +493,10 @@ fn workspace(store: Arc<DocsStore>) -> WorkspaceHost {
 
 fn legacy_chat(workspace: &WorkspaceHost, id: &str, device: &str, generation: Option<u32>) {
     workspace
-        .create_chat(id, None, Some(device), None, None)
+        .create_chat(id, None, Some(workspace.device_id()), None, None)
         .unwrap();
     let mut row = workspace.chat(id).unwrap().unwrap();
+    row.device_id = device.into();
     row.room_gen = generation;
     workspace.import_chat_row(&row).unwrap();
 }
@@ -570,9 +571,7 @@ async fn admissible_wakes_preserve_missing_rows_modern_readers_and_local_epoch()
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(DocsStore::open(dir.path()).unwrap());
     let workspace = workspace(store.clone());
-    workspace
-        .create_chat("modern-foreign", None, Some("another-host"), None, None)
-        .unwrap();
+    legacy_chat(&workspace, "modern-foreign", "another-host", Some(2));
     legacy_chat(&workspace, "epoch-override", "another-host", Some(1));
     let thin = SessionDoc::init("epoch-override").unwrap();
     store
@@ -602,9 +601,7 @@ async fn admissible_wakes_preserve_missing_rows_modern_readers_and_local_epoch()
     }
     assert!(workspace.chat("missing-row").unwrap().is_none());
     // Creation arrives after its notification has already started joining.
-    workspace
-        .create_chat("missing-row", None, Some("another-host"), None, None)
-        .unwrap();
+    legacy_chat(&workspace, "missing-row", "another-host", Some(2));
     relay.release.send_replace(true);
     until(|| store.sync_work_counts().unwrap().1 == 0).await;
     for id in ids {
@@ -653,9 +650,9 @@ async fn legacy_admission_rechecks_owner_and_retires_only_the_captured_wake() {
     host.enqueue_wakeup("reassigned").unwrap();
     let old = store.sync_job_version("reassigned", "wake").unwrap();
     // Ownership changes while this handle is waiting for admission.
-    workspace
-        .set_chat_host("reassigned", "another-host")
-        .unwrap();
+    let mut row = workspace.chat("reassigned").unwrap().unwrap();
+    row.device_id = "another-host".into();
+    workspace.import_chat_row(&row).unwrap();
     host.enqueue_wakeup("reassigned").unwrap();
     let newer = store.sync_job_version("reassigned", "wake").unwrap();
     assert_ne!(old, newer);

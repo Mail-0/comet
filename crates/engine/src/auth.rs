@@ -199,6 +199,9 @@ impl Auth {
 
     pub fn attach_copilot_credentials(&self, holder: CopilotCredentialHolder) {
         let mut session = lock(&self.inner.session);
+        if session.holders.iter().any(|existing| existing.same_holder(&holder)) {
+            return;
+        }
         if let Some(access) = &session.access {
             holder.set(zeron_copilot::CopilotCredentials {
                 base_url: self.api_url().into(),

@@ -17,16 +17,16 @@ use zeron_doc::{
     MessagePart, MessageRole, MessageStatus, SessionCommandEntry, SessionCommandPayload,
     SessionCommandStatus, SessionDoc, SessionMessageEntry,
 };
+use zeron_sync::DocsStore;
 use zeron_engine::{EngineCore, HarnessRegistry, RunJournal};
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
     SteeringMode,
 };
-use zeron_sync::DocsStore;
 
 const CHAT: &str = "chat-killed";
-const DEVICE: &str = "dev-cloud";
+const DEVICE: &str = "dev-local";
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 fn now_ms() -> i64 {
@@ -134,7 +134,7 @@ impl Disk {
     }
 
     fn store_dir(&self) -> std::path::PathBuf {
-        self.dir.join("orgs/dev-org/dev-user")
+        self.dir.join("profiles/local")
     }
 
     fn user_message(self, id: &str, created_at: i64) -> Self {
@@ -331,16 +331,6 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(600)).await;
 }
 
-fn on_a_cloud_machine() {
-    zeron_engine::runner::set_session(Some(zeron_engine::runner::CloudSession {
-        account: "cloud-acct".into(),
-        chat_id: CHAT.into(),
-        repo: None,
-        path: None,
-        branch: None,
-    }));
-}
-
 // ── what the journal saw ─────────────────────────────────────────────────────
 
 /// What the credential broker does: an agent started without this has no login.
@@ -381,7 +371,10 @@ async fn a_revived_turn_waits_for_the_machines_logins() {
     )
     .await;
     assert_eq!(
-        requests.lock().unwrap()[0].env.get("LOGGED_IN").map(String::as_str),
+        requests.lock().unwrap()[0]
+            .env
+            .get("LOGGED_IN")
+            .map(String::as_str),
         Some("yes")
     );
     core.shutdown().await;
@@ -422,6 +415,53 @@ async fn a_kill_before_the_reply_reached_disk_resumes_too() {
         "the killed turn to run again",
     )
     .await;
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_damaged_store_is_rebuilt_and_the_waiting_message_runs_once() {
+    let now = now_ms();
+    let disk = Disk::new().user_message("m1", now - 60_000).run_command(
+        "c1",
+        "m1",
+        SessionCommandStatus::Pending,
+    );
+    let (core, requests) = disk.boot_damaged();
+    let recovery = core
+        .doc_host
+        .store()
+        .recovery()
+        .cloned()
+        .expect("the damage was found");
+    assert!(recovery.kept_at.exists(), "the damaged file is kept");
+    core.doc_host.open(CHAT).unwrap();
+    wait_for(
+        || !requests.lock().unwrap().is_empty(),
+        "the waiting message to run",
+    )
+    .await;
+    settle().await;
+    assert_eq!(requests.lock().unwrap().len(), 1, "ran exactly once");
+    assert_eq!(requests.lock().unwrap()[0].prompt, "long task");
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_rebuilt_store_never_runs_a_handled_command_again() {
+    let now = now_ms();
+    let disk = Disk::new()
+        .user_message("m1", now - 60_000)
+        .run_command("c1", "m1", SessionCommandStatus::Pending)
+        .processed("c1");
+    let (core, requests) = disk.boot_damaged();
+    assert!(core.doc_host.store().recovery().is_some());
+    core.doc_host.open(CHAT).unwrap();
+    settle().await;
+    settle().await;
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "the ledger came across"
+    );
     core.shutdown().await;
 }
 
@@ -523,163 +563,5 @@ async fn a_resume_that_cant_start_says_so() {
         "the failed resume to be noted",
     )
     .await;
-    core.shutdown().await;
-}
-
-// ── what the journal never saw: a disk older than the room ───────────────────
-
-#[tokio::test]
-async fn a_reply_streaming_with_no_journal_is_settled_on_a_cloud_machine() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    // The room holds what the snapshot this disk came back from doesn't.
-    let disk = Disk::new()
-        .user_message("m1", now - 60_000)
-        .streaming_reply("a1", now - 30_000)
-        .run_command("c1", "m1", SessionCommandStatus::Applied);
-    let (core, requests) = disk.boot();
-    core.doc_host.open(CHAT).unwrap();
-    wait_for(
-        || !error_notes(&core).is_empty(),
-        "the lost turn to be noted",
-    )
-    .await;
-    assert!(requests.lock().unwrap().is_empty());
-    let reply = entries(&core).into_iter().find(|e| e.id == "a1").unwrap();
-    assert_eq!(reply.status, Some(MessageStatus::Aborted));
-    assert!(error_notes(&core)[0].contains("Send a message to continue"));
-    core.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_delivered_message_this_disk_never_ran_is_noted() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    let disk = Disk::new().user_message("m1", now - 60_000).run_command(
-        "c1",
-        "m1",
-        SessionCommandStatus::Applied,
-    );
-    let (core, _) = disk.boot();
-    core.doc_host.open(CHAT).unwrap();
-    wait_for(
-        || !error_notes(&core).is_empty(),
-        "the lost turn to be noted",
-    )
-    .await;
-    assert_eq!(entries(&core).last().unwrap().role, MessageRole::Assistant);
-    core.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_message_this_disk_did_run_is_left_alone() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    // It ran here and ended with no reply: nothing was lost with the disk.
-    let disk = Disk::new()
-        .user_message("m1", now - 60_000)
-        .run_command("c1", "m1", SessionCommandStatus::Applied)
-        .processed("c1");
-    let (core, requests) = disk.boot();
-    core.doc_host.open(CHAT).unwrap();
-    settle().await;
-    assert!(requests.lock().unwrap().is_empty());
-    assert_eq!(error_notes(&core), Vec::<String>::new());
-    core.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_message_still_pending_just_runs() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    // Rolled back past the moment it ran: this disk's ledger hasn't seen it, so
-    // the drain runs it, once. The rollback is what makes this a retry.
-    let disk = Disk::new().user_message("m1", now - 60_000).run_command(
-        "c1",
-        "m1",
-        SessionCommandStatus::Pending,
-    );
-    let (core, requests) = disk.boot();
-    core.doc_host.open(CHAT).unwrap();
-    wait_for(|| !requests.lock().unwrap().is_empty(), "it to run").await;
-    settle().await;
-    assert_eq!(requests.lock().unwrap().len(), 1);
-    assert_eq!(error_notes(&core), Vec::<String>::new());
-    core.shutdown().await;
-}
-
-#[tokio::test]
-async fn consumed_but_unresolved_is_rejected_where_the_sender_sees_it() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    // Killed between the ledger write and the outcome: never run twice, and
-    // never left "sending" either.
-    let disk = Disk::new()
-        .user_message("m1", now - 60_000)
-        .run_command("c1", "m1", SessionCommandStatus::Pending)
-        .processed("c1");
-    let (core, requests) = disk.boot();
-    let handle = core.doc_host.open(CHAT).unwrap();
-    wait_for(
-        || {
-            handle
-                .doc()
-                .read_commands()
-                .unwrap()
-                .iter()
-                .any(|c| c.status == SessionCommandStatus::Rejected)
-        },
-        "the dead command to be rejected",
-    )
-    .await;
-    assert!(requests.lock().unwrap().is_empty());
-    core.shutdown().await;
-}
-
-// ── a damaged store ──────────────────────────────────────────────────────────
-
-/// Seen on staging: a machine's store came back from a sleep with torn pages,
-/// every read of the chat failed, and the message sent to it waited for good
-/// while the machine read "ready". The store is rebuilt at open, and the
-/// message runs, once.
-#[tokio::test]
-async fn a_damaged_store_is_rebuilt_and_the_waiting_message_runs_once() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    let disk = Disk::new()
-        .user_message("m1", now - 60_000)
-        .run_command("c1", "m1", SessionCommandStatus::Pending);
-    let (core, requests) = disk.boot_damaged();
-    let recovery = core
-        .doc_host
-        .store()
-        .recovery()
-        .cloned()
-        .expect("the damage was found");
-    assert!(recovery.kept_at.exists(), "the damaged file is kept");
-    core.doc_host.open(CHAT).unwrap();
-    wait_for(|| !requests.lock().unwrap().is_empty(), "the waiting message to run").await;
-    settle().await;
-    assert_eq!(requests.lock().unwrap().len(), 1, "ran exactly once");
-    assert_eq!(requests.lock().unwrap()[0].prompt, "long task");
-    core.shutdown().await;
-}
-
-/// A command the damaged store's ledger had already marked handled stays
-/// handled: the rebuilt store keeps every ledger row it could read.
-#[tokio::test]
-async fn a_rebuilt_store_never_runs_a_handled_command_again() {
-    on_a_cloud_machine();
-    let now = now_ms();
-    let disk = Disk::new()
-        .user_message("m1", now - 60_000)
-        .run_command("c1", "m1", SessionCommandStatus::Pending)
-        .processed("c1");
-    let (core, requests) = disk.boot_damaged();
-    assert!(core.doc_host.store().recovery().is_some());
-    core.doc_host.open(CHAT).unwrap();
-    settle().await;
-    settle().await;
-    assert!(requests.lock().unwrap().is_empty(), "the ledger came across");
     core.shutdown().await;
 }

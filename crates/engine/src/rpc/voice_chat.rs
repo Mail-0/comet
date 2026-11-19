@@ -145,7 +145,7 @@ mod tests {
 
     fn config(model: &str) -> ChatConfig {
         serde_json::from_value(serde_json::json!({
-            "harness": "codex", "model": model, "sandbox": "workspace-write"
+            "harness": "copilot", "model": model, "sandbox": "workspace-write"
         }))
         .unwrap()
     }
@@ -164,8 +164,11 @@ mod tests {
         // Another host's orchestrator is never this device's.
         let foreign = format!("{ORCHESTRATOR_CHAT_PREFIX}foreign");
         core.workspace
-            .create_chat(&foreign, None, Some("other-device"), None, None)
+            .create_chat(&foreign, None, Some(&core.device_id), None, None)
             .unwrap();
+        let mut historical = core.workspace.chat(&foreign).unwrap().unwrap();
+        historical.device_id = "other-device".into();
+        core.workspace.import_chat_row(&historical).unwrap();
 
         let first = rpc.voice_chat(config("a")).await.unwrap();
         assert_ne!(first, foreign);

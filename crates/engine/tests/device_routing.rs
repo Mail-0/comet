@@ -2442,7 +2442,7 @@ async fn mcp_standalone_session_executes_on_the_selected_device() {
     let remote_dir = dirs.path().join("b");
     std::fs::create_dir_all(&remote_dir).unwrap();
     std::fs::write(remote_dir.join("device-id"), "device-b").unwrap();
-    let profile = zeron_engine::EngineProfile::development(&remote_dir, "dev-org", "dev-user");
+    let profile = zeron_engine::EngineProfile::local(&remote_dir).unwrap();
     let remote_store = zeron_sync::DocsStore::open(profile.store_root()).unwrap();
     let b = EngineCore::assemble_with_profile(
         profile,

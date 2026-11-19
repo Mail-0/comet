@@ -1562,4 +1562,3 @@ mod tests {
         assert_eq!(persistence.writes.load(Ordering::Relaxed), 1);
     }
 }
-

@@ -189,6 +189,70 @@ async fn the_initial_status_restores_secure_credentials_before_publishing_the_ga
 }
 
 #[tokio::test]
+async fn local_runtimes_restore_copilot_before_opening_the_core() {
+    for mode in ["saved", "empty", "rejected"] {
+        let server = Server::start(|_| match mode {
+            "saved" => vec![
+                Reply::ok("POST", "/oauth/token", tokens("runtime-access", "rotated")),
+                Reply::ok("GET", "/api/webapp/auth/session", account(Some("org-1"), json!([]))),
+            ],
+            "rejected" => vec![Reply::error("POST", "/oauth/token", 400)],
+            _ => vec![],
+        }).await;
+        let (auth, store, holder) = auth(&server, mode != "empty");
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::EngineConfig {
+            data_dir: dir.path().to_path_buf(),
+            ipc_port: 0,
+            default_harness: crate::HarnessId::Copilot,
+        };
+        let profile = crate::EngineProfile::local(dir.path()).unwrap();
+        let runtime = crate::Engine::assemble_runtime(&config, auth.clone(), profile).await.unwrap();
+        assert_eq!(runtime.core().workspace_scope(), crate::WorkspaceScope::Local);
+        assert_eq!(runtime.core().copilot_credentials.snapshot().is_some(), mode == "saved");
+        assert_eq!(holder.snapshot().is_some(), mode == "saved");
+        assert_eq!(store.load().unwrap().is_some(), mode == "saved");
+        assert_eq!(lock(&auth.inner.session).holders.len(), 2);
+        runtime.shutdown().await;
+        server.done.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn local_rpcs_keep_local_mutations_and_refuse_cloud_and_remote_targets() {
+    use zeron_rpc::{RpcError, RpcService, methods};
+
+    let server = Server::start(|_| vec![]).await;
+    let (auth, _, _) = auth(&server, false);
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::EngineConfig {
+        data_dir: dir.path().to_path_buf(), ipc_port: 0, default_harness: crate::HarnessId::Copilot,
+    };
+    let profile = crate::EngineProfile::local(dir.path()).unwrap();
+    let runtime = crate::Engine::assemble_runtime(&config, auth, profile).await.unwrap();
+    let core = runtime.core();
+    let rpc = core.rpc_service();
+    rpc.handle(methods::ENGINE_INFO, json!({})).await.unwrap();
+    for target in ["", "another-device"] {
+        assert!(matches!(rpc.handle(methods::DEVICE_STATS, json!({"targetDeviceId":target})).await, Err(RpcError::BadParams(_))));
+    }
+    assert!(matches!(rpc.handle(methods::CLOUD_SESSION_WAKE, json!({})).await, Err(RpcError::UnknownMethod(_))));
+    for request in [
+        json!({"op":"createChat", "chatId":"refused", "deviceId":core.device_id, "cloud":true}),
+        json!({"op":"createChat", "chatId":"refused", "deviceId":"another-device"}),
+        json!({"op":"createSpace", "spaceId":"refused", "deviceId":"another-device", "path":"/tmp/not-created", "gitDetected":false}),
+    ] {
+        assert!(rpc.handle(methods::MUTATE, request).await.is_err());
+    }
+    assert!(core.workspace.chat("refused").unwrap().is_none());
+    assert!(core.workspace.read_spaces().unwrap().is_empty());
+    rpc.handle(methods::MUTATE, json!({"op":"createChat", "chatId":"local", "deviceId":core.device_id})).await.unwrap();
+    assert_eq!(core.workspace.chat("local").unwrap().unwrap().device_id, core.device_id);
+    runtime.shutdown().await;
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
 async fn browser_sign_in_restores_account_switches_org_refreshes_and_signs_out() {
     let orgs = json!([{"id": "org-1", "name": "First"}, {"id": "org-2", "name": "Second"}]);
     let server = Server::start(|url| {

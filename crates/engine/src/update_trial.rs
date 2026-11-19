@@ -5,17 +5,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use zeron_proto::WorkspaceScope;
 use zeron_update::transaction;
 
 use crate::{EngineConfig, EngineCore, InstanceLock};
 
 /// How long a predecessor gets to let go of the data directory.
 const HANDOFF: Duration = Duration::from_secs(60);
-/// How long a new version gets to reach Zeron's servers. A box nobody can reach
-/// is as stranded as one that doesn't start, and there's no point sitting
-/// through the whole deadline to find out.
-const EDGE_PROOF: Duration = Duration::from_secs(3 * 60);
 /// Still running a moment after being ready: catches a failure just after
 /// startup, before it can't be undone.
 const SETTLE: Duration = Duration::from_secs(5);
@@ -79,56 +74,19 @@ async fn answers_on_its_port(port: u16, data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the servers answer at all. If they don't, the network is the problem
-/// and a new version can't be blamed for not reaching them.
-async fn edge_answers(edge_url: &str) -> bool {
-    let url = format!("{}/releases/latest.txt", edge_url.trim_end_matches('/'));
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-    else {
-        return false;
-    };
-    client.get(url).send().await.is_ok_and(|reply| reply.status().is_success())
-}
-
 struct Proof {
     workspace: crate::workspace_host::WorkspaceHost,
-    auth: crate::Auth,
-    scope: WorkspaceScope,
     port: u16,
     data_dir: PathBuf,
-    edge_url: String,
 }
 
 impl Proof {
-    /// Its databases open and read (migrations included: assembly ran them), it
-    /// serves clients, and a signed-in device is back on Zeron's servers, so
-    /// other devices can reach it. Sessions wait until after this.
+    /// Its databases open and read, and its local IPC server answers.
     async fn run(&self) -> Result<(), String> {
         self.workspace
             .read_chats()
             .map_err(|err| format!("it couldn't read its data ({err})"))?;
         answers_on_its_port(self.port, &self.data_dir).await?;
-        if self.scope != WorkspaceScope::Synced {
-            return Ok(());
-        }
-        let deadline = tokio::time::Instant::now() + EDGE_PROOF;
-        loop {
-            if !self.auth.state().is_signed_in()
-                || self.workspace.sync_status().is_some_and(|room| room.connected)
-            {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        if edge_answers(&self.edge_url).await {
-            return Err("it couldn't connect to Zeron's servers".into());
-        }
-        tracing::warn!("no network during the update trial; not holding that against it");
         Ok(())
     }
 }
@@ -141,11 +99,8 @@ pub(crate) fn prove_and_commit(core: &EngineCore, config: &EngineConfig) {
     };
     let proof = Proof {
         workspace: core.workspace.clone(),
-        auth: core.auth(),
-        scope: core.workspace_scope(),
         port: config.ipc_port,
         data_dir: config.data_dir.clone(),
-        edge_url: config.edge_url.clone(),
     };
     let doc_host = core.doc_host.clone();
     let sessions = core.sessions.clone();
@@ -173,7 +128,6 @@ pub(crate) fn prove_and_commit(core: &EngineCore, config: &EngineConfig) {
             Ok(Err(err)) => tracing::error!(error = %err, "stale-session recovery failed"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery panicked"),
         }
-        crate::wake_update::finished("updated");
         doc_host.lift_quiesce();
         tokio::time::sleep(TIDY_AFTER).await;
         transaction::tidy_latest(&proof.data_dir);

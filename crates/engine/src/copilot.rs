@@ -17,6 +17,10 @@ impl std::fmt::Debug for CopilotCredentialHolder {
 }
 
 impl CopilotCredentialHolder {
+    pub(crate) fn same_holder(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.credentials, &other.credentials)
+    }
+
     pub fn set(&self, credentials: CopilotCredentials) {
         *self
             .credentials

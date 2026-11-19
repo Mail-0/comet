@@ -90,11 +90,6 @@ pub fn app_path(app_exe: &Path) -> PathBuf {
 pub struct LaunchConfig {
     pub data_dir: PathBuf,
     pub ipc_port: u16,
-    pub edge_url: String,
-    /// `None` selects development auth.
-    pub workos_client_id: Option<String>,
-    pub edge_token: Option<String>,
-    pub org_id: Option<String>,
 }
 
 /// Start the background engine for `config`, detached from the app: its
@@ -106,20 +101,7 @@ pub fn launch(config: &LaunchConfig, app_exe: &Path) -> std::io::Result<Child> {
         .env(MANAGED_ENV, "1")
         .env(APP_ENV, app_path(app_exe))
         .env("ZERON_DATA_DIR", &config.data_dir)
-        .env("ZERON_IPC_PORT", config.ipc_port.to_string())
-        .env("ZERON_EDGE_URL", &config.edge_url)
-        // Empty selects development auth, exactly as `None` does in-process.
-        .env(
-            "ZERON_WORKOS_CLIENT_ID",
-            config.workos_client_id.as_deref().unwrap_or(""),
-        );
-    match &config.edge_token {
-        Some(token) => command.env("ZERON_EDGE_TOKEN", token),
-        None => command.env_remove("ZERON_EDGE_TOKEN"),
-    };
-    if let Some(org) = &config.org_id {
-        command.env("ZERON_ORG_ID", org);
-    }
+        .env("ZERON_IPC_PORT", config.ipc_port.to_string());
     spawn_detached(&mut command)
 }
 
