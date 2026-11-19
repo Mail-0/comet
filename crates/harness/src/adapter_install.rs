@@ -6,7 +6,7 @@
 //! before the adapter ever ran — silently, with an errno-encoded exit code
 //! (254 = ENOENT, the zeronsh/comet#95 crash) that surfaced as an opaque
 //! "harness protocol error". Instead, pinned adapter packages are installed
-//! ONCE into a zeron-owned prefix (`~/.zeron/adapters/<pkg>/<version>` on
+//! ONCE into a zeron-owned prefix (`~/.keiki/adapters/<pkg>/<version>` on
 //! Unix, the local app-data directory on Windows), with its own npm cache
 //! beside it, so a root-owned or read-only user cache cannot break us. Every
 //! subsequent launch spawns `node <entry>` directly — no npm anywhere near a
@@ -65,7 +65,7 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// Managed adapter storage. `$ZERON_ADAPTERS_DIR` wins, followed by
 /// `$ZERON_DATA_DIR/adapters`. Windows defaults to
 /// `%LOCALAPPDATA%/Zeron/adapters` (or `%USERPROFILE%/AppData/Local/...`);
-/// Unix keeps `~/.zeron/adapters`.
+/// Unix keeps `~/.keiki/adapters`.
 pub(crate) fn adapters_root() -> Option<PathBuf> {
     adapters_root_with(
         &|key| std::env::var_os(key),
@@ -100,7 +100,7 @@ fn adapters_root_with(
                 })
             })
     } else {
-        value("HOME").map(|home| home.join(".zeron").join("adapters"))
+        value("HOME").map(|home| home.join(".keiki").join("adapters"))
     }
 }
 

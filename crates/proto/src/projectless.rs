@@ -10,7 +10,7 @@
 use chrono::{DateTime, Utc};
 
 /// Home-relative parent of every projectless chat's folder.
-pub const SCRATCH_ROOT: &str = "~/.zeron/scratch";
+pub const SCRATCH_ROOT: &str = "~/.keiki/scratch";
 
 /// The scratch cwd for a new projectless chat: `<date>-<id>`, the id cut to
 /// its last 8 letters and digits (the random end of a UUID or ULID).
@@ -36,10 +36,12 @@ pub fn is_home_cwd(cwd: &str) -> bool {
 
 /// A projectless chat's own folder under [`SCRATCH_ROOT`].
 pub fn is_scratch_cwd(cwd: &str) -> bool {
-    cwd.trim()
-        .strip_prefix(SCRATCH_ROOT)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .is_some_and(|name| !name.is_empty() && !name.contains(['/', '\\']))
+    [SCRATCH_ROOT, "~/.zeron/scratch"].iter().any(|root| {
+        cwd.trim()
+            .strip_prefix(root)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|name| !name.is_empty() && !name.contains(['/', '\\']))
+    })
 }
 
 /// Whether a chat with this cwd (and no project) is projectless: no cwd, the
@@ -60,25 +62,34 @@ mod tests {
     fn scratch_cwd_names_the_folder_by_date_and_id_tail() {
         assert_eq!(
             scratch_cwd("9f1c2a3b-4d5e-4f60-8a7b-1c2d3e4f5a6b", at("2026-10-11")),
-            "~/.zeron/scratch/2026-10-11-3e4f5a6b"
+            "~/.keiki/scratch/2026-10-11-3e4f5a6b"
         );
         assert_eq!(
             scratch_cwd("Ab-1", at("2026-01-02")),
-            "~/.zeron/scratch/2026-01-02-ab1"
+            "~/.keiki/scratch/2026-01-02-ab1"
         );
         assert_eq!(
             scratch_cwd("--", at("2026-01-02")),
-            "~/.zeron/scratch/2026-01-02"
+            "~/.keiki/scratch/2026-01-02"
         );
     }
 
     #[test]
     fn projectless_cwds() {
-        for cwd in ["~", "~/", "", "~/.zeron/scratch/2026-10-11-3e4f5a6b"] {
+        for cwd in [
+            "~",
+            "~/",
+            "",
+            "~/.zeron/scratch/2026-10-11-3e4f5a6b",
+            "~/.keiki/scratch/2026-10-11-3e4f5a6b",
+        ] {
             assert!(is_projectless_cwd(Some(cwd)), "{cwd}");
         }
         assert!(is_projectless_cwd(None));
         for cwd in [
+            "~/.keiki/scratch",
+            "~/.keiki/scratch/",
+            "~/.keiki/scratch/a/b",
             "/home/w/dev/zeron",
             "~/dev/zeron",
             "~/.zeron/scratch",
