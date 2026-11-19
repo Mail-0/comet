@@ -129,7 +129,7 @@
       "sending": "正在发送…",
       "word": "{word}…",
       "words": {
-        "zeroning": "归零",
+        "zeroning": "运行中",
         "thinking": "思考",
         "pondering": "琢磨",
         "scheming": "筹划",
@@ -1184,7 +1184,7 @@
       },
       "open_links": {
         "label": "打开链接的位置",
-        "terms": "网页 链接 网址 浏览器 标签页 面板 外部 web link url browser tab panel zeron external"
+        "terms": "网页 链接 网址 浏览器 标签页 面板 外部 web link url browser tab panel keiki external"
       },
       "thread_naming": {
         "label": "对话命名",
@@ -1198,18 +1198,12 @@
       "worktrees": {
         "label": "自定工作树位置",
         "terms": "文件夹 目录 路径 检出 分支 folder directory path checkout branches",
-        "env": "由 ZERON_WORKTREES_DIR 设置：{path}",
+        "env": "由环境变量设置：{path}",
         "in": "新工作树将放在 {path} 中。",
         "in_zeron": "新工作树将放在 Keiki 的文件夹中。",
         "folder": "文件夹",
         "folder_hint": "按 Enter 使用此位置。",
         "folder_name": "工作树文件夹"
-      },
-      "commit_credit": {
-        "label": "在提交中注明 Keiki",
-        "terms": "共同作者 署名 机器人 提交消息 co-author coauthor attribution bot commit message",
-        "cloud": "Cloud 始终启用",
-        "on": "智能体的提交会将 zeronsh[bot] 添加为共同作者"
       },
       "keep_running": {
         "label": "退出后让 Keiki 继续运行",
@@ -1835,7 +1829,7 @@
       "links_section": "链接",
       "version": {
         "label": "版本",
-        "terms": "引擎 版本 构建 关于 zeron engine version build about",
+        "terms": "引擎 版本 构建 关于 keiki engine version build about",
         "description": "此电脑上的引擎。"
       },
       "updates": {
@@ -3675,7 +3669,7 @@
       "name": "名称",
       "name_placeholder": "我的插件",
       "install_dialog_title": "安装插件",
-      "install_dialog_body": "粘贴 .zeron-plugin 文件、GitHub 发布版本或仓库的链接，或选择文件。Keiki 会检查签名者，你需要在插件运行前允许其请求的权限。",
+      "install_dialog_body": "粘贴插件包、GitHub 发布版本或仓库的链接，或选择文件。Keiki 会检查签名者，你需要在插件运行前允许其请求的权限。",
       "install": "安装",
       "link": "链接",
       "choose_file": "选择文件",
@@ -3692,7 +3686,7 @@
       "try_again": "重试",
       "remove_body_device": "它会立即在 {device} 上的 Keiki 各处停止。它的文件夹会移到那台电脑插件文件夹的已移除项目中，以便你想找回。",
       "install_dialog_title_device": "在 {device} 上安装插件",
-      "install_dialog_body_device": "粘贴 .zeron-plugin 文件、GitHub 发布版或代码仓库的链接，或选择这台电脑上的文件。Keiki 会检查是谁签名的，在它在那里运行前，由你允许它请求的权限。",
+      "install_dialog_body_device": "粘贴插件包、GitHub 发布版或代码仓库的链接，或选择这台电脑上的文件。Keiki 会检查是谁签名的，在它在那里运行前，由你允许它请求的权限。",
       "setup_title": "完成账户设置",
       "setup_body": "选择工作空间后，你的插件会立即加载。"
     },
@@ -3784,11 +3778,11 @@
       "bad_signature": "它的签名无法通过验证。请从作者那里重新获取。",
       "too_big": "它太大了，不能作为插件。",
       "bad_file": "它包含 Keiki 不会写入的文件。",
-      "git_missing": "从代码仓库安装需要 git，但这里没有安装。请先安装 git 再试，或改用 .zeron-plugin 文件或 GitHub 发布版本安装。",
+      "git_missing": "从代码仓库安装需要 git，但这里没有安装。请先安装 git 再试，或改用插件包或 GitHub 发布版本安装。",
       "git_timeout": "代码仓库响应超时。请稍后再试。",
       "repo_unreadable": "无法读取该代码仓库。请确认它是公开的，并且分支正确。",
       "ref_not_found": "找不到该分支或标签。",
-      "no_manifest": "那里没有 zeron-plugin.json。",
+      "no_manifest": "那里没有插件清单。",
       "rate_limited": "GitHub 暂时拒绝了来自此设备的请求。请稍后再试，或使用 GitHub 命令行工具登录（gh auth login），让 Keiki 以你的身份请求。",
       "github_unreachable": "无法连接 GitHub。请检查网络连接后再试。",
       "release_not_found": "找不到该发布版本。",
@@ -3861,7 +3855,7 @@
       "install_more": "安装",
       "install_title": "安装模板",
       "install_dialog_title": "安装模板",
-      "install_dialog_body": "粘贴 .zeron-template 文件、GitHub 发布版或代码仓库的链接，或选择一个文件。Keiki 会检查是谁签名的，在使用前由你允许。",
+      "install_dialog_body": "粘贴模板包、GitHub 发布版或代码仓库的链接，或选择一个文件。Keiki 会检查是谁签名的，在使用前由你允许。",
       "link": "链接",
       "install": "安装",
       "choose_file": "选择文件",

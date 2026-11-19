@@ -11,8 +11,6 @@ use crate::plugins::{json_value, value_json};
 
 /// The engine's methods Settings may call: this Mac's own settings.
 const ENGINE_METHODS: &[&str] = &[
-    "GetCommitCredit",
-    "SetCommitCredit",
     "GetWorktreeSettings",
     "SetWorktreeSettings",
     "GetTitleSettings",

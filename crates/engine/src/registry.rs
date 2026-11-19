@@ -217,8 +217,6 @@ pub struct HarnessRegistry {
     /// Spawn-time environment of the agent accounts zeron keeps itself
     /// (Muse's per-account roots); after the Cloud broker, never over it.
     account_environment: Mutex<Option<Arc<dyn RunEnvironment>>>,
-    /// Credits Zeron in agents' commits ([`crate::commit_credit`]).
-    commit_credit: std::sync::OnceLock<Arc<crate::commit_credit::CommitCredit>>,
 }
 
 impl Default for HarnessRegistry {
@@ -301,7 +299,6 @@ impl HarnessRegistry {
             run_environment: Mutex::new(None),
             run_environment_ready: tokio::sync::watch::channel(true).0,
             account_environment: Mutex::new(None),
-            commit_credit: std::sync::OnceLock::new(),
         }
     }
 
@@ -338,16 +335,7 @@ impl HarnessRegistry {
             .collect()
     }
 
-    pub fn set_commit_credit(&self, credit: Arc<crate::commit_credit::CommitCredit>) {
-        let _ = self.commit_credit.set(credit);
-    }
-
-    pub fn commit_credit(&self) -> Option<&Arc<crate::commit_credit::CommitCredit>> {
-        self.commit_credit.get()
-    }
-
-    /// Fill `request.env` for a spawn of `harness` (no-op without a provider),
-    /// and credit Zeron in its commits when that's on.
+    /// Fill `request.env` for a spawn of `harness` (no-op without a provider).
     pub async fn prepare_run(
         &self,
         harness: HarnessId,
@@ -364,9 +352,6 @@ impl HarnessRegistry {
         }
         for environment in self.environments() {
             environment.prepare(harness, chat_id, request).await?;
-        }
-        if let Some(credit) = self.commit_credit.get() {
-            credit.apply(&mut request.env);
         }
         Ok(())
     }
@@ -779,6 +764,7 @@ fn full_registry() -> HarnessRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeron_rpc::{RpcReply, RpcService};
 
     #[test]
     fn only_copilot_and_mock_are_registered_and_unknown_sessions_cannot_run() {
@@ -963,38 +949,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runs_carry_the_commit_credit_hooks() {
+    async fn retired_commit_credit_preferences_do_not_add_hooks() {
         let data = tempfile::tempdir().unwrap();
         let mut request: zeron_proto::RunRequest = serde_json::from_str(
             r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#,
         )
         .unwrap();
-        let registry = HarnessRegistry::new();
-        let credit = Arc::new(crate::commit_credit::CommitCredit::open(data.path(), false));
-        credit.set(true).unwrap();
-        registry.set_commit_credit(credit.clone());
+        let preference = data.path().join("commit-credit.json");
+        std::fs::write(&preference, r#"{"enabled":true}"#).unwrap();
+        let registry = Arc::new(HarnessRegistry::new());
+        let core = crate::EngineCore::assemble(
+            data.path(), registry.clone(), HarnessId::Copilot, None,
+        ).unwrap();
+        let rpc = core.rpc_service();
+        for method in [zeron_rpc::methods::GET_COMMIT_CREDIT, zeron_rpc::methods::SET_COMMIT_CREDIT] {
+            let RpcReply::Value(value) = rpc
+                .handle(method, serde_json::json!({"enabled":true}))
+                .await.unwrap() else { panic!("compatibility reply") };
+            assert_eq!(value, serde_json::json!({"enabled":false,"cloud":false}));
+        }
         registry
             .prepare_run(HarnessId::Copilot, None, &mut request)
             .await
             .unwrap();
         let hooks = data.path().join("git-hooks");
-        assert_eq!(
-            request.env.get("GIT_CONFIG_KEY_0").map(String::as_str),
-            Some("core.hooksPath")
-        );
-        assert_eq!(
-            request.env.get("GIT_CONFIG_VALUE_0").map(String::as_str),
-            Some(hooks.to_string_lossy().as_ref())
-        );
-        assert!(hooks.join("commit-msg").exists());
-
-        // Off on this device: nothing added.
-        credit.set(false).unwrap();
-        request.env.clear();
-        registry
-            .prepare_run(HarnessId::Copilot, None, &mut request)
-            .await
-            .unwrap();
+        assert!(!hooks.exists());
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(preference).unwrap()).unwrap();
+        assert_eq!(saved, serde_json::json!({"enabled":true}));
         assert!(request.env.is_empty());
     }
 }

@@ -61,7 +61,7 @@ test("the settings pages keep local tools and the Keiki account", function()
 		expect(app:has(`{NAV} >> role:tab "{label}"`)).to_be(false)
 	end
 	expect(app:state("shell_route_path")).to_be("/settings/general")
-	expect(shows(app, PAGE, "Credit Keiki in commits")).to_be(true)
+	expect(shows(app, PAGE, "Credit Keiki in commits")).to_be(false)
 end)
 
 test("the search finds a page and a setting, and opens the setting's page at it", function()
@@ -94,22 +94,14 @@ end)
 
 
 
-test("an engine switch flips at once, and back if refused", function()
+test("commit credit has no setting or engine requests", function()
 	local app = open()
-	local credit = `{PAGE} >> role:switch "Credit Keiki in commits"`
-	expect(app:tree(credit)).to_contain("unchecked")
-	-- (Under General's other rows: brought into view.)
-	app:scroll(PAGE, 600)
-	app:frames(4)
-	app:click(credit)
+	expect(app:has(`{PAGE} >> role:switch "Credit Keiki in commits"`)).to_be(false)
+	expect(asked(app, "settings.engine:GetCommitCredit")).to_be(false)
+	expect(asked(app, "settings.engine:SetCommitCredit")).to_be(false)
+	app:fill(`{NAV} >> #settings-search`, "co-author")
 	app:frames(10)
-	expect(asked(app, "settings.engine:SetCommitCredit")).to_be(true)
-	expect(app:tree(credit)).never.to_contain("unchecked")
-	-- Refused: it goes back on.
-	app:command("settings_stub.refuse_next")
-	app:click(credit)
-	app:frames(10)
-	expect(app:tree(credit)).never.to_contain("unchecked")
+	expect(app:has(`#settings-search-results >> "No settings match."`)).to_be(true)
 end)
 
 test("the Keiki organization list loads once per account page visit", function()

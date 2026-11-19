@@ -32,7 +32,6 @@ local function change(value: any): any
 end
 
 local engine: { [string]: any } = {
-	GetCommitCredit = { enabled = false, cloud = false },
 	GetWorktreeSettings = {
 		settings = { useCustomDirectory = false },
 		defaultDirectory = "~/.zeron/worktrees",
@@ -56,9 +55,7 @@ local answers: { [string]: (arg: any) -> any } = {
 				return r
 			end
 			local get = "Get" .. string.sub(m, 4)
-			if m == "SetCommitCredit" then
-				engine[get] = { enabled = arg.params.enabled, cloud = false }
-			elseif m == "SetWorktreeSettings" then
+			if m == "SetWorktreeSettings" then
 				local w = table.clone(engine[get])
 				w.settings = arg.params
 				engine[get] = w

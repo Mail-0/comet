@@ -45,7 +45,6 @@ mod chat2_checkpoint;
 pub mod chat2_host;
 mod chat_persistence;
 pub mod commands;
-pub mod commit_credit;
 pub mod deferred;
 pub mod desktop_notify;
 pub mod device_stats;
@@ -890,7 +889,6 @@ impl Engine {
             )?,
         };
         core.set_auth(auth.clone());
-        core.registry.set_commit_credit(Arc::new(commit_credit::CommitCredit::open(&config.data_dir, false)));
         // The chats as last published (the list every view watches), not a
         // fresh parse of every chat row on each scan.
         let preview_chats = core.workspace.watch_chats();

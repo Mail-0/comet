@@ -129,7 +129,7 @@
       "sending": "Sending…",
       "word": "{word}…",
       "words": {
-        "zeroning": "Zeroning",
+        "zeroning": "Working",
         "thinking": "Thinking",
         "pondering": "Pondering",
         "scheming": "Scheming",
@@ -1184,7 +1184,7 @@
       },
       "open_links": {
         "label": "Open links in",
-        "terms": "web link url browser tab panel zeron external"
+        "terms": "web link url browser tab panel keiki external"
       },
       "thread_naming": {
         "label": "Thread naming",
@@ -1198,18 +1198,12 @@
       "worktrees": {
         "label": "Custom worktree location",
         "terms": "folder directory path checkout branches",
-        "env": "Set by ZERON_WORKTREES_DIR: {path}",
+        "env": "Set by the environment: {path}",
         "in": "New worktrees go in {path}.",
         "in_zeron": "New worktrees go in Keiki's folder.",
         "folder": "Folder",
         "folder_hint": "Press Enter to use it.",
         "folder_name": "Worktree folder"
-      },
-      "commit_credit": {
-        "label": "Credit Keiki in commits",
-        "terms": "co-author coauthor attribution bot commit message",
-        "cloud": "Always on for Cloud",
-        "on": "Agents' commits add zeronsh[bot] as a co-author"
       },
       "keep_running": {
         "label": "Keep Keiki running after you quit",
@@ -1835,7 +1829,7 @@
       "links_section": "Links",
       "version": {
         "label": "Version",
-        "terms": "zeron engine version build about",
+        "terms": "keiki engine version build about",
         "description": "The engine on this computer."
       },
       "updates": {
@@ -3675,7 +3669,7 @@
       "name": "Name",
       "name_placeholder": "My plugin",
       "install_dialog_title": "Install a plugin",
-      "install_dialog_body": "Paste a link to a .zeron-plugin file, a GitHub release or a repository, or choose a file. Keiki checks who signed it, and you allow what it asks before it runs.",
+      "install_dialog_body": "Paste a link to a plugin package, a GitHub release or a repository, or choose a file. Keiki checks who signed it, and you allow what it asks before it runs.",
       "install": "Install",
       "link": "Link",
       "choose_file": "Choose File",
@@ -3692,7 +3686,7 @@
       "try_again": "Try again",
       "remove_body_device": "It stops everywhere in Keiki on {device} at once. Its folder goes to the removed items in that computer's plugins folder, in case you want it back.",
       "install_dialog_title_device": "Install a plugin on {device}",
-      "install_dialog_body_device": "Paste a link to a .zeron-plugin file, a GitHub release or a repository, or choose a file on this computer. Keiki checks who signed it, and you allow what it asks before it runs there.",
+      "install_dialog_body_device": "Paste a link to a plugin package, a GitHub release or a repository, or choose a file on this computer. Keiki checks who signed it, and you allow what it asks before it runs there.",
       "setup_title": "Finish setting up your account",
       "setup_body": "Your plugins load as soon as you've chosen where you work."
     },
@@ -3784,11 +3778,11 @@
       "bad_signature": "Its signature doesn't check out. Get it again from its author.",
       "too_big": "It's too big for a plugin.",
       "bad_file": "It has a file Keiki won't write.",
-      "git_missing": "Installing from a repository needs git, and it isn't installed here. Install git, then try again, or install from a .zeron-plugin file or a GitHub release.",
+      "git_missing": "Installing from a repository needs git, and it isn't installed here. Install git, then try again, or install from a plugin package or a GitHub release.",
       "git_timeout": "The repository took too long to answer. Try again in a moment.",
       "repo_unreadable": "Couldn't read that repository. Check that it's public and that the branch is right.",
       "ref_not_found": "That branch or tag can't be found.",
-      "no_manifest": "There's no zeron-plugin.json there.",
+      "no_manifest": "There's no plugin manifest there.",
       "rate_limited": "GitHub is turning away requests from this device for now. Try again later, or sign in with GitHub's command-line tool (gh auth login) so Keiki asks as you.",
       "github_unreachable": "Couldn't reach GitHub. Check your connection and try again.",
       "release_not_found": "That release can't be found.",
@@ -3861,7 +3855,7 @@
       "install_more": "Install",
       "install_title": "Install Template",
       "install_dialog_title": "Install a template",
-      "install_dialog_body": "Paste a link to a .zeron-template file, a GitHub release or a repository, or choose a file. Keiki checks who signed it, and you allow it before it's used.",
+      "install_dialog_body": "Paste a link to a template package, a GitHub release or a repository, or choose a file. Keiki checks who signed it, and you allow it before it's used.",
       "link": "Link",
       "install": "Install",
       "choose_file": "Choose File",

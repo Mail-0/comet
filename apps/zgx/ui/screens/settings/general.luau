@@ -4,7 +4,7 @@
 -- page, thread_naming.rs, worktrees.rs), in the gallery's Settings parts.
 --
 -- The composer's and the links' are this Mac's preferences (prefs.luau),
--- read where they apply. Thread naming, commit credit and the worktree
+-- read where they apply. Thread naming and the worktree
 -- folder are the engine's (`settings.engine`): asked once a visit, each
 -- change shown at once and put back if the engine refuses it.
 
@@ -32,11 +32,9 @@ search.index(M.ID, ui.t("settings.general.title"), ui.t("settings.general.terms"
 	{ key = "hide_emails", title = ui.t("settings.general.hide_emails.label"), section = ui.t("settings.general.privacy"), terms = ui.t("settings.general.hide_emails.terms") },
 	{ key = "thread_naming", title = ui.t("settings.general.thread_naming.label"), terms = ui.t("settings.general.thread_naming.terms") },
 	{ key = "worktrees", title = ui.t("settings.general.worktrees.label"), section = ui.t("settings.general.git"), terms = ui.t("settings.general.worktrees.terms") },
-	{ key = "commit_credit", title = ui.t("settings.general.commit_credit.label"), section = ui.t("settings.general.git"), terms = ui.t("settings.general.commit_credit.terms") },
 })
 
 -- The engine's settings for this Mac, as last heard: nil until asked.
-type Credit = { enabled: boolean, cloud: boolean? }
 type Worktrees = {
 	settings: { useCustomDirectory: boolean?, customDirectory: string? },
 	defaultDirectory: string?,
@@ -44,7 +42,6 @@ type Worktrees = {
 	environmentOverride: string?,
 }
 type Titles = { harness: string?, model: string? }
-local credit = ui.state("settings_commit_credit", nil :: Credit?)
 local worktrees = ui.state("settings_worktrees", nil :: Worktrees?)
 local titles = ui.state("settings_titles", nil :: Titles?)
 -- Whether the engine outlives the app (src/quit_prompt.rs).
@@ -76,7 +73,6 @@ local function load(name: string, method: string, into: State<any>)
 end
 
 local function load_all()
-	load("credit", "GetCommitCredit", credit)
 	load("worktrees", "GetWorktreeSettings", worktrees)
 	load("titles", "GetTitleSettings", titles)
 	load("background", "GetBackgroundSettings", background)
@@ -364,31 +360,6 @@ function M.view(): Node
 					},
 				},
 				}) },
-				row("commit_credit", {
-					label = ui.t("settings.general.commit_credit.label"),
-					description = function()
-						if failed:get().credit then
-							return says(failed:get().credit):get()
-						end
-						local c = credit:get()
-						if not c then
-							return ui.t("common.loading"):get()
-						end
-						return if c.cloud
-							then ui.t("settings.general.commit_credit.cloud"):get()
-							else ui.t("settings.general.commit_credit.on"):get()
-					end,
-					control = engine_switch(ui.t("settings.general.commit_credit.label"), function()
-						local c = credit:get()
-						return if c then c.enabled else nil
-					end, function(on: boolean)
-						local c = credit:peek()
-						change("credit", credit, { enabled = on, cloud = if c then c.cloud else false }, "SetCommitCredit", { enabled = on })
-					end, function()
-						local c = credit:get()
-						return c == nil or c.cloud == true
-					end),
-				}),
 			},
 		},
 	}
