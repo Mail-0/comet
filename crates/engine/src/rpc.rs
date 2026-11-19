@@ -904,6 +904,7 @@ enum MutateParams {
 
 #[derive(Clone)]
 pub struct EngineRpc {
+    keiki: Option<crate::keiki::KeikiConversations>,
     voice: crate::voice::VoiceManager,
     sessions: SessionsEngine,
     doc_host: DocHost,
@@ -967,6 +968,7 @@ impl EngineRpc {
         };
         let github = GitHubCli::new().with_store(repos.data_dir());
         Self {
+            keiki: None,
             voice: sessions.voice_manager(),
             sessions,
             doc_host,
@@ -1023,6 +1025,11 @@ impl EngineRpc {
     /// Attach the auth service (AuthStatus + AuthRpc mutations).
     pub fn with_auth(mut self, auth: Auth) -> Self {
         self.auth = Some(auth);
+        self
+    }
+
+    pub(crate) fn with_keiki(mut self, keiki: crate::keiki::KeikiConversations) -> Self {
+        self.keiki = Some(keiki);
         self
     }
 
@@ -2850,9 +2857,26 @@ impl crate::remote_terminals::Relay for EngineRpc {
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        let chat = params.get("chatId").and_then(serde_json::Value::as_str).map(str::to_owned);
+        let reply = self.handle_inner(method, params).await?;
+        if let (Some(keiki), Some(chat)) = (&self.keiki, chat) {
+            keiki.authorize_chat(&chat)?;
+            if let RpcReply::Stream(stream) = reply { return Ok(RpcReply::Stream(keiki.guard_stream(chat, stream))); }
+        }
+        Ok(reply)
+    }
+}
+
+impl EngineRpc {
+    async fn handle_inner(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         // An agent's chats: capped at its own access, runs as the chat is
         // set, attributed by Zeron (rpc/agent_gate.rs). Before forwarding.
         let params = self.agent_gate(method, params)?;
+        if let Some(keiki) = &self.keiki {
+            if let Some(chat) = params.get("chatId").and_then(serde_json::Value::as_str) {
+                keiki.authorize_chat(chat)?;
+            }
+        }
         if params.get("targetDeviceId").and_then(|value| value.as_str())
             .is_some_and(|target| target != self.doc_host.device_id())
         {
@@ -2860,6 +2884,9 @@ impl RpcService for EngineRpc {
         }
         if method == methods::DEVICE_STATS {
             return self.device_stats(params).await;
+        }
+        if crate::keiki::handles(method) {
+            return self.keiki.as_ref().ok_or_else(|| RpcError::Failed("Keiki conversations are unavailable".into()))?.handle(method, params).await;
         }
         if matches!(
             method,
@@ -3754,10 +3781,10 @@ impl RpcService for EngineRpc {
                 Ok(RpcReply::Stream(Box::pin(stream)))
             }
             methods::WATCH_CHATS if wants_changes(&params) => Ok(RpcReply::Stream(
-                keyed_changes_stream(self.workspace.watch_chats(), "id"),
+                keyed_changes_stream(self.keiki.as_ref().map_or_else(|| self.workspace.watch_chats(), |k| k.visible_chats()), "id"),
             )),
             methods::WATCH_CHATS => {
-                Ok(RpcReply::Stream(watch_stream(self.workspace.watch_chats())))
+                Ok(RpcReply::Stream(watch_stream(self.keiki.as_ref().map_or_else(|| self.workspace.watch_chats(), |k| k.visible_chats()))))
             }
             methods::WATCH_SIDEBAR_PREFERENCES => Ok(RpcReply::Stream(watch_stream(
                 self.workspace.watch_sidebar_preferences(),
@@ -3776,6 +3803,7 @@ impl RpcService for EngineRpc {
                 let merged = self
                     .workspace
                     .merged_sessions_watch(self.sessions.watch_sessions());
+                let merged = self.keiki.as_ref().map_or_else(|| merged.clone(), |k| k.visible_sessions(merged.clone()));
                 if wants_changes(&params) {
                     return Ok(RpcReply::Stream(keyed_changes_stream(merged, "chatId")));
                 }

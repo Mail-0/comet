@@ -29,6 +29,7 @@ use zeron_doc::{
     SessionMessageEntry, fold_event_into_parts, sanitize_tool_call,
 };
 use zeron_harness::{CancellationToken, Harness, RunControls, SteerMessage, TurnControl};
+use zeron_harness::CopilotCredentialSource;
 use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
     UserInputQuestion,
@@ -1020,6 +1021,7 @@ impl SessionsEngine {
         chat_id: &str,
         request: Option<(HarnessId, &RunRequest)>,
     ) -> bool {
+        if chat_id.starts_with(crate::keiki_store::BOUND_PREFIX) { return false; }
         if !self.turn_in_flight(chat_id) {
             return false;
         }
@@ -1214,6 +1216,19 @@ impl SessionsEngine {
         // Project-less chats store a home-relative cwd (the creating device
         // can't know the host's home); expand it here, on the host, where the
         // run spawns, creating a new chat's scratch folder.
+        if !chat_id.starts_with(crate::keiki_store::BOUND_PREFIX)
+            && request.resume.as_deref().is_some_and(|id| id.starts_with(crate::keiki_store::BOUND_PREFIX))
+        {
+            return Err(EngineError::Other("Keiki bindings are engine-owned".into()));
+        }
+        if chat_id.starts_with(crate::keiki_store::BOUND_PREFIX) {
+            if harness_id != HarnessId::Copilot {
+                return Err(EngineError::Other("Keiki conversations require Copilot".into()));
+            }
+            let source = self.inner.registry.copilot_credentials.bound_source()
+                .ok_or_else(|| EngineError::Other("Keiki conversation bindings are unavailable".into()))?;
+            source.authorize(chat_id).await.map_err(EngineError::Other)?;
+        }
         let scratch_root = self
             .inner
             .scratch_root
@@ -1442,6 +1457,12 @@ impl SessionsEngine {
         // and starting the retry fresh silently dropped a good conversation.
         // An id the provider has rejected is skipped wherever it comes from.
         let mut resume_injected = false;
+        if chat_id.starts_with(crate::keiki_store::BOUND_PREFIX) {
+            if harness_id != HarnessId::Copilot {
+                return Err(EngineError::Other("Keiki conversations require Copilot".into()));
+            }
+            request.resume = Some(chat_id.to_string());
+        }
         if request.resume.is_none() {
             let live = |id: &String| !self.inner.resume_was_rejected(chat_id, id);
             request.resume = self

@@ -17,6 +17,8 @@ use zeron_sync::DocsStore;
 
 pub mod agent_accounts;
 pub mod copilot;
+mod keiki;
+mod keiki_store;
 pub use copilot::CopilotCredentialHolder;
 
 /// Which build this engine is: its git commit and when its executable was
@@ -186,6 +188,7 @@ pub struct EngineCore {
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
+    keiki: std::sync::Mutex<Option<keiki::KeikiConversations>>,
     /// Peer link cache for `targetDeviceId` routing (attached when edge+auth are ready).
     links: std::sync::Mutex<Option<Arc<zeron_rpc::LinkCache>>>,
     /// Release checker (attached by [`Engine::assemble_runtime`]) — the
@@ -429,6 +432,7 @@ impl EngineCore {
             plugins,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
+            keiki: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
             updater: std::sync::Mutex::new(None),
             updater_wake: std::sync::Mutex::new(None),
@@ -461,6 +465,9 @@ impl EngineCore {
     /// Attach the auth service (before building the RPC service / relays).
     pub fn set_auth(&self, auth: Auth) {
         auth.attach_copilot_credentials(self.copilot_credentials.clone());
+        *self.keiki.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
+            keiki::KeikiConversations::new(auth.clone(), self.repos.data_dir(), self.workspace.clone(),
+                self.doc_host.clone(), self.sessions.clone(), &self.copilot_credentials));
         self.plugins.attach_auth(auth.clone());
         *self
             .auth
@@ -561,6 +568,10 @@ impl EngineCore {
     }
 
     pub fn rpc_service(&self) -> Arc<EngineRpc> {
+        let auth = self.auth();
+        let keiki = self.keiki.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| keiki::KeikiConversations::new(auth.clone(), self.repos.data_dir(),
+                self.workspace.clone(), self.doc_host.clone(), self.sessions.clone(), &self.copilot_credentials)).clone();
         let mut rpc = EngineRpc::new(
             self.sessions.clone(),
             self.doc_host.clone(),
@@ -576,7 +587,8 @@ impl EngineCore {
             self.agent_accounts.clone(),
             self.workspace_scope,
         )
-        .with_auth(self.auth())
+        .with_auth(auth)
+        .with_keiki(keiki)
         .with_previews(self.previews.clone())
         .with_remote_terminals(self.remote_terminals.clone())
         .with_commands(self.commands.clone())

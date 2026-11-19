@@ -28,6 +28,10 @@ struct Reply {
     path: &'static str,
     status: u16,
     body: Value,
+    stream: Option<String>,
+    received: Option<Arc<tokio::sync::Notify>>,
+    release: Option<Arc<tokio::sync::Notify>>,
+    hold_open: bool,
 }
 
 impl Reply {
@@ -37,6 +41,10 @@ impl Reply {
             path,
             status: 200,
             body,
+            stream: None,
+            received: None,
+            release: None,
+            hold_open: false,
         }
     }
     fn error(method: &'static str, path: &'static str, status: u16) -> Self {
@@ -45,6 +53,10 @@ impl Reply {
             path,
             status,
             body: json!({"error": "invalid_grant"}),
+            stream: None,
+            received: None,
+            release: None,
+            hold_open: false,
         }
     }
 }
@@ -61,6 +73,7 @@ impl Server {
         let replies = script(&url);
         let done = tokio::spawn(async move {
             let mut requests = Vec::new();
+            let mut responses = Vec::new();
             for mut reply in replies {
                 let (stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
                     .await
@@ -94,14 +107,32 @@ impl Server {
                     reply.body["redirect_uris"] = registration["redirect_uris"].clone();
                 }
                 requests.push((headers, body));
-                let body = reply.body.to_string();
-                stream.write_all(format!("HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", reply.status, body.len()).as_bytes()).await.unwrap();
+                if let Some(received) = &reply.received { received.notify_one(); }
+                responses.push(tokio::spawn(async move {
+                    if let Some(release) = reply.release { release.notified().await; }
+                    let mime = if reply.stream.is_some() { "text/event-stream" } else { "application/json" };
+                    let body = reply.stream.unwrap_or_else(|| reply.body.to_string());
+                    if reply.hold_open {
+                        stream.write_all(format!("HTTP/1.1 {} OK\r\nContent-Type: {mime}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n", reply.status, body.len()).as_bytes()).await.unwrap();
+                        let mut byte = [0];
+                        let _ = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await.unwrap();
+                    } else {
+                        let result = stream.write_all(format!("HTTP/1.1 {} OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", reply.status, body.len()).as_bytes()).await;
+                        if let Err(error) = result {
+                            assert!(matches!(error.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset), "{error}");
+                        }
+                    }
+                }));
             }
+            for response in responses { response.await.unwrap(); }
             requests
         });
         Self { url, done }
     }
 }
+
+#[path = "keiki_tests.rs"]
+mod keiki;
 
 fn discovery(url: &str) -> Vec<Reply> {
     vec![

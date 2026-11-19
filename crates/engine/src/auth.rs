@@ -137,6 +137,22 @@ struct AuthInner {
     refresh: tokio::sync::Mutex<()>,
     state: watch::Sender<AuthState>,
     changes: watch::Sender<u64>,
+    scope_changes: watch::Sender<u64>,
+}
+
+struct ScopeTransition(watch::Sender<u64>);
+
+impl ScopeTransition {
+    fn new(changes: watch::Sender<u64>) -> Self {
+        changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+        Self(changes)
+    }
+}
+
+impl Drop for ScopeTransition {
+    fn drop(&mut self) {
+        self.0.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
 }
 
 #[derive(Clone)]
@@ -176,6 +192,7 @@ impl Auth {
                 refresh: tokio::sync::Mutex::new(()),
                 state: watch::channel(AuthState::SignedOut).0,
                 changes: watch::channel(0).0,
+                scope_changes: watch::channel(0).0,
             }),
         }
     }
@@ -186,6 +203,14 @@ impl Auth {
 
     pub fn watch_state(&self) -> watch::Receiver<AuthState> {
         self.inner.state.subscribe()
+    }
+
+    pub(crate) fn watch_scope(&self) -> watch::Receiver<u64> {
+        self.inner.scope_changes.subscribe()
+    }
+
+    pub(crate) fn scope_revision(&self) -> u64 {
+        *self.inner.scope_changes.borrow()
     }
     pub fn state(&self) -> AuthState {
         self.inner.state.borrow().clone()
@@ -221,7 +246,15 @@ impl Auth {
         self.clear_locked(&mut session)
     }
 
+    pub(crate) fn reject_access_token(&self, token: &str) {
+        let mut session = lock(&self.inner.session);
+        if session.access.as_ref().is_some_and(|access| access.tokens.access_token() == token) {
+            let _ = self.clear_locked(&mut session);
+        }
+    }
+
     fn clear_locked(&self, session: &mut Session) -> Result<(), EngineError> {
+        self.inner.scope_changes.send_modify(|revision| *revision = revision.wrapping_add(1));
         session.generation = session.generation.wrapping_add(1);
         session.saved = None;
         session.access = None;
@@ -328,6 +361,10 @@ impl Auth {
             lifetime,
         });
         session.saved = Some(saved);
+        let previous = self.state();
+        if previous.user().map(|u| &u.id) != state.user().map(|u| &u.id) || previous.org_id() != state.org_id() || previous.is_signed_in() != state.is_signed_in() {
+            self.inner.scope_changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
         self.inner.state.send_replace(state);
         self.inner
             .changes
@@ -554,6 +591,7 @@ impl Auth {
             }
             session.generation
         };
+        let _scope = ScopeTransition::new(self.inner.scope_changes.clone());
         match request(self.inner.client.switch_org(&token, organization_id)).await {
             Ok(result) if result.ok && result.active_org_id == organization_id => {}
             Ok(_) => {
