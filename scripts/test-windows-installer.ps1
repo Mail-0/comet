@@ -8,20 +8,20 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (-not $env:CI -and -not $Force) {
-    throw 'This test installs and uninstalls Zeron for the current user; pass -Force to run it outside CI'
+    throw 'This test installs and uninstalls Keiki for the current user; pass -Force to run it outside CI'
 }
 if (-not $Setup) {
-    $Setup = Get-ChildItem (Join-Path $PSScriptRoot '../target/package') -Filter 'zeron-*-windows-*-setup.exe' |
+    $Setup = Get-ChildItem (Join-Path $PSScriptRoot '../target/package') -Filter 'keiki-*-windows-*-setup.exe' |
         Select-Object -First 1 -ExpandProperty FullName
 }
-if (-not $Setup) { throw 'No zeron-*-setup.exe under target/package' }
+if (-not $Setup) { throw 'No keiki-*-setup.exe under target/package' }
 $Setup = (Resolve-Path -LiteralPath $Setup).Path
-$match = [regex]::Match((Split-Path $Setup -Leaf), '\Azeron-(\d+\.\d+\.\d+)-windows-[a-z0-9_]+-setup\.exe\z')
+$match = [regex]::Match((Split-Path $Setup -Leaf), '\Akeiki-(\d+\.\d+\.\d+)-windows-[a-z0-9_]+-setup\.exe\z')
 if (-not $match.Success) { throw "Unexpected installer name: $Setup" }
 $version = $match.Groups[1].Value
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{AD5DEC34-E254-467B-8F24-8127EBAF4DA6}_is1'
 $protocolKey = 'HKCU:\Software\Classes\zeron'
-$shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Zeron.lnk'
+$shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Keiki.lnk'
 $root = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $dir = Join-Path $root "zeron installer test $([guid]::NewGuid().ToString('N'))"
 
@@ -71,7 +71,7 @@ Write-Output "PASS: installed executable is $version"
 
 $entry = Get-ItemProperty -LiteralPath $uninstallKey
 if ($entry.DisplayVersion -ne $version) { throw "DisplayVersion is '$($entry.DisplayVersion)', expected '$version'" }
-if ($entry.DisplayName -ne 'Zeron') { throw "DisplayName is '$($entry.DisplayName)'" }
+if ($entry.DisplayName -ne 'Keiki') { throw "DisplayName is '$($entry.DisplayName)'" }
 $installed = [IO.Path]::GetFullPath($entry.InstallLocation).TrimEnd('\')
 if ($installed -ne [IO.Path]::GetFullPath($dir).TrimEnd('\')) { throw "InstallLocation is '$installed'" }
 $command = (Get-ItemProperty -LiteralPath "$protocolKey\shell\open\command").'(default)'
