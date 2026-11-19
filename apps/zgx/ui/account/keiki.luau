@@ -12,6 +12,20 @@ M.failure = ui.state("keiki.failure", nil :: string?)
 M.history = ui.state("keiki.history", {} :: any)
 M.resolved = ui.state("keiki.resolved", {} :: any)
 M.expanded = ui.state("keiki.expanded", {} :: any)
+M.revision = ui.state("keiki.revision", 0)
+M.show_archived = ui.state("keiki.show_archived", false)
+M.connections = ui.state("keiki.connections", {} :: any)
+function M.connect(chat: string, preset: string, refresh: boolean?)
+	local mine = M.revision:peek()
+	local key = `{chat}/{preset}`
+	if (M.connections:peek()[key] or {}).status == "working" then return end
+	M.connections:set_key(key, { status = "working" })
+	M.call("KeikiPresetConnection", { chatId = chat, presetId = preset, refresh = refresh == true }):after(function(answer)
+		if mine == M.revision:peek() then M.connections:set_key(key, answer) end
+	end, function(error)
+		if mine == M.revision:peek() then M.connections:set_key(key, { error = error.message }) end
+	end)
+end
 local generation = 0
 local scope = ""
 local pending: { [string]: any } = {}
@@ -118,6 +132,9 @@ ui.effect(function()
 	local next_scope = if M.available:get() and a.state == "signed_in" and a.organization_id then `{a.user.id}/{a.organization_id}` else ""
 	if next_scope == scope then return end
 	generation += 1
+	M.revision:set(generation)
+	M.show_archived:set(false)
+	M.connections:set({})
 	local previous = scope
 	scope = next_scope
 	M.pages:set({}); M.rosters:set({}); M.history:set({}); M.resolved:set({}); M.expanded:set({}); pending = {}

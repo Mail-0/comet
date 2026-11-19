@@ -2,6 +2,9 @@ local ds = require("@ds")
 local keiki = require("@account/keiki")
 local account = require("@app/screens/shell/keiki_account")
 local opened = keiki.expanded
+local Controls = require("@app/screens/shell/keiki_controls")
+local Avatar = require("@app/screens/shell/keiki_avatar")
+local ContextMenu = require("@ds/context_menu")
 
 local rows = ui.computed(function(): { any }
 	local snapshot = keiki.sidebar:get()
@@ -29,11 +32,16 @@ local rows = ui.computed(function(): { any }
 			note(`{key}/error`, page.error, depth + 1)
 			table.insert(out, { key = `{key}/retry`, text = "Retry conversations", kind = "button", depth = depth + 1, action = "page", agent = agent.id })
 		end
+		for _, pinned in { true, false } do
 		for _, conversation in if page then page.rows else {} do
-			local label = conversation.contactName or conversation.lastMessage or conversation.phone
+			if (conversation.localPinned == true) ~= pinned or (conversation.localArchived and not keiki.show_archived:get()) then continue end
+			local label = conversation.localTitle or conversation.contactName or conversation.lastMessage or conversation.phone
 			if label == "" then label = conversation.phone end
+			if pinned then label = `★ {label}` end
+			if conversation.localArchived then label = `{label} · archived` end
 			table.insert(out, { key = `{key}/conversation/{conversation.phone}`, text = label, kind = "button", depth = depth + 1, busy = true,
 				action = "open", agent = agent.id, conversation = conversation.phone })
+		end
 		end
 		if page and not page.loading and not page.error and #page.rows == 0 then note(`{key}/empty`, "No conversations yet", depth + 1) end
 		if page and page.nextOffset ~= nil and not page.loading then
@@ -70,15 +78,25 @@ local rows = ui.computed(function(): { any }
 end)
 
 local function Row(first: any, _i: number, now: State<any>): Node
-	local function inset(): number return (first.depth or 0) * (ui.theme.get("space.4") :: number) end
+	local function indent(node: Node): Node
+		for _ = 1, first.depth or 0 do node = ui.div { w_full = true, pl = "$space.4", node } end
+		return node
+	end
 	if first.kind == "section" then return ui.text { first.text, weight = "$font.weight.semibold" } end
 	if first.kind == "loading" then return ui.column { ds.Skeleton { w_full = true }, ui.text { first.text, color = "$text.secondary" } } end
 	if first.kind == "note" then
-		return ui.text { function() return now:get().text end, wrap = true, pl = inset,
-			text_size = "$font.size.sm", color = "$text.secondary" }
+		return indent(ui.text { function() return now:get().text end, wrap = true,
+			text_size = "$font.size.sm", color = "$text.secondary" })
 	end
-	return ui.row { w_full = true, pl = inset,
-		ds.Button { label = function() return now:get().text end, tone = "ghost", size = "sm", w_full = true, justify = "start",
+	return indent(ContextMenu { items = function()
+		local r = now:peek()
+		if r.action == "open" and r.conversation then return { { label = "Conversation actions", on_select = function() Controls.conversation(r.agent, r.conversation) end } }
+		elseif r.action == "agent" then return { { label = "Agent workspace", on_select = function() Controls.agent(r.agent, r.text) end } }
+		elseif r.action == "group" then return { { label = "Group roster", on_select = function() Controls.group(r.group, r.text) end } } end
+		return nil
+	end, w_full = true,
+	ui.row { w_full = true, items = "center",
+		ds.Button { label = function() return now:get().text end, tone = "ghost", size = "sm", grow = 1, min_w = 0, justify = "start",
 			disabled = function() return now:get().busy == true and keiki.opening:get() end,
 			on_click = function()
 				local r = now:peek()
@@ -90,9 +108,16 @@ local function Row(first: any, _i: number, now: State<any>): Node
 				else keiki.retry() end
 			end,
 			ui.div { w = 14, shrink = 0, ui.show(function() return now:get().icon ~= nil end, ds.Icon { name = function() return now:get().icon or "chat-round-line" end, size = 14 }) },
+			if first.action == "agent" then Avatar(first.agent, first.text, 20) else nil,
 			ui.text { function() return now:get().text end, truncate = true, grow = 1, min_w = 0 },
 		},
-	}
+		if first.action == "agent" or first.action == "group" or (first.action == "open" and first.conversation) then ds.Button {
+			label = function() return (if first.action == "agent" then "Agent workspace: " elseif first.action == "group" then "Group roster: " else "Conversation actions: ") .. now:get().text end,
+			tone = "ghost", size = "xs", on_click = function() local r = now:peek(); if r.action == "agent" then Controls.agent(r.agent, r.text) elseif r.action == "group" then Controls.group(r.group, r.text) else Controls.conversation(r.agent, r.conversation) end end,
+			ui.text { "⋯" },
+		} else nil,
+		},
+	})
 end
 
 return function(): Node
@@ -100,11 +125,14 @@ return function(): Node
 		id = "keiki-navigation", w_full = true, gap = "$space.2",
 		ui.row { w_full = true, items = "center", justify = "between",
 			ui.text { "Keiki", weight = "$font.weight.semibold" },
+			ds.Button { label = "Create Keiki agent", tone = "ghost", size = "xs", on_click = Controls.create, ds.Icon { name = "plus", size = 16 } },
 			ds.Button { label = "Keiki account", tone = "ghost", size = "xs", on_click = function() account.open:set(true) end, ds.Icon { name = "user-rounded", size = 16 } },
 		},
 		ui.scroll { w_full = true, max_h = 320, fade = { 0, 12 }, ui.each(rows, Row, { key = function(r) return r.key end, w_full = true }) },
 		ui.show(function() return keiki.opening:get() end, ui.text { "Opening conversation…", color = "$text.secondary" }),
 		ui.show(function() return keiki.failure:get() ~= nil end, ui.text { function() return keiki.failure:get() or "" end, wrap = true, color = "$text.secondary" }),
+		ds.Button { label = function() return if keiki.show_archived:get() then "Hide archived conversations" else "Show archived conversations" end, tone = "ghost", size = "xs", on_click = function() keiki.show_archived:set(not keiki.show_archived:peek()) end, ui.text { function() return if keiki.show_archived:get() then "Hide archived conversations" else "Show archived conversations" end } },
+		Controls.dialog(),
 		ui.text { "Local chats", weight = "$font.weight.semibold" },
 	})
 end

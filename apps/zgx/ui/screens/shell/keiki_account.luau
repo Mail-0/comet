@@ -67,7 +67,14 @@ end
 function M.menu(): Node
 	return ds.Dialog { open = M.open, title = "Keiki account",
 		body = function() local user = auth.user:get(); return if user then user.email else "Sign in to Keiki" end,
-		cancel = "Done", build = M.picker,
+		cancel = "Done", build = function(): Node
+			return ui.column { w_full = true, gap = "$space.3",
+				ds.Surface { kind = "sunken", p = "$space.3", ui.row { items = "center", gap = "$space.3",
+					ds.Surface { kind = "raised", w = 32, h = 32, rounded = "$radius.full", items = "center", justify = "center", ui.text { function() local user = auth.user:get(); return string.upper(string.sub(if user then user.name or user.email else "?", 1, 1)) end, text_size = "$font.size.lg", weight = "$font.weight.semibold" } },
+					ui.text { function() local user = auth.user:get(); return if user then user.name or user.email else "Keiki account" end },
+				} }, M.picker(),
+			}
+		end,
 		aside = { label = "Sign out", on_click = function() M.open:set(false); auth.sign_out() end },
 	}
 end

@@ -19,8 +19,8 @@ The ZGX column is the intended treatment, not a completion checklist.
 | Background tasks | Conversation detail `tasks`; task `/cancel` | Existing list and confirmation components |
 | Start swarm / reassign members | No GPUI action or API contract | Not invented |
 | Terminal | Open/input/resize/close HTTP calls and SSE `TerminalEvent` output | Engine transport, existing ZGX terminal |
-| Desktop | `open_desktop` gives preview URL + preview token; GPUI uses native VNC over `/websockify`, authenticating with a header | No assumption that this is a browser-renderable page |
-| Browser | Availability + screencast capability; native JPEG WebSocket viewer, credential in first message | No assumption that a WebSocket URL is a browser-renderable page |
+| Desktop | `open_desktop` gives preview URL + preview token; GPUI uses native VNC over `/websockify`, authenticating with a header | Deferred by request; agent workspace shows “Desktop view coming soon”. No capability request or transport |
+| Browser | Availability + screencast capability; native JPEG WebSocket viewer, credential in first message | Deferred by request; agent workspace shows “Browser view coming soon”. No capability request or transport |
 | Agent avatars | Public avatar image, keyed by agent/state/theme/size; bounded cache with fallback/retry | Existing avatar component; image bytes fetched through engine |
 | User avatar | First-letter fallback in GPUI; session has no photo field | Existing user avatar fallback; no invented photo endpoint |
 | Create agent | List templates, create from selected template; optional name/line | Existing form/dialog components |

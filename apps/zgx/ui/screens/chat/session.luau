@@ -25,6 +25,7 @@ local LinkMenu = require("@app/screens/chat/link_menu")
 local Find = require("@app/screens/chat/find")
 local boundary = require("@app/screens/shell/boundary")
 local keiki = require("@account/keiki")
+local KeikiControls = require("@app/screens/shell/keiki_controls")
 
 -- The pictures replies show, read from the open chat's folder on its device.
 local pictures = ReplyImages.for_session(function(): any
@@ -268,6 +269,7 @@ local function Session(id: Id?): Node
 				min_h = 0,
 				-- Under the composer, to its footer's line.
 				pb = Dock.page_pad(),
+				KeikiControls.toolbar(which),
 				ui.show(function() return keiki.bound(which()) end, ui.column {
 					w_full = true,
 					ui.show(function() local d = keiki.conversation:get(); return d ~= nil and d.error ~= nil end,

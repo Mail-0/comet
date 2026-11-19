@@ -13,6 +13,9 @@ local calls = ui.state("keiki.fixture.calls", "")
 local fail = ui.state("keiki.fixture.fail", false)
 local builds = ui.state("keiki.fixture.builds", 0)
 local selected_org = "studio"
+local action_info = { conversationId = "api:release", agentId = "nova", title = "Release plan", pinned = false, archived = false, peer = false, desktop = true }
+local action_fail, templates_empty, roster_empty = false, false, false
+local task = { id = "review", subagent = "Fern", status = "running", request = "Review the launch checklist" }
 local snapshot = {
 	agents = { { id = "nova", name = "Nova" }, { id = "fern", name = "Fern" } },
 	groups = { { id = "team", name = "Design team", members = { { agentId = "nova", name = "Nova" } } } },
@@ -21,9 +24,9 @@ local function note(text: string) calls:append(text .. "\n") end
 local function signed(org: string?)
 	auth.account:set { state = "signed_in", env = "keiki", user = { id = "demo@keiki.test", email = "demo@keiki.test", name = "Demo" }, organization_id = org }
 end
-local function promise(answer: any, error: boolean?): any
-	return { after = function(_, ok, bad)
-		ui.after(40, function() if error then if bad then bad({ message = "offline" }) end else ok(answer) end end)
+local function promise(answer: any, failed: boolean?): any
+	return { await = function() if failed then error("offline") end; return answer end, after = function(_, ok, bad)
+		ui.after(40, function() if failed then if bad then bad({ message = "offline" }) end else ok(answer) end end)
 	end }
 end
 auth.sign_in = function() note("SignIn"); auth.account:set { state = "waiting", env = "keiki" } end
@@ -40,11 +43,26 @@ keiki.watch_conversation = function(chat_id)
 end
 keiki.call = function(method, params)
 	note(`{method}:{params.agentId or params.chatId or params.groupId or ""}:{params.offset or params.before or ""}`)
+	if method == "GetKeikiAvatar" then return promise({}) end
+	if action_fail then action_fail = false; return promise(nil, true) end
+	if method == "KeikiConversationInfo" then return promise(action_info)
+	elseif method == "KeikiConversationAction" then
+		note(`action:{params.action}:{params.title or ""}`)
+		if params.action == "rename" then action_info.title = params.title end
+		if params.action == "pin" or params.action == "unpin" then action_info.pinned = params.action == "pin" end
+		if params.action == "archive" or params.action == "restore" then action_info.archived = params.action == "archive" end
+		return promise(if params.action == "deleteLocal" then { deletedLocal = true } else if params.action == "openDashboard" then { opened = true } else table.clone(action_info))
+	elseif method == "ListKeikiTemplates" then return promise({ templates = if templates_empty then {} else { { id = "research", name = "Research partner", emoji = "✦", blurb = "A thoughtful collaborator" } } })
+	elseif method == "CreateKeikiAgent" then note(`created:{params.template}:{params.name or ""}`); return promise({ ok = true, id = "new-agent", missing_secrets = {} })
+	elseif method == "EndKeikiGroup" then note(`ended:{params.groupId}:{params.confirmed}`); return promise({ threadsEnded = 2, tasksCancelled = 1 })
+	elseif method == "CancelKeikiTask" then note(`cancelled:{params.taskId}`); task.status = "cancelled"; keiki.conversation:set({ tasks = { table.clone(task) } }); return promise({ cancelled = true })
+	elseif method == "SetKeikiTakeover" then note(`takeover:{params.enabled}`); keiki.conversation:set({ takeover = if params.enabled then {} else nil }); return promise({})
+	elseif method == "KeikiPresetConnection" then note(`connection:{params.presetId}:{params.refresh}`); return promise({ status = if params.refresh then "connected" else "needs_auth", opened = not params.refresh }) end
 	if method == "ListKeikiConversations" then
 		if fail:peek() then fail:set(false); return promise(nil, true) end
 		if params.offset == 50 then return promise({ conversations = { { phone = "api:older", contactName = "Earlier ideas" } } }) end
-		return promise({ conversations = { { phone = "api:release", contactName = "Release plan" }, { phone = "api:design", contactName = "Design review" } }, nextOffset = 50 })
-	elseif method == "GetKeikiAgentGroupRoster" then return promise({ members = snapshot.groups[1].members })
+		return promise({ conversations = { { phone = "api:release", contactName = "Release plan", localTitle = action_info.title, localPinned = action_info.pinned, localArchived = action_info.archived }, { phone = "api:design", contactName = "Design review" } }, nextOffset = 50 })
+	elseif method == "GetKeikiAgentGroupRoster" then return promise({ members = if roster_empty then {} else { { agentId = "nova", name = "Nova", role = "hub", status = "running", runningTurns = 1, pendingAsks = 2, backgroundTasks = 1, tokensIn = 1200, tokensOut = 300, costUsd = 0.04 } }, totals = { members = if roster_empty then 0 else 1, running = if roster_empty then 0 else 1, backgroundTasks = 1, costUsd = 0.04 } })
 	elseif method == "OpenKeikiConversation" or method == "NewKeikiConversation" then return promise({ chatId = "keiki-bound-demo" })
 	elseif method == "LoadKeikiHistory" then
 		if params.before then
@@ -83,6 +101,14 @@ command("error", function() keiki.sidebar:set({ error = "offline" }) end)
 command("fail_page", function() fail:set(true) end)
 command("empty", function() keiki.sidebar:set({ agents = {}, groups = {} }) end)
 command("open", function() keiki.open("nova", "api:release") end)
+command("action_fail", function() action_fail = true end)
+command("templates_empty", function() templates_empty = true end)
+command("roster_empty", function() roster_empty = true end)
+command("tasks", function() keiki.conversation:set({ tasks = { table.clone(task) } }) end)
+command("tasks_empty", function() keiki.conversation:set({ tasks = {} }) end)
+command("contact", function() action_info.desktop = false; action_info.conversationId = "contact:operator" end)
+command("peer", function() action_info.peer = true; action_info.desktop = false; action_info.conversationId = "agent:fern" end)
+command("mcp", function() keiki.conversation:set({ pendingQuestions = { { id = "connect", question = { message = "Connect your team docs", mcpConnect = { agentId = "nova", presetId = "docs", name = "Team docs" } } } } }) end)
 local function question(text: string)
 	keiki.conversation:set({ pendingQuestions = { { id = "q1", question = { message = text }, readOnly = true, replyInComposer = true } } })
 end

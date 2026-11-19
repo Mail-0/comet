@@ -331,8 +331,8 @@ end
 -- `/terminal` (the shipping app's `add_terminal_surface`): a new terminal
 -- each time, the panel opened on it (and its keyboard to it, as any
 -- terminal opened).
-function M.show_terminal(): boolean
-	local k = route_key() or (if shown_key then shown_key() else nil)
+function M.show_terminal(session: string?): boolean
+	local k = if session then state.key(session, nil) else route_key() or (if shown_key then shown_key() else nil)
 	if not k then
 		return false
 	end

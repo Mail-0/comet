@@ -22,6 +22,14 @@ const CALLS: &[&str] = &[
     "NewKeikiConversation",
     "LoadKeikiHistory",
     "SetKeikiTakeover",
+    "KeikiConversationAction",
+    "KeikiConversationInfo",
+    "EndKeikiGroup",
+    "CancelKeikiTask",
+    "ListKeikiTemplates",
+    "CreateKeikiAgent",
+    "KeikiPresetConnection",
+    "GetKeikiAvatar",
 ];
 
 struct View {
@@ -124,4 +132,29 @@ pub fn install(host: &ScriptHost) {
                 .map_err(|_| "Could not reach Keiki. Check your connection and try again.".into())
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CALLS;
+
+    #[test]
+    fn phase4_bridge_exposes_actions_without_tokens_or_deferred_capabilities() {
+        for method in [
+            "KeikiConversationAction",
+            "GetKeikiAvatar",
+            "CreateKeikiAgent",
+            "CancelKeikiTask",
+            "EndKeikiGroup",
+            "KeikiPresetConnection",
+        ] {
+            assert!(CALLS.contains(&method));
+        }
+        assert!(!CALLS.contains(&"AccessToken"));
+        assert!(
+            CALLS
+                .iter()
+                .all(|method| !method.contains("Desktop") && !method.contains("Browser"))
+        );
+    }
 }
