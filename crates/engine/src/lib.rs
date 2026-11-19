@@ -527,6 +527,7 @@ impl EngineCore {
 
     /// Attach the auth service (before building the RPC service / relays).
     pub fn set_auth(&self, auth: Auth) {
+        auth.attach_copilot_credentials(self.copilot_credentials.clone());
         self.plugins.attach_auth(auth.clone());
         *self
             .auth
@@ -534,21 +535,16 @@ impl EngineCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(auth);
     }
 
-    /// The attached auth service, or a lazily-created dev-mode one (in-process embeds
-    /// that never wired WorkOS still answer AuthStatus honestly).
+    /// The attached account, or a lazily-created Keiki account for in-process embeds.
     pub fn auth(&self) -> Auth {
         let mut slot = self
             .auth
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         slot.get_or_insert_with(|| {
-            let dev_user = std::env::var("ZERON_EDGE_TOKEN")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "dev-user".into());
-            let mut config = AuthConfig::new("http://localhost:27640", std::env::temp_dir());
-            config.dev_user_id = dev_user;
-            Auth::new(config)
+            let auth = Auth::new(AuthConfig::new(keiki_api::api_url(), self.doc_host.store().path().to_path_buf()));
+            auth.attach_copilot_credentials(self.copilot_credentials.clone());
+            auth
         })
         .clone()
     }
@@ -909,53 +905,12 @@ impl Engine {
         Self { config }
     }
 
-    /// Resolve the shared dev/WorkOS auth configuration for headed and headless
-    /// modes. A clean WorkOS boot deliberately avoids probing Edge: signed-out
-    /// installations must be able to start locally without network access.
     pub async fn build_auth(config: &EngineConfig) -> Auth {
-        // A Cloud runner authenticates with its enrolled key; runner.json
-        // wins over every other mode (and never touches session.json).
-        match runner::RunnerIdentity::load(&config.data_dir) {
-            Ok(Some(identity)) => {
-                let auth_config = AuthConfig::new(identity.edge_url(), config.data_dir.clone());
-                return Auth::new_runner(auth_config, Arc::new(identity));
-            }
-            Ok(None) => {}
-            Err(err) => tracing::error!(error = %err, "runner identity unusable; ignoring it"),
-        }
-        let mut auth_config = AuthConfig::new(config.edge_url.clone(), config.data_dir.clone());
-        auth_config.workos_client_id = config.workos_client_id.clone();
-        if let Ok(base) = std::env::var("ZERON_WORKOS_API_BASE")
-            && !base.trim().is_empty()
-        {
-            auth_config.workos_api_base = base;
-        }
-        auth_config.callback_port = Some(
-            std::env::var("ZERON_CALLBACK_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(27641),
-        );
-        if let Some(token) = &config.edge_token {
-            auth_config.dev_user_id = token.clone();
-        }
-        Auth::new(auth_config)
+        Auth::new(AuthConfig::new(keiki_api::api_url(), config.data_dir.clone()))
     }
 
-    /// Capture the workspace boundary once, before refresh or sign-in can mutate auth.
-    pub fn initial_workspace_scope(auth: &Auth) -> WorkspaceScope {
-        if auth.is_runner() {
-            // A Cloud runner is always synced for its enrolled {org, user}.
-            WorkspaceScope::Synced
-        } else if !auth.workos_enabled() {
-            WorkspaceScope::Development
-        } else if auth.loaded_workos_session() && !auth.keeps_chats_local() {
-            WorkspaceScope::Synced
-        } else {
-            // Signed out, or signed in with chats kept on this device: the
-            // local profile, with no edge transports.
-            WorkspaceScope::Local
-        }
+    pub fn initial_workspace_scope(_auth: &Auth) -> WorkspaceScope {
+        WorkspaceScope::Local
     }
 
     /// Resolve a profile for the captured scope. A synced session without an
@@ -1057,37 +1012,7 @@ impl Engine {
         profile: EngineProfile,
         lock: Option<InstanceLock>,
     ) -> anyhow::Result<EngineRuntime> {
-        let edge_enabled = match profile.scope() {
-            WorkspaceScope::Local => false,
-            WorkspaceScope::Synced => {
-                // Validate the persisted session in the BACKGROUND: the probe
-                // still transitions auth to SignedOut on definitive revocation
-                // (and warms the single-flight refresh every first dial waits
-                // on), but assembly — and the viewport blocked on it — no
-                // longer stalls on a WorkOS round trip that can take seconds
-                // on a bad link. Everything shown at boot is local anyway.
-                let auth_probe = auth.clone();
-                tokio::spawn(async move {
-                    let _ = auth_probe.access_token().await;
-                });
-                true
-            }
-            // Dev Auth always exposes `dev_user_id` as its synthetic access
-            // token, including when WorkOS was merely disabled with
-            // ZERON_WORKOS_CLIENT_ID="". Only an explicitly configured,
-            // non-empty bearer opts this runtime into Edge rooms and relays.
-            WorkspaceScope::Development => config
-                .edge_token
-                .as_deref()
-                .is_some_and(|token| !token.trim().is_empty()),
-        };
-        if edge_enabled {
-            // OS network-path events (macOS NWPathMonitor): the instant the
-            // path returns every parked reconnect backoff redials, and while
-            // the OS says there is no path the dial loops park instead of
-            // burning attempts. No-op on platforms without a monitor.
-            zeron_sync::net_path::spawn_path_monitor();
-        }
+        let edge_enabled = false;
         let device_id = load_or_create_device_id(profile.device_root())?;
         let edge = edge_enabled.then(|| {
             EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())).with_device(device_id)
@@ -1096,11 +1021,6 @@ impl Engine {
         let preview_org = profile.org_id().to_string();
         let device_root = profile.device_root().to_path_buf();
         let registry = Arc::new(default_registry());
-        // Assembly's boot recovery may start a killed turn before the broker
-        // below is attached: it waits for it.
-        if auth.runner_identity().is_some() {
-            registry.expect_run_environment();
-        }
         let core = match lock {
             Some(lock) => EngineCore::assemble_with_profile_locked(
                 profile,
@@ -1117,71 +1037,7 @@ impl Engine {
             )?,
         };
         core.set_auth(auth.clone());
-        // Agents' commits credit Zeron (always on Cloud, else per the
-        // device's setting).
-        core.registry
-            .set_commit_credit(Arc::new(commit_credit::CommitCredit::open(
-                &config.data_dir,
-                runner::is_cloud_platform(),
-            )));
-        // Cloud runner: the credential broker fills agent spawns' env (and
-        // backs ListGithubRepos / CloneRepo); the heartbeat feeds idle sleep.
-        // Attached before the host relay so relayed RPCs see the broker.
-        if let Some(identity) = auth.runner_identity() {
-            let tokens: Arc<dyn zeron_rpc::TokenSource> = Arc::new(auth.clone());
-            wake_trace::report_to(identity.edge_url(), tokens.clone());
-            let broker = credentials::CredentialBroker::new(
-                credentials::BrokerConfig::detect(&device_root),
-                identity.clone(),
-                tokens.clone(),
-            );
-            core.registry.set_run_environment(Arc::new(broker.clone()));
-            broker.start();
-            let sessions = core.sessions.clone();
-            let commands = core.commands.clone();
-            let activity = runner::RelayActivity::default();
-            let heartbeat = runner::spawn_heartbeat(
-                identity.edge_url(),
-                tokens,
-                // An agent's running commands (a dev server left running)
-                // keep the machine awake as background work does.
-                Arc::new(move || {
-                    let mut counts = sessions.run_counts();
-                    counts.background += commands.running();
-                    counts
-                }),
-                Arc::new(cloud_disk::machine_usage),
-                activity.clone(),
-                runner::HEARTBEAT_INTERVAL,
-                runner::HEARTBEAT_BUSY_INTERVAL,
-            );
-            // A session machine can stop without warning (a provider
-            // auto-stop, a crash) after accepting a send: the message is in
-            // its chat's room, but the nudge that said so is spent. Look at
-            // every chat it hosts once the registry has synced.
-            if runner::session().is_some()
-                && let Err(err) = core.doc_host.enqueue_wakeup("*")
-            {
-                tracing::warn!(error = %err, "runner: couldn't schedule the hosted chats' reconcile");
-            }
-            // Check the session's project out. Runs dispatched meanwhile
-            // show the setup steps live and start once it is done
-            // (`runner::setup_pending`).
-            if let Some(session) = runner::session()
-                && session.repo.is_some()
-            {
-                runner::begin_setup();
-                let broker = broker.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = runner::prepare_checkout(session, Some(&broker)).await {
-                        // Runs still start (in the parent folder), so the
-                        // agent and the user see the failure in the chat.
-                        tracing::error!(error = %err, "runner: session checkout failed");
-                    }
-                });
-            }
-            core.set_cloud(runner::CloudRunner::new(broker, activity, heartbeat));
-        }
+        core.registry.set_commit_credit(Arc::new(commit_credit::CommitCredit::open(&config.data_dir, false)));
         // The chats as last published (the list every view watches), not a
         // fresh parse of every chat row on each scan.
         let preview_chats = core.workspace.watch_chats();
@@ -1347,26 +1203,6 @@ impl Engine {
 
         std::fs::create_dir_all(&config.data_dir)?;
         update_trial::boot(&config.data_dir)?;
-        // Cloud runner: runner.json wins; else ZERON_RUNNER_ENROLL enrolls
-        // first (retrying network failures; a rejected code is fatal).
-        if let Some(identity) = runner::bootstrap(&config.data_dir, &config.edge_url).await? {
-            wake_trace::enable(&config.data_dir);
-            if identity.edge_url() != config.edge_url.trim_end_matches('/') {
-                tracing::info!(edge = %identity.edge_url(), "runner: using the edge this device enrolled with");
-                config.edge_url = identity.edge_url().to_string();
-            }
-            tracing::info!(device = %identity.device_id(), org = %identity.org_id(),
-                platform = %runner::device_platform(), "runner: Cloud device mode");
-            // A session machine: its project (from the provisioning env, or
-            // persisted from a previous boot).
-            let session = runner::CloudSession::resolve(&config.data_dir);
-            if let Some(session) = &session {
-                tracing::info!(chat = %session.chat_id, account = %session.account,
-                    "runner: Cloud session machine");
-            }
-            runner::set_session(session);
-            wake_update::arm();
-        }
         let auth = Self::build_auth(&config).await;
         let mut auth_state = auth.watch_state();
         let workspace_scope = Self::initial_workspace_scope(&auth);
@@ -1603,9 +1439,9 @@ pub async fn terminal_sign_in(auth: &Auth) -> Result<(), EngineError> {
                     ));
                 }
                 if stdin_reader.is_none() {
-                    let url = auth.start_headless_sign_in();
-                    println!("Sign in to Zeron:\n\n  {url}\n");
-                    println!("Then paste the code shown in the browser here and press enter.");
+                    let url = auth.start_headless_sign_in().await?;
+                    println!("Sign in to Keiki:\n\n  {url}\n");
+                    println!("Complete sign-in in the browser. If needed, paste its final callback URL here.");
                     let auth = auth.clone();
                     stdin_reader = Some(tokio::spawn(async move {
                         loop {
@@ -1668,20 +1504,7 @@ async fn run_org_onboarding(auth: Auth) {
     };
     match orgs.len() {
         0 => {
-            println!("No workspaces yet — name your new workspace and press enter:");
-            loop {
-                let Some(line) = read_stdin_line().await else {
-                    return;
-                };
-                let name = line.trim();
-                if name.is_empty() {
-                    continue;
-                }
-                match auth.create_org(name).await {
-                    Ok(()) => return,
-                    Err(err) => println!("Creating workspace failed: {err}"),
-                }
-            }
+            println!("No Keiki organizations yet. Create one at {} and sign in again.", auth.api_url());
         }
         1 => {
             let only = &orgs[0];

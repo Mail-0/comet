@@ -1459,6 +1459,10 @@ impl AuthorizationFlow {
 }
 
 impl TokenSet {
+    pub fn expires_in(&self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+
     pub fn access_token(&self) -> &str {
         &self.access_token
     }

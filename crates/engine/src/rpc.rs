@@ -1099,7 +1099,7 @@ impl EngineRpc {
             return CloudClient::unavailable();
         };
         let org_id = match &self.auth {
-            Some(auth) if auth.workos_enabled() => match auth.state() {
+            Some(auth) => match auth.state() {
                 crate::auth::AuthState::SignedIn {
                     org_id: Some(org_id),
                     ..
@@ -3133,10 +3133,7 @@ impl AuthRpc {
                 | methods::COMPLETE_SIGN_IN
                 | methods::SIGN_OUT
                 | methods::ACCESS_TOKEN
-                | methods::STEP_UP
-                | methods::DELETE_ACCOUNT
                 | methods::LIST_ORGS
-                | methods::CREATE_ORG
                 | methods::SELECT_ORG
         )
     }
@@ -3174,40 +3171,8 @@ impl RpcService for AuthRpc {
             // Local IPC, the app's token only (agents and the relay are
             // refused before here): a fresh interactive sign-in whose ticket
             // stays in the engine, then the deletion it allows (R16).
-            methods::STEP_UP => {
-                let url = self
-                    .auth
-                    .start_step_up()
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "url": url }))
-            }
-            methods::DELETE_ACCOUNT => {
-                #[derive(Deserialize)]
-                struct P {
-                    confirm: String,
-                }
-                let p: P = parse_params(params)?;
-                // Answered, not failed: `{ok: true}`, or `{ok: false, error:
-                // <code>, message, organization?}` with a stable code
-                // ([`crate::auth::DeleteAccountError::code`]).
-                match self.auth.delete_account(&p.confirm).await {
-                    Ok(()) => RpcReply::value(&serde_json::json!({ "ok": true })),
-                    Err(error) => {
-                        let mut reply = serde_json::json!({
-                            "ok": false,
-                            "error": error.code(),
-                            "message": error.to_string(),
-                        });
-                        if let crate::auth::DeleteAccountError::Refused { organization: Some(org), .. } = &error {
-                            reply["organization"] = serde_json::json!(org);
-                        }
-                        RpcReply::value(&reply)
-                    }
-                }
-            }
             methods::SIGN_IN_HEADLESS => {
-                let url = self.auth.start_headless_sign_in();
+                let url = self.auth.start_headless_sign_in().await.map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "url": url }))
             }
             methods::COMPLETE_SIGN_IN => {
@@ -3223,7 +3188,7 @@ impl RpcService for AuthRpc {
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::SIGN_OUT => {
-                self.auth.sign_out();
+                self.auth.sign_out().await.map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::LIST_ORGS => {
@@ -3233,18 +3198,6 @@ impl RpcService for AuthRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "orgs": orgs }))
-            }
-            methods::CREATE_ORG => {
-                #[derive(Deserialize)]
-                struct P {
-                    name: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth
-                    .create_org(&p.name)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::SELECT_ORG => {
                 #[derive(Deserialize)]
@@ -3403,14 +3356,6 @@ impl RpcService for EngineRpc {
         }
         if voice_remote::handles(method) {
             return self.voice_remote(method, params).await;
-        }
-        // Signing out retires this device's plugin signing key first, while
-        // the session can still revoke it on the edge.
-        if method == methods::SIGN_OUT
-            && self.auth().is_ok_and(|auth| !auth.is_runner())
-            && let Some(plugins) = self.plugins.clone()
-        {
-            Box::pin(plugins.retire_signing_key()).await;
         }
         if AuthRpc::handles(method) {
             return AuthRpc::new(self.auth()?.clone())

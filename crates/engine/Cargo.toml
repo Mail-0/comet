@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+keiki-api.workspace = true
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 zeron-copilot.workspace = true
 zeron-launch.workspace = true
 # Host-side answers to terminal queries (terminals/replies.rs).

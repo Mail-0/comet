@@ -623,55 +623,7 @@ impl Plugins {
     /// Follow `auth`: the account for lookups, and on every sign-in change a
     /// key registration and a rescan.
     pub fn attach_auth(&self, auth: crate::Auth) {
-        let for_account = auth.clone();
-        self.set_account(move || for_account.user_id());
-        let for_step_up = auth.clone();
-        *lock(&self.inner.step_up) = Some(Arc::new(move || for_step_up.step_up()));
-        // Signed in on an engine with no edge of its own (local mode, where
-        // the first sign-in happens): its keys are looked up and registered
-        // with the edge it signs in against.
-        if self.directory().is_none() && auth.workos_enabled() {
-            self.set_directory(Arc::new(keys::EdgeDirectory::new(auth.edge_url(), Arc::new(auth.clone()))));
-        }
-        // A fresh ticket (a sign-in, before it's announced and the app
-        // restarts the engine; a step-up): this device's key registered with
-        // it while it's here.
-        // Through the edge it signs in against, with the session's own
-        // bearer: the engine may have no edge of its own (local mode, where
-        // the first sign-in happens), and the sign-in isn't announced yet.
-        let weak = Arc::downgrade(&self.inner);
-        let fresh: Arc<dyn KeyDirectory> = Arc::new(keys::EdgeDirectory::new(auth.edge_url(), auth.session_bearer()));
-        auth.on_fresh_ticket(Arc::new(move |account: String| {
-            let (weak, fresh) = (weak.clone(), fresh.clone());
-            Box::pin(async move {
-                if let Some(inner) = weak.upgrade() {
-                    Plugins { inner }.register_key_through(fresh.as_ref(), &account).await;
-                }
-            })
-        }));
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let weak = Arc::downgrade(&self.inner);
-        let mut states = auth.watch_state();
-        let task = runtime.spawn(async move {
-            // Once for the account as it is now, then on every change.
-            let mut first = true;
-            loop {
-                if !std::mem::take(&mut first) && states.changed().await.is_err() {
-                    return;
-                }
-                let Some(inner) = weak.upgrade() else { return };
-                let plugins = Plugins { inner };
-                plugins.inner.can_look_up.notify_one();
-                lock(&plugins.inner.lookup_failed).clear();
-                plugins.settle_revokes().await;
-                plugins.register_key().await;
-                plugins.check_keys().await;
-                plugins.kick(Kick::Rescan);
-            }
-        });
-        lock(&self.inner.tasks).push(task);
+        self.set_account(move || auth.user_id());
     }
 
     fn account(&self) -> Option<String> {
