@@ -11,6 +11,220 @@ fn preset(dir: &std::path::Path, chat: &str) {
 }
 
 #[tokio::test]
+async fn phase4_remote_contact_actions_and_task_membership_use_bound_locators() {
+    let contact = "/api/webapp/conversations/contact-c?agentId=agent-a&limit=50&offset=0";
+    let latest = "/api/webapp/conversations/contact-c?agentId=agent-a&limit=1&offset=0";
+    let mut detail = detail(json!([]));
+    detail["phone"] = json!("contact-c");
+    detail["blocked"] = json!(true);
+    detail["takeover"] =
+        json!({"startedAt":"2026-01-01T00:00:00Z","expiresAt":"2099-01-01T00:00:00Z"});
+    detail["tasks"] =
+        json!([{"id":"task-a","status":"running","subagent":"Fern","request":"Review"}]);
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        replies.extend([
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            Reply::ok("GET", contact, detail.clone()),
+            Reply::ok("GET", latest, detail.clone()),
+            Reply::ok(
+                "DELETE",
+                "/api/webapp/conversations/contact-c/block?agentId=agent-a",
+                json!({"blocked":false}),
+            ),
+            Reply::ok(
+                "POST",
+                "/api/webapp/conversations/contact-c/block?agentId=agent-a",
+                json!({"blocked":true}),
+            ),
+            Reply::ok(
+                "POST",
+                "/api/webapp/conversations/contact-c/takeover?agentId=agent-a",
+                json!({"takeover":detail["takeover"]}),
+            ),
+            Reply::ok(
+                "DELETE",
+                "/api/webapp/conversations/contact-c/takeover?agentId=agent-a",
+                json!({"takeover":null}),
+            ),
+            Reply::ok("GET", latest, detail.clone()),
+            Reply::ok("GET", latest, detail),
+            Reply::ok(
+                "POST",
+                "/api/webapp/subagent-tasks/task%2Da/cancel",
+                json!({"cancelled":true}),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let rpc = runtime.core().rpc_service();
+    let chat = value(
+        &rpc,
+        "OpenKeikiConversation",
+        json!({"agentId":"agent-a","conversationId":"contact-c"}),
+    )
+    .await["chatId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let info = value(
+        &rpc,
+        "KeikiConversationInfo",
+        json!({"chatId":chat,"includeRemote":true}),
+    )
+    .await;
+    assert_eq!(info["blocked"], true);
+    assert!(info["takeover"].is_object());
+    assert_eq!(
+        value(
+            &rpc,
+            "KeikiConversationAction",
+            json!({"chatId":chat,"action":"unblock"})
+        )
+        .await["blocked"],
+        false
+    );
+    assert_eq!(
+        value(
+            &rpc,
+            "KeikiConversationAction",
+            json!({"chatId":chat,"action":"block"})
+        )
+        .await["blocked"],
+        true
+    );
+    value(
+        &rpc,
+        "SetKeikiTakeover",
+        json!({"chatId":chat,"enabled":true}),
+    )
+    .await;
+    value(
+        &rpc,
+        "SetKeikiTakeover",
+        json!({"chatId":chat,"enabled":false}),
+    )
+    .await;
+    assert!(
+        rpc.handle(
+            "KeikiConversationAction",
+            json!({"chatId":chat,"action":"end"})
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        rpc.handle(
+            "CancelKeikiTask",
+            json!({"chatId":chat,"taskId":"foreign-task"})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        value(
+            &rpc,
+            "CancelKeikiTask",
+            json!({"chatId":chat,"taskId":"task-a"})
+        )
+        .await["cancelled"],
+        true
+    );
+    runtime.shutdown().await;
+    let requests = server.done.await.unwrap();
+    for (headers, _) in requests.iter().skip(2) {
+        assert_eq!(headers["authorization"], "Bearer engine-token");
+    }
+}
+
+#[tokio::test]
+async fn phase4_terminal_admission_bounds_inflight_opens_and_releases_on_scope_change() {
+    let received: Vec<_> = (0..32)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
+    let release: Vec<_> = (0..32)
+        .map(|_| Arc::new(tokio::sync::Notify::new()))
+        .collect();
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        replies.extend([
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            Reply::ok("GET", DETAIL, detail(json!([]))),
+        ]);
+        for i in 0..32 {
+            let mut reply = Reply::ok(
+                "POST",
+                "/api/webapp/conversations/api:agent-a:c/terminal?agentId=agent-a",
+                json!({"terminalId":"remote-shell"}),
+            );
+            reply.received = Some(received[i].clone());
+            reply.release = Some(release[i].clone());
+            replies.push(reply);
+        }
+        for _ in 0..32 {
+            replies.push(Reply::ok(
+                "DELETE",
+                "/api/webapp/conversations/api:agent-a:c/terminal/remote-shell?agentId=agent-a",
+                json!({}),
+            ));
+        }
+        replies
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let core = runtime.core();
+    let rpc = core.rpc_service();
+    let chat = open(&rpc).await;
+    let mut opens = Vec::new();
+    for _ in 0..32 {
+        let rpc = core.rpc_service();
+        let chat = chat.clone();
+        opens.push(tokio::spawn(async move {
+            value(&rpc, "OpenTerminal", json!({"chatId":chat})).await
+        }));
+    }
+    for signal in received {
+        tokio::time::timeout(Duration::from_secs(5), signal.notified())
+            .await
+            .unwrap();
+    }
+    assert!(
+        rpc.handle("OpenTerminal", json!({"chatId":chat}))
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Close a sandbox terminal")
+    );
+    for signal in release {
+        signal.notify_one();
+    }
+    let mut ids = std::collections::HashSet::new();
+    for open in opens {
+        let answer = open.await.unwrap();
+        assert!(ids.insert(answer["id"].as_str().unwrap().to_owned()));
+    }
+    let transition = ScopeTransition::new(core.auth().inner.scope_changes.clone());
+    tokio::time::timeout(Duration::from_secs(5), server.done)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(transition);
+    for id in ids {
+        assert!(
+            rpc.handle("TerminalStatus", json!({"terminalId":id}))
+                .await
+                .is_err()
+        );
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn phase4_mcp_opens_only_in_engine_and_redacts_capabilities_and_errors() {
     let server = Server::start(|url| {
         let mut replies = restored(url);
@@ -256,6 +470,77 @@ async fn phase4_terminal_scope_transition_ends_stream_and_closes_remote_shell() 
             .is_err()
     );
     drop(transition);
+    server.done.await.unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn phase4_rejected_refresh_clears_terminal_stream_and_remote_session() {
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        let mut stream = Reply::ok(
+            "GET",
+            "/api/webapp/conversations/api:agent-a:c/terminal/remote-shell/stream?agentId=agent-a",
+            Value::Null,
+        );
+        stream.stream =
+            Some("event: data\ndata: {\"type\":\"data\",\"seq\":1,\"data\":\"SGk=\"}\n\n".into());
+        stream.hold_open = true;
+        replies.extend([
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            Reply::ok("GET", DETAIL, detail(json!([]))),
+            Reply::ok(
+                "POST",
+                "/api/webapp/conversations/api:agent-a:c/terminal?agentId=agent-a",
+                json!({"terminalId":"remote-shell"}),
+            ),
+            stream,
+            Reply::error("POST", "/oauth/token", 400),
+            Reply::ok(
+                "DELETE",
+                "/api/webapp/conversations/api:agent-a:c/terminal/remote-shell?agentId=agent-a",
+                json!({}),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let core = runtime.core();
+    let rpc = core.rpc_service();
+    let chat = open(&rpc).await;
+    let id = value(&rpc, "OpenTerminal", json!({"chatId":chat})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let RpcReply::Stream(mut stream) = rpc
+        .handle("SubscribeTerminal", json!({"terminalId":id}))
+        .await
+        .unwrap()
+    else {
+        panic!("stream")
+    };
+    assert_eq!(stream.next().await.unwrap()["seq"], 1);
+    lock(&core.auth().inner.session)
+        .access
+        .as_mut()
+        .unwrap()
+        .received = SystemTime::UNIX_EPOCH;
+    let error = rpc
+        .handle("WriteTerminal", json!({"terminalId":id,"data":"aGk="}))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(!error.contains("engine-token"));
+    assert!(matches!(core.auth().state(), AuthState::SignedOut));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
     server.done.await.unwrap();
     runtime.shutdown().await;
 }

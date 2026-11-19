@@ -83,7 +83,15 @@ impl Inner {
         if matches!(method, "KeikiConversationAction" | "KeikiConversationInfo") {
             let binding = self.binding(scope, text(params, "chatId")?)?;
             if method == "KeikiConversationInfo" {
-                return self.conversation_info(scope, &binding);
+                let mut info = self.conversation_info(scope, &binding)?;
+                if params["includeRemote"] == true && !binding.draft {
+                    let detail = self
+                        .page(scope, &binding.agent_id, &binding.conversation_id, 1, None)
+                        .await?;
+                    info["blocked"] = detail["blocked"].clone();
+                    info["takeover"] = detail["takeover"].clone();
+                }
+                return Ok(info);
             }
             let action = text(params, "action")?;
             match action {
