@@ -1651,6 +1651,9 @@ fn response_error_body(status: StatusCode, body: &str) -> Error {
 }
 
 #[cfg(test)]
+mod oauth_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
