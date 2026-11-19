@@ -110,7 +110,7 @@ BROAD: dict[str, list[str]] = {
     "cursor": CARGO + ["crates/harness/**", "crates/doc/**", "crates/engine/**",
                        "scripts/*cursor-sdk*", ".github/workflows/cursor-*.yml"],
     "edge": ["edge/**", ".github/workflows/preview-tests.yml"],
-    "installer": ["edge/src/install.sh", "scripts/package-linux.sh", "scripts/test-linux-desktop-entry.sh",
+    "installer": ["scripts/package-linux.sh", "scripts/test-linux-desktop-entry.sh",
                   "scripts/ci/apt-install.sh", "dist/zeron.desktop", "dist/zeron.png",
                   ".github/workflows/linux-installer.yml"],
     "voice": CARGO + VOICE_PATHS,

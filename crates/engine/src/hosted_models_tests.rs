@@ -311,10 +311,10 @@ fn unknown_fields_and_harnesses_are_allowed_for_newer_lists() {
     assert_eq!(list.harnesses.len(), 2);
 }
 
-/// The checked-in staging list must pass this engine's own checks.
+/// A published list must pass this engine's own checks.
 #[test]
-fn the_staging_list_on_the_edge_is_valid() {
-    let list = validate(include_bytes!("../../../edge/src/models/staging-v1.json")).unwrap();
+fn the_published_list_fixture_is_valid() {
+    let list = validate(include_bytes!("../tests/fixtures/hosted-models-v1.json")).unwrap();
     let claude = &list.harnesses["claude-code"];
     assert!(!claude.models.is_empty());
     // And applied to the real built-in catalog it keeps every built-in row

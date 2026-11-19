@@ -402,18 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn curl_installer_always_starts_the_local_capable_service() {
-        // Git for Windows can check out this source fixture with CRLF. These
-        // assertions cover the installer directives, not checkout line endings.
-        let installer = include_str!("../../../edge/src/install.sh").replace("\r\n", "\n");
-        assert!(!installer.contains("session.json"));
-        assert!(installer.contains("StartLimitIntervalSec=60\n"));
-        assert!(installer.contains("StartLimitBurst=5\n"));
-        assert!(installer.contains("systemctl --user enable zeron"));
-        assert!(installer.contains("systemctl --user restart zeron"));
-    }
-
-    #[test]
     fn installed_exe_uses_the_current_symlink() {
         // Installer-managed binary (current_exe resolves the `current` symlink to
         // the versioned dir): the unit must point back at the symlink.

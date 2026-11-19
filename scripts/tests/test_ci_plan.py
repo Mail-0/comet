@@ -29,7 +29,7 @@ class PlanTests(unittest.TestCase):
 
     def test_crate_change_on_main_runs_every_platform_it_touches(self):
         suites = plan.plan(files("crates/mcp/src/server.rs", patch="+let width = 3;"), "full")
-        self.assertEqual(selected(suites), {"core", "windows", "macos", "android"})
+        self.assertEqual(selected(suites), {"core", "windows", "macos"})
 
     def test_platform_code_selects_its_platform(self):
         windows = plan.plan(files("crates/mcp/src/server.rs", patch='+#[cfg(windows)]\n+fn f() {}'), "fast")
@@ -70,19 +70,15 @@ class PlanTests(unittest.TestCase):
 
     def test_lockfile_runs_every_rust_suite(self):
         suites = plan.plan(files("Cargo.lock"), "fast")
-        self.assertEqual(selected(suites), {"core", "cursor", "windows", "macos", "ios", "android", "zgx"})
+        self.assertEqual(selected(suites), {"core", "windows", "macos", "zgx"})
 
-    def test_mobile_core_selects_ios_and_android(self):
-        suites = plan.plan(files("crates/sync/src/lib.rs", patch="+let x = 1;"), "fast")
-        self.assertTrue(suites["ios"])
-        self.assertFalse(suites["android"])  # the same Rust as the Linux suites test
-        self.assertFalse(suites["windows"])
-        self.assertTrue(plan.plan(files("crates/mobile/src/lib.rs", patch="+let x = 1;"), "fast")["android"])
-        self.assertTrue(plan.plan(files("crates/sync/src/lib.rs", patch="+x"), "full")["android"])
+    def test_removed_apps_do_not_select_suites(self):
+        for path in ["apps/ios/App.swift", "apps/android/Main.kt", "edge/src/index.ts"]:
+            self.assertEqual(selected(plan.plan(files(path), "fast")), set())
 
     def test_renamed_from_counts(self):
-        f = [{"filename": "docs/x.md", "previous_filename": "apps/ios/Zeron/X.swift", "patch": ""}]
-        self.assertTrue(plan.plan(f, "fast")["ios"])
+        f = [{"filename": "docs/x.md", "previous_filename": "apps/zgx/ui/app.luau", "patch": ""}]
+        self.assertTrue(plan.plan(f, "fast")["zgx"])
 
     def test_ci_changes_run_everything(self):
         daytime = set(plan.SUITE_JOBS) - set(plan.NIGHTLY_SUITES)
@@ -105,11 +101,8 @@ class PlanTests(unittest.TestCase):
         # Without the workspace's closure: the static list.
         self.assertIn("zgx", selected(plan.plan(files("crates/visual/src/lib.rs"), "fast")))
 
-    def test_edge_and_installer(self):
-        self.assertEqual(selected(plan.plan(files("edge/src/coordinator.ts"), "fast")), {"edge"})
-        self.assertEqual(selected(plan.plan(files("edge/src/install.sh"), "fast")), {"edge", "installer"})
-        # The macOS suite no longer runs the edge's preview server (that was the old app's fixture).
-        self.assertFalse(plan.plan(files("edge/package-lock.json"), "full")["macos"])
+    def test_installer(self):
+        self.assertEqual(selected(plan.plan(files("scripts/package-linux.sh"), "fast")), {"installer"})
 
     def test_version_bumps_select_nothing(self):
         bump = [{"filename": "Cargo.toml", "patch": '@@ -37 +37 @@\n-version = "0.2.126"\n+version = "0.2.127"'},
@@ -130,7 +123,7 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn("windows", off)
         self.assertNotIn("ios", off)
         sync = files("crates/sync/src/lib.rs", patch="+x")
-        self.assertEqual(plan.gated(sync, "fast", plan.plan(sync, "fast"))[0], {"ios": ["ios-tests"]})
+        self.assertEqual(plan.gated(sync, "fast", plan.plan(sync, "fast"))[0], {})
         full_off, full_flags = plan.gated(change, "full", plan.plan(change, "full"))
         self.assertEqual(full_off, {})
         self.assertEqual(full_flags, {})
@@ -154,15 +147,14 @@ class PlanTests(unittest.TestCase):
     def test_reservation(self):
         suites = plan.plan(files("Cargo.lock"), "full", nightly=True)
         counts = plan.reservation(plan.jobs_to_run(suites), "pull_request", "refs/pull/1/merge")
-        # result + core + cursor + voice + ios-core + apk + zgx-linux; voice runtime + windows x2;
-        # native + ios-tests + zgx-macos
-        self.assertEqual(counts, {"linux": 7, "windows": 3, "macos": 3})
+        # result + core + voice + zgx-linux; voice runtime + windows x2; native + zgx-macos
+        self.assertEqual(counts, {"linux": 4, "windows": 3, "macos": 2})
         main = plan.reservation(plan.jobs_to_run(suites), "push", "refs/heads/main")
-        self.assertEqual(main["linux"], 8)  # + android publish
-        self.assertEqual(plan.format_reservation(counts), "linux=7 windows=3 macos=3")
+        self.assertEqual(main["linux"], 4)
+        self.assertEqual(plan.format_reservation(counts), "linux=4 windows=3 macos=2")
         daytime = plan.reservation(plan.jobs_to_run(plan.plan(files("Cargo.lock"), "full")), "push",
                                    "refs/heads/main")
-        self.assertEqual(daytime, {"linux": 7, "windows": 2, "macos": 3})  # no voice
+        self.assertEqual(daytime, {"linux": 3, "windows": 2, "macos": 2})  # no voice
         self.assertEqual(plan.reservation(plan.jobs_to_run({s: False for s in plan.SUITE_JOBS}), "push",
                                           "refs/heads/main"),
                          {"linux": 1, "windows": 0, "macos": 0})
@@ -174,14 +166,10 @@ class WorkflowConsistencyTests(unittest.TestCase):
     # suite -> (workflow, jobs of that workflow the suite turns on)
     SUITES = {
         "core": ("ui-tests.yml", ["core-tests"]),
-        "cursor": ("cursor-compatibility.yml", ["cursor-compatibility"]),
-        "edge": ("preview-tests.yml", ["edge"]),
         "installer": ("linux-installer.yml", ["desktop-entry"]),
         "voice": ("voice-tests.yml", ["offline-linux", "windows-runtime"]),
         "windows": ("windows.yml", ["tests", "app"]),
         "macos": ("macos.yml", ["macos-native"]),
-        "ios": ("macos.yml", ["ios-core", "ios-tests"]),
-        "android": ("android.yml", ["apk"]),
         "zgx": ("zgx-tests.yml", ["zgx-macos", "zgx-linux"]),
     }
 
