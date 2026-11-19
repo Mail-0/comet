@@ -11,7 +11,7 @@ name: zgx build
 # release tag (`v*`, `beta-v*`), which the `apple-release` environment admits.
 # Any other run is ad-hoc signed.
 #
-# Artifacts: zgx-<platform>-<arch>, each of the files the feed carries.
+# Artifacts: keiki-<platform>-<arch>, published on GitHub Releases.
 
 on:
   workflow_call:
@@ -23,17 +23,17 @@ on:
       platforms:
         description: Which to build.
         type: string
-        default: macos linux windows
+        default: macos linux
       windows-feed:
-        description: zeron-update.json's releases_url for Windows installs.
+        description: Optional Windows install's release feed.
         type: string
-        required: true
+        default: https://api.github.com/repos/Mail-0/comet/releases/latest
 
 permissions:
   contents: read
 
 jobs:
-  # Apple silicon only, as the old app's build.
+  # Apple silicon only, as the Keiki app's build.
   macos:
     if: contains(inputs.platforms, 'macos')
     runs-on: macos-latest
@@ -133,7 +133,7 @@ jobs:
           du -sh "$app"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zgx-macos-${{ runner.arch }}
+          name: keiki-macos-${{ runner.arch }}
           path: |
             target/package-zgx/*.dmg
             target/package-zgx/*.tar.gz
@@ -153,7 +153,7 @@ jobs:
       ZGX_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: system deps (the old app's)
+      - name: system deps (the Keiki app's)
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -190,7 +190,7 @@ jobs:
           test -f "$dir/ui/app.luau"
           test -d "$dir/plugins-builtin"
           test ! -e "$dir/ui/tests"
-          # A headless server or Cloud machine runs this `zeron` too (`zeron
+          # A headless server runs this `zeron` too (`zeron
           # headless`): it may need no library the old app didn't.
           readelf -d "$dir/zeron" | grep NEEDED
           if readelf -d "$dir/zeron" | grep NEEDED | grep -qvE 'lib(c|m|gcc_s|stdc\+\+|asound|z|xcb|xkbcommon|xkbcommon-x11)\.so|ld-linux'; then
@@ -208,7 +208,7 @@ jobs:
           du -sh "$dir"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zgx-linux-${{ runner.arch }}
+          name: keiki-linux-${{ runner.arch }}
           path: target/package/*.tar.gz
           if-no-files-found: error
 
@@ -273,7 +273,7 @@ jobs:
           if (Test-Path -LiteralPath "$files/ui/tests") { throw 'the tests are in the package' }
           $feed = (Get-Content -Raw "$dir/zeron-update.json" | ConvertFrom-Json).releases_url
           if ($feed -ne $env:FEED) { throw "the feed is $feed" }
-          # A stable release's standalone .exe (all the old app's updater
+          # A stable release's standalone .exe (all the Keiki app's updater
           # installs) is the zip's own zeron.exe, and answers its version
           # without its folder.
           $standalone = "target/package/keiki-$env:ZGX_VERSION-windows-x86_64.exe"
@@ -288,7 +288,7 @@ jobs:
           Get-ChildItem target/package -File | Select-Object Name, Length
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zgx-windows-${{ runner.arch }}
+          name: keiki-windows-${{ runner.arch }}
           path: |
             target/package/*.zip
             target/package/*.exe

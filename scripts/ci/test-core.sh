@@ -26,6 +26,6 @@ done
 exec cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast \
   -p zeron-harness -p zeron-engine -p zeron-sync -p zeron-update -p zeron-doc -p zeron-preview \
   -p zeron-mcp -p zeron-proto -p zeron-rpc -p zeron-orb -p zeron-voice-session -p zeron-voice-media \
-  -p zeron-cli -p zeron-launch -p zeron-notify \
+  -p zeron-cli -p zeron-launch -p zeron-notify -p keiki-api -p keiki-model -p zeron-copilot \
   --lib --bins "${tests[@]}" \
   -E 'not ((package(zeron-proto) & not test(voice)) | (package(zeron-rpc) & kind(lib)))' "$@"

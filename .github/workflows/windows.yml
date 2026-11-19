@@ -48,8 +48,7 @@ jobs:
           --test background_engine --test noop_browser
           --test worktree_on_run
       # Same selection as the old commands:
-      #   native harness security/integration + portable driver suites (OpenCode HTTP/SSE,
-      #     the Cursor shim, Pi RPC; the shell- and python-fixture suites are unix-only)
+      #   Keiki Copilot and Mock harness suites (Unix HTTP fixtures run on Linux)
       #   the `zeron` binary and updater, worktree paths, engine unit/catalog/login/auth
       #   voice-media (runtime resolution; used to be its own build in voice-tests.yml)
       - name: Harness, command line, updater and engine tests
@@ -70,61 +69,3 @@ jobs:
           key: ${{ inputs.pass-key }}-tests
 
   # Restores the cache `tests` saves: the same dependencies, built with the same profile.
-  app:
-    if: ${{ !contains(fromJSON(inputs.skip || '[]'), 'app') }}
-    runs-on: windows-2022
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: ./.github/actions/windows-ci-setup
-      - name: Build the zeron binary
-        # (Luau without its asserts, as scripts/package-windows.ps1 builds it
-        # next: the same flags, so it doesn't build it again.)
-        env:
-          LUAU_CXXFLAGS: -DNDEBUG
-        run: cargo build --release --locked -p zeron
-      - name: Verify portable and installer packaging
-        run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
-      - name: Installer install/uninstall
-        run: ./scripts/test-windows-installer.ps1
-      - name: CLI startup without HOME
-        run: |
-          # Exercise real path resolution without touching the runner's account.
-          # Port zero cannot connect to another running engine.
-          $env:HOME = $null
-          $env:ZERON_DATA_DIR = $null
-          $env:ZERON_EDGE_TOKEN = $null
-          $env:ZERON_IPC_PORT = '0'
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "zeron smoke O'Brien 日本語"
-          $expected = Join-Path $env:LOCALAPPDATA 'Zeron'
-          $probe = [Diagnostics.ProcessStartInfo]::new()
-          $probe.FileName = (Resolve-Path -LiteralPath './target/release/zeron.exe').Path
-          $probe.Arguments = 'status'
-          $probe.UseShellExecute = $false
-          $probe.CreateNoWindow = $true
-          $probe.RedirectStandardOutput = $true
-          $probe.RedirectStandardError = $true
-          $process = [Diagnostics.Process]::Start($probe)
-          try {
-            $stdout = $process.StandardOutput.ReadToEndAsync()
-            $stderr = $process.StandardError.ReadToEndAsync()
-            if (-not $process.WaitForExit(10000)) {
-              $process.Kill()
-              throw 'Isolated status probe timed out'
-            }
-            if ($process.ExitCode -ne 0) { throw "Status failed: $($stderr.Result)" }
-            $output = $stdout.Result -split '\r?\n'
-          } finally { $process.Dispose() }
-          $output
-          if (-not ($output -contains "Data dir: $expected")) {
-            throw 'Windows startup did not select LOCALAPPDATA/Zeron'
-          }
-          if (-not ($output -match '^Mode:\s+local only$')) {
-            throw 'An isolated Windows startup must select local-only mode'
-          }
-      - name: Record the pass (CI skips this job while its inputs stay the same)
-        if: inputs.pass-key != ''
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: rust-toolchain.toml
-          key: ${{ inputs.pass-key }}-app

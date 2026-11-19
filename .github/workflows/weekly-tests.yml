@@ -2,7 +2,7 @@ name: Weekly coverage
 
 # Tests no other workflow runs, so they don't rot unnoticed:
 #   - zeron-engine's integration test binaries outside scripts/ci/test-core.sh
-#     (e2e, cloud_runner, run_recovery, m5_repos_diffs_terminals, ...); live ones
+#     (e2e, run_recovery, m5_repos_diffs_terminals, ...); live ones
 #     stay #[ignore]d;
 #   - the crates whose own tests have no runner: term, syntax, theme, veil,
 #     visual, visual-gpu, zatex, notify.
