@@ -492,7 +492,6 @@ dependencies = [
  "getrandom 0.4.3",
  "serde",
  "serde_repr",
- "tokio",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
@@ -5469,7 +5468,6 @@ dependencies = [
  "serde_bytes",
  "sha2",
  "subtle",
- "tokio",
  "zbus 5.19.0",
  "zbus_macros 5.19.0",
  "zeroize",
@@ -7929,7 +7927,6 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
- "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -10169,7 +10166,6 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_repr",
- "tokio",
  "tracing",
  "uds_windows",
  "uuid",

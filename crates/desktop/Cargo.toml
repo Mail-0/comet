@@ -32,7 +32,7 @@ zgx-script.workspace = true
 core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-oo7 = { version = "0.6", default-features = false, features = ["tokio", "native_crypto"] }
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 
 [dev-dependencies]
 tempfile.workspace = true
