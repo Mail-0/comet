@@ -541,12 +541,12 @@ fn pre_epoch_snapshots_resync_in_full_once() {
 }
 
 #[test]
-fn future_harness_chat_rows_stay_visible_without_their_config() {
+fn future_harness_chat_rows_stay_visible_with_an_unavailable_harness() {
     // Field incident: a pre-v0.2.10 client received rows whose
     // config.harness said "opencode" — a variant it didn't have — and
     // dropped the WHOLE row ("skipping malformed registry row"), so new
     // sessions silently never appeared in that device's sidebar. Unknown
-    // config values must cost the config, not the row.
+    // harnesses remain readable without resolving to a supported harness.
     let mut ws = RegistryDoc::new("dev-a");
     ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
     let fields: std::collections::BTreeMap<String, serde_json::Value> = [
@@ -580,9 +580,9 @@ fn future_harness_chat_rows_stay_visible_without_their_config() {
     let chats = ws.read_chats().unwrap();
     assert_eq!(chats.len(), 2, "the future-harness row must not vanish");
     let newcomer = chats.iter().find(|c| c.id == "chat-2").expect("visible");
-    assert_eq!(
-        newcomer.config, None,
-        "unknown config degrades, row survives"
+    assert!(
+        matches!(newcomer.config.as_ref().map(|c| c.harness), Some(HarnessId::Unknown(_))),
+        "unknown config cannot resolve to a supported harness, row survives"
     );
     // The well-formed sibling keeps its config untouched.
     assert!(chats.iter().any(|c| c.id == "chat-1" && c.config.is_some()));
