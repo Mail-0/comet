@@ -19,7 +19,9 @@ const W: u32 = 960;
 const H: u32 = 700;
 
 fn ui() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui")
+    std::env::var_os("ZERON_ZGX_TEST_UI")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"))
 }
 
 /// Two copies of the same app driven alike: one drawn as a window draws it
@@ -54,6 +56,11 @@ fn drawn_against_whole_then(command: &str, then: Option<&str>, back: bool) -> Ve
         .collect();
     let mut drawn = GpuRenderer::new(W, H).unwrap();
     let mut whole = GpuRenderer::new_with_context(W, H, &drawn.context()).unwrap();
+    let decoded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    zgx::image::set_decoded_wake({
+        let decoded = decoded.clone();
+        move || decoded.store(true, std::sync::atomic::Ordering::SeqCst)
+    });
     let mut misses = Vec::new();
     let mut refresh = |apps: &mut Vec<TestApp>, what: String| {
         at += std::time::Duration::from_secs_f64(1. / 60.);
@@ -63,16 +70,19 @@ fn drawn_against_whole_then(command: &str, then: Option<&str>, back: bool) -> Ve
             app.frame();
         }
         let report = apps[0].ui.scene.borrow_mut().flush();
-        drawn
-            .render(&apps[0].ui.scene.borrow(), &report.damage)
-            .unwrap();
         apps[1].ui.scene.borrow_mut().flush();
-        whole
-            .render(
-                &apps[1].ui.scene.borrow(),
-                &[Rect::new(0., 0., W as f32, H as f32)],
-            )
-            .unwrap();
+        loop {
+            drawn.render(&apps[0].ui.scene.borrow(), &report.damage).unwrap();
+            whole
+                .render(
+                    &apps[1].ui.scene.borrow(),
+                    &[Rect::new(0., 0., W as f32, H as f32)],
+                )
+                .unwrap();
+            if !decoded.swap(false, std::sync::atomic::Ordering::SeqCst) { break; }
+            drawn.images_decoded();
+            whole.images_decoded();
+        }
         let (a, b) = (drawn.readback().unwrap(), whole.readback().unwrap());
         let differ: Vec<usize> = a
             .chunks(4)
@@ -82,6 +92,16 @@ fn drawn_against_whole_then(command: &str, then: Option<&str>, back: bool) -> Ve
             .map(|(i, _)| i)
             .collect();
         if !differ.is_empty() {
+            if misses.is_empty() {
+                if let Some(directory) = std::env::var_os("ZERON_ZGX_PAINT_SHOTS") {
+                    let directory = PathBuf::from(directory);
+                    std::fs::create_dir_all(&directory).unwrap();
+                    for (name, pixels) in [("damaged", a), ("whole", b)] {
+                        image::RgbaImage::from_raw(W, H, pixels).unwrap()
+                            .save(directory.join(format!("{command}-{name}.png"))).unwrap();
+                    }
+                }
+            }
             let ys: Vec<usize> = differ.iter().map(|i| i / W as usize).collect();
             misses.push(format!(
                 "{what}: {} pixels differ from a whole repaint, rows {}..={}",
