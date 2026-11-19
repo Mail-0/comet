@@ -19,12 +19,16 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 
 def avatar_gif(agent):
-    palette = bytes(channel for i in range(32) for channel in
+    palette = bytes(channel for i in range(31) for channel in
                     ((70 + i * 3, 105 + i * 4, 65 + i * 2) if agent == "nova" else
-                     (90 + i * 3, 65 + i * 2, 135 + i * 3)))
+                     (90 + i * 3, 65 + i * 2, 135 + i * 3))) + bytes((232, 255, 240))
+    def pixel(x, y):
+        monogram = 12 <= y < 52 and (14 <= x < 22 or
+                                   22 <= x < 46 and abs(abs(y - 32) - (x - 22)) <= 4)
+        return 31 if monogram else (x // 4 + y // 4) % 31
     bits, count, packed = 0, 0, bytearray()
     for code in [value for y in range(64) for x in range(64)
-                 for value in (32, (x // 4 + y // 4) % 32)] + [33]:
+                 for value in (32, pixel(x, y))] + [33]:
         bits |= code << count
         count += 6
         while count >= 8:
