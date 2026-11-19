@@ -4,8 +4,7 @@ local ds = require("@ds")
 local auth = require("@account/auth") :: any
 local api = require("@account/api") :: any
 local keiki = require("@account/keiki") :: any
-local route = require("@app/screens/shell/route")
-local store = require("@app/screens/chat/store") :: any
+local store = require("@app/screens/chat/store")
 local account = require("@app/screens/shell/keiki_account")
 local Gate = require("@app/screens/shell/keiki_gate")
 local Sidebar = require("@app/screens/shell/keiki_sidebar")
@@ -32,7 +31,7 @@ local function promise(answer: any, failed: boolean?): any
 		return table.freeze(copy)
 	end
 	answer = freeze(answer)
-	return { await = function() if failed then error("offline") end; return answer end, after = function(_, ok, bad)
+	return { await = function() if failed then error("offline") end; return answer end, after = function(_: any, ok: (any) -> (), bad: ((any) -> ())?)
 		ui.after(40, function() if failed then if bad then bad({ message = "offline" }) end else ok(answer) end end)
 	end }
 end
@@ -73,7 +72,7 @@ keiki.call = function(method, params)
 	elseif method == "OpenKeikiConversation" or method == "NewKeikiConversation" then return promise({ chatId = "keiki-bound-demo" })
 	elseif method == "LoadKeikiHistory" then
 		if params.before then
-			local rows = { { id = "remote-old", role = "user", text = "Earlier imported history" } }
+			local rows: { store.Message } = { { id = "remote-old", role = "user", text = "Earlier imported history" } }
 			for _, message in store.messages:peek() do table.insert(rows, message) end
 			store.messages:set(rows)
 			return promise({})
@@ -83,10 +82,10 @@ keiki.call = function(method, params)
 	return promise({})
 end
 local base_open = store.open
-store.open = function(id)
-	if not keiki.bound(id) then base_open(id); return end
+store.open = function(id: string?)
+	if not id or not keiki.bound(id) then base_open(id); return end
 	base_open("s2")
-	local session = table.clone(store.session:peek())
+	local session = table.clone(assert(store.session:peek()))
 	base_open(id)
 	session.id, session.title, session.state, session.harness = id, "Release plan", "ready", "copilot"
 	store.session:set(session)
@@ -94,7 +93,8 @@ store.open = function(id)
 end
 local base_send = store.send
 store.send = function(req)
-	note(`{if store.session:peek().running then "Steer" else "Send"}:{req.session}:{req.text}`)
+	local session = store.session:peek()
+	note(`{if session and session.running then "Steer" else "Send"}:{req.session}:{req.text}`)
 	return base_send(req)
 end
 local function command(id: string, run: () -> ()) ui.command { id = `keiki.{id}`, title = id, run = run } end
@@ -123,7 +123,7 @@ command("question", function() question("Which direction should we take?") end)
 command("question_updated", function() question("Start with a useful example?") end)
 command("resolved", function() keiki.conversation:set({ pendingQuestions = {} }) end)
 command("stream", function()
-	local session = table.clone(store.session:peek()); session.running = true; store.session:set(session)
+	local session = table.clone(assert(store.session:peek())); session.running = true; store.session:set(session)
 	store.messages:push { id = "live", role = "assistant", text = "", streaming = true, started = ui.now() / 1000 }
 	store.draft:set { id = "live", text = "A streamed Keiki reply" }
 end)

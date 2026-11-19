@@ -28,7 +28,6 @@ local view = require("@app/screens/shell/view")
 local fit = require("@app/screens/shell/fit")
 local motion = require("@ds/motion")
 local boundary = require("@app/screens/shell/boundary")
-local control = require("@ds/control")
 local locale = require("@ds/locale")
 local ds_session_row = require("@ds/session_row")
 local activity = require("@app/screens/shell/activity")
@@ -513,7 +512,8 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 		if act and c.woke and (status == nil or status == "done") then
 			status = "woke"
 		end
-		if only and not only.statuses[status or "idle"] then
+		local status_key: string = status or "idle"
+		if only and not only.statuses[status_key] then
 			continue
 		end
 		local on_shelf = activity.shelf(c, status)

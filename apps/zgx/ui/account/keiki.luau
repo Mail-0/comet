@@ -129,7 +129,7 @@ end
 
 ui.effect(function()
 	local a = auth.account:get()
-	local next_scope = if M.available:get() and a.state == "signed_in" and a.organization_id then `{a.user.id}/{a.organization_id}` else ""
+	local next_scope = if M.available:get() and a.state == "signed_in" and a.user and a.organization_id then `{a.user.id}/{a.organization_id}` else ""
 	if next_scope == scope then return end
 	generation += 1
 	M.revision:set(generation)

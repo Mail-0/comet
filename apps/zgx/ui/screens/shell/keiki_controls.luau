@@ -279,7 +279,7 @@ local function roster(): Node
 	local function current(): any
 		return keiki.rosters:get()[M.context:get().group] or {}
 	end
-	local members = ui.computed(function()
+	local members = ui.computed(function(): { any }
 		return current().members or {}
 	end)
 	return ui.column({
@@ -373,7 +373,7 @@ local function roster(): Node
 	})
 end
 local function tasks(): Node
-	local items = ui.computed(function()
+	local items = ui.computed(function(): { any }
 		return (keiki.conversation:get() or {}).tasks or {}
 	end)
 	return ui.column({
@@ -536,7 +536,8 @@ function M.dialog(): Node
 					elseif c.kind == "create" then
 						content = creation()
 					elseif c.kind == "rename" then
-						local title = ui.use_state((M.info:peek() or {}).title or "")
+						local initial: string = (M.info:peek() or {}).title or ""
+						local title = ui.use_state(initial)
 						content = ui.column({
 							gap = "$space.3",
 							ds.TextField({ label = "Local conversation title", value = title }),

@@ -2744,7 +2744,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				return all
 			end
 			local lf = activity_fold()
-			if #index:get().everything > 0 or #pins > 0 or d ~= nil then
+			if #list > 0 then
 				add({ kind = "title", key = "title:activity", place = "regular", chain = {}, title = "ds.sidebar.activity", n = #list, fold = activity_fold, open = activity_open, base = title_h })
 			end
 			if lf.present then
