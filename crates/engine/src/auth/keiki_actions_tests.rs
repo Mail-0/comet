@@ -1,5 +1,265 @@
 use super::*;
 
+fn preset(dir: &std::path::Path, chat: &str) {
+    let store = crate::keiki_store::Store::new(dir);
+    let owner = crate::keiki_store::Owner {
+        account: "user@example.test".into(),
+        org: "org-1".into(),
+        revision: 0,
+    };
+    store.set_questions(&owner, chat, &json!([{ "id":"auth", "question":{"mcpConnect":{"agentId":"agent-a","presetId":"docs","name":"Docs"}} }])).unwrap();
+}
+
+#[tokio::test]
+async fn phase4_mcp_opens_only_in_engine_and_redacts_capabilities_and_errors() {
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        replies.extend([
+            Reply::ok("GET", "/api/webapp/agents", agents()), Reply::ok("GET", DETAIL, detail(json!([]))),
+            Reply::ok("POST", "/api/webapp/agents/agent-a/mcp-presets/docs/connect", json!({"preset":{"id":"docs","name":"Docs","status":"needs_auth","authorizationUrl":"https://provider.example/consent?token=secret-capability","lastError":"secret-error"}})),
+            Reply::ok("POST", "/api/webapp/agents/agent-a/mcp-presets/docs/status", json!({"preset":{"id":"docs","status":"connected","authorizationUrl":"https://provider.example/?token=do-not-return"}})),
+            Reply::ok("POST", "/api/webapp/agents/agent-a/mcp-presets/docs/connect", json!({"preset":{"id":"docs","status":"needs_auth","authorizationUrl":"javascript:secret"}})),
+        ]);
+        replies
+    }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let core = runtime.core();
+    let rpc = core.rpc_service();
+    let chat = open(&rpc).await;
+    assert!(
+        rpc.handle(
+            "KeikiPresetConnection",
+            json!({"chatId":chat,"presetId":"docs"})
+        )
+        .await
+        .is_err()
+    );
+    preset(dir.path(), &chat);
+    assert!(
+        rpc.handle(
+            "KeikiPresetConnection",
+            json!({"chatId":chat,"presetId":"another"})
+        )
+        .await
+        .is_err()
+    );
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let captured = opened.clone();
+    core.keiki
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .set_opener(Box::new(move |url| {
+            captured.lock().unwrap().push(url.to_owned());
+            Ok(())
+        }));
+    let answer = value(
+        &rpc,
+        "KeikiPresetConnection",
+        json!({"chatId":chat,"presetId":"docs"}),
+    )
+    .await;
+    assert_eq!(answer["opened"], true);
+    assert!(!answer.to_string().contains("secret"));
+    assert!(!answer.to_string().contains("url"));
+    assert!(opened.lock().unwrap()[0].contains("secret-capability"));
+    let status = value(
+        &rpc,
+        "KeikiPresetConnection",
+        json!({"chatId":chat,"presetId":"docs","refresh":true}),
+    )
+    .await;
+    assert_eq!(status["status"], "connected");
+    assert!(!status.to_string().contains("token"));
+    let error = rpc
+        .handle(
+            "KeikiPresetConnection",
+            json!({"chatId":chat,"presetId":"docs"}),
+        )
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(!error.contains("javascript"));
+    assert!(!error.contains("secret"));
+    assert_eq!(opened.lock().unwrap().len(), 1);
+    runtime.shutdown().await;
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
+async fn phase4_org_switch_discards_inflight_authorization_before_opening_browser() {
+    let received = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        let mut pending = Reply::ok("POST", "/api/webapp/agents/agent-a/mcp-presets/docs/connect", json!({"preset":{"id":"docs","status":"needs_auth","authorizationUrl":"https://provider.example/?token=stale"}}));
+        pending.received = Some(received.clone()); pending.release = Some(release.clone());
+        replies.extend([Reply::ok("GET", "/api/webapp/agents", agents()), Reply::ok("GET", DETAIL, detail(json!([]))), pending,
+            Reply::ok("POST", "/api/webapp/orgs/switch", json!({"ok":true,"activeOrgId":"org-2"})),
+            Reply::ok("GET", "/api/webapp/auth/session", account(Some("org-2"), json!([{"id":"org-2","name":"Two"}])))]);
+        replies
+    }).await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let core = runtime.core();
+    let rpc = core.rpc_service();
+    let chat = open(&rpc).await;
+    preset(dir.path(), &chat);
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let captured = opened.clone();
+    core.keiki
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .set_opener(Box::new(move |url| {
+            captured.lock().unwrap().push(url.to_owned());
+            Ok(())
+        }));
+    let pending = tokio::spawn(async move {
+        rpc.handle(
+            "KeikiPresetConnection",
+            json!({"chatId":chat,"presetId":"docs"}),
+        )
+        .await
+    });
+    received.notified().await;
+    core.auth().select_org("org-2").await.unwrap();
+    release.notify_one();
+    assert!(pending.await.unwrap().is_err());
+    assert!(opened.lock().unwrap().is_empty());
+    runtime.shutdown().await;
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
+async fn phase4_avatar_http_cache_and_scope_validation() {
+    use base64::Engine as _;
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        let mut avatar = Reply::ok(
+            "GET",
+            "/api/public/agent-avatars/agent%2Da.gif?size=64&state=idle&theme=dark",
+            Value::Null,
+        );
+        avatar.raw = Some(
+            base64::engine::general_purpose::STANDARD
+                .decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+                .unwrap(),
+        );
+        replies.extend([
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            avatar,
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            Reply::error(
+                "GET",
+                "/api/public/agent-avatars/agent%2Da.gif?size=64&state=error&theme=dark",
+                503,
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let rpc = runtime.core().rpc_service();
+    let first = value(&rpc, "GetKeikiAvatar", json!({"agentId":"agent-a"})).await;
+    assert!(
+        first["src"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/gif;base64,")
+    );
+    assert_eq!(
+        first,
+        value(&rpc, "GetKeikiAvatar", json!({"agentId":"agent-a"})).await
+    );
+    assert!(
+        rpc.handle("GetKeikiAvatar", json!({"agentId":"foreign"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        rpc.handle(
+            "GetKeikiAvatar",
+            json!({"agentId":"agent-a","state":"error"})
+        )
+        .await
+        .is_err()
+    );
+    runtime.shutdown().await;
+    let requests = server.done.await.unwrap();
+    assert!(!requests[3].0.contains_key("authorization"));
+}
+
+#[tokio::test]
+async fn phase4_terminal_scope_transition_ends_stream_and_closes_remote_shell() {
+    let server = Server::start(|url| {
+        let mut replies = restored(url);
+        let mut stream = Reply::ok(
+            "GET",
+            "/api/webapp/conversations/api:agent-a:c/terminal/remote-shell/stream?agentId=agent-a",
+            Value::Null,
+        );
+        stream.stream =
+            Some("event: data\ndata: {\"type\":\"data\",\"seq\":1,\"data\":\"SGk=\"}\n\n".into());
+        stream.hold_open = true;
+        replies.extend([
+            Reply::ok("GET", "/api/webapp/agents", agents()),
+            Reply::ok("GET", DETAIL, detail(json!([]))),
+            Reply::ok(
+                "POST",
+                "/api/webapp/conversations/api:agent-a:c/terminal?agentId=agent-a",
+                json!({"terminalId":"remote-shell"}),
+            ),
+            stream,
+            Reply::ok(
+                "DELETE",
+                "/api/webapp/conversations/api:agent-a:c/terminal/remote-shell?agentId=agent-a",
+                json!({}),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(&server, dir.path()).await;
+    let core = runtime.core();
+    let rpc = core.rpc_service();
+    let chat = open(&rpc).await;
+    let id = value(&rpc, "OpenTerminal", json!({"chatId":chat})).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let RpcReply::Stream(mut stream) = rpc
+        .handle("SubscribeTerminal", json!({"terminalId":id}))
+        .await
+        .unwrap()
+    else {
+        panic!("stream")
+    };
+    assert_eq!(stream.next().await.unwrap()["seq"], 1);
+    let transition = ScopeTransition::new(core.auth().inner.scope_changes.clone());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        rpc.handle("WriteTerminal", json!({"terminalId":id,"data":"aGk="}))
+            .await
+            .is_err()
+    );
+    drop(transition);
+    server.done.await.unwrap();
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn phase4_sandbox_terminal_uses_opaque_ids_and_existing_terminal_protocol() {
     let server = Server::start(|url| {

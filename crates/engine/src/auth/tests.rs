@@ -29,6 +29,7 @@ struct Reply {
     status: u16,
     body: Value,
     stream: Option<String>,
+    raw: Option<Vec<u8>>,
     received: Option<Arc<tokio::sync::Notify>>,
     release: Option<Arc<tokio::sync::Notify>>,
     hold_open: bool,
@@ -42,6 +43,7 @@ impl Reply {
             status: 200,
             body,
             stream: None,
+            raw: None,
             received: None,
             release: None,
             hold_open: false,
@@ -54,6 +56,7 @@ impl Reply {
             status,
             body: json!({"error": "invalid_grant"}),
             stream: None,
+            raw: None,
             received: None,
             release: None,
             hold_open: false,
@@ -117,7 +120,10 @@ impl Server {
                         let mut byte = [0];
                         let _ = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await.unwrap();
                     } else {
-                        let result = stream.write_all(format!("HTTP/1.1 {} OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", reply.status, body.len()).as_bytes()).await;
+                        let body = reply.raw.unwrap_or_else(|| body.into_bytes());
+                        let mut response = format!("HTTP/1.1 {} OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.status, body.len()).into_bytes();
+                        response.extend_from_slice(&body);
+                        let result = stream.write_all(&response).await;
                         if let Err(error) = result {
                             assert!(matches!(error.kind(), std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset), "{error}");
                         }
