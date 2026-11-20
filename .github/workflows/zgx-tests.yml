@@ -85,6 +85,16 @@ jobs:
           test -n "$REV"
           CARGO_TARGET_DIR="$RUNNER_TEMP/zgx-cli-target" cargo install --locked \
             --git https://github.com/zeronsh/zgx --rev "$REV" zgx-script --bin zgx --features inspect --root ~/zgx-cli
+      - name: Prebuild Ghostty
+        working-directory: apps/zgx
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: cargo build --locked -p zgx-ghostty-sys --features link
+      - name: Build apps/zgx unit tests
+        working-directory: apps/zgx
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: cargo test --locked --bin zeron-zgx --no-run
       - name: apps/zgx unit tests
         run: scripts/ci/test-zgx.sh rust
       - name: apps/zgx integration tests
