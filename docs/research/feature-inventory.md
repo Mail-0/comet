@@ -19,7 +19,7 @@ display EXCLUDED. File paths refer to the reference repo.
 ### 1.1 Window shell
 - 1320x880 (min 900x600), frameless-inset title bar, traffic lights {14,15}, opaque #0a0a0a bg.
 - External links open in OS browser; single-instance lock; dev vs packaged ports (26634/26654) and
-  data dirs (.keiki-dev/.keiki). Fullscreen hides traffic lights -> cluster reflows.
+  data dirs (.zeron-dev/.zeron). Fullscreen hides traffic lights -> cluster reflows.
 
 ### 1.2 App phases (App.tsx)
 - Three phases with crossfade: Gate (loading/reconnect/login card over bg-grid), OrgGate ("Create
@@ -72,10 +72,10 @@ display EXCLUDED. File paths refer to the reference repo.
 - QuestionPanel replaces composer while run awaits input: paged 1-at-a-time "1/3", single-select
   auto-advances after 220ms, multi/typed explicit, number keys, free-text override, wizard state
   cached per requestId, latched across blips.
-- Pickers: HarnessModelPicker (harness rail + models, harness locked once chat exists),
+- Pickers: HarnessModelPicker (harness rail + models; a chat can switch harness between turns, locked while one runs),
   TraitsPicker (reasoning + advertised model options; trigger shows non-defaults "High · 1M · Fast"),
   RepoPicker (search, Open folder… in-app browser w/ breadcrumbs + keys + skeletons, Clone from
-  URL…, Create new repo…), BranchPicker (search + isolated-worktree toggle ~/.keiki/worktrees/…).
+  URL…, Create new repo…), BranchPicker (search + isolated-worktree toggle ~/.zeron/worktrees/…).
 
 ### 1.8 Conversation / transcript
 - ONE transcript source = doc projection. Optimistic echoes until first doc frame.
@@ -174,7 +174,7 @@ display EXCLUDED. File paths refer to the reference repo.
   presence; warm-opens recent chats (14d, cap 30); cold via device-room nudge; L2 tail GET.
 - 3.4 Terminals: pty; bounded 1MB replay; owner re-checked; live shells survive detach; exited
   buffers 30min TTL; max 32; SubscribeTerminal replays then tails.
-- 3.5 Repos/diffs: list/add/clone/create; branches; worktrees ~/.keiki/worktrees/<repo>/<name>;
+- 3.5 Repos/diffs: list/add/clone/create; branches; worktrees ~/.zeron/worktrees/<repo>/<name>;
   checkoutIdentity; CheckoutDiffSync: fs watchers + 2min repair, git diff (name-status + numstat +
   patch incl untracked), 3MiB cap, sha256; publishes DiffSidecar to chat DOs; GitMetadataSync
   watches HEAD -> chat.branch; folder listing in disposable worker w/ 6s timeout.
@@ -195,6 +195,14 @@ display EXCLUDED. File paths refer to the reference repo.
   ([1m] suffix), fast mode, always-thinking models, AskUserQuestion -> requestInput, steering via
   persistent streaming input, system:init dedup, subagent frame filtering, rate-limit events.
 - Codex: app-server JSON-RPC (thread/start, sendUserMessage, sandbox policy, service tier).
+  Generated images: `imageGeneration` / `image_generation` shows a lifecycle chip and
+  an inline assistant image, with the existing attachment lightbox. Only `savedPath`
+  under `$CODEX_HOME/generated_images` is accepted; PNG/JPEG/WebP/GIF signatures,
+  24 MiB intake cap, atomic copy into profile uploads, metadata-only session parts.
+  Readers use the message owner, then chat host/local fallbacks over attachment RPC.
+  Missing/offline media shows an unavailable placeholder with the existing retry ladder.
+  Inline `result`, SVG, workspace export, and regeneration are outside this feature.
+  Validation: [generated image checks](../generated-images-validation.md).
 - Cursor: turn-boundary steering. Mock for tests.
 
 ## 5. Session doc schema (MUST stay shape-compatible with TS packages/session-doc)
@@ -206,7 +214,7 @@ display EXCLUDED. File paths refer to the reference repo.
 - commands LoroList<LoroMap{id, kind, payload, issuedBy, issuedAt, basedOn?, expiresAt?, status,
   resolution?}>. Rules: (1) each device appends only its own immutable entries; (2) host sole
   outcome writer (composer may cancel own pending); (3) evaluateCommand: processed-id dedupe ->
-  skip; TTL -> expired; newer same-kind steer/interrupt -> superseded; interrupt past basedOn.turnId
+  skip; TTL -> expired; newer interrupt -> superseded (distinct steer messages are retained); interrupt past basedOn.turnId
   -> superseded; else execute. TTL 24h.
 - splitMessageEntry at part boundaries (text chunked by code points) so no op > MSG_INLINE_MAX
   256KB; continuationId = "root#cN"; joinContinuations render-time inverse.

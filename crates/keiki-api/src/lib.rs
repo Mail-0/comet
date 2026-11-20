@@ -25,7 +25,35 @@ use tokio::{
 };
 use url::{Url, form_urlencoded};
 
+/// Strip credential-bearing fields before conversation data crosses the UI boundary.
+pub fn redact_conversation_credentials(mut value: serde_json::Value) -> serde_json::Value {
+    match &mut value {
+        serde_json::Value::Object(map) => {
+            map.retain(|key, _| {
+                !matches!(key.to_ascii_lowercase().as_str(),
+                    "apikey" | "api_key" | "accesstoken" | "access_token"
+                    | "refreshtoken" | "refresh_token" | "authorization")
+            });
+            for child in map.values_mut() {
+                *child = redact_conversation_credentials(child.take());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                *child = redact_conversation_credentials(child.take());
+            }
+        }
+        _ => {}
+    }
+    value
+}
+
 pub const OAUTH_REDIRECT_URI: &str = "keiki://oauth/callback";
+pub const DEFAULT_API_URL: &str = "https://onkeiki.com";
+
+pub fn api_url() -> String {
+    std::env::var("KEIKI_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.into())
+}
 const LOOPBACK_CALLBACK_PATH: &str = "/oauth/callback";
 const LOOPBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CONVERSATION_MESSAGE_PAGE_LIMIT: u32 = 500;
@@ -593,13 +621,18 @@ impl Client {
         access_token: &str,
     ) -> Result<Vec<AgentGroupSummary>, Error> {
         let response: AgentGroupsResponse = self
-            .send_json(
-                self.http
-                    .get(self.endpoint("/api/webapp/agent-groups"))
-                    .bearer_auth(access_token),
-            )
+            .send_json(self.list_agent_groups_authenticated_request(access_token))
             .await?;
         Ok(response.groups)
+    }
+
+    pub fn list_agent_groups_authenticated_request(
+        &self,
+        access_token: &str,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .get(self.endpoint("/api/webapp/agent-groups"))
+            .bearer_auth(access_token)
     }
 
     pub async fn agent_group_roster(
@@ -607,15 +640,21 @@ impl Client {
         access_token: &str,
         group_id: &str,
     ) -> Result<AgentGroupRoster, Error> {
-        self.send_json(
-            self.http
-                .get(self.endpoint(&format!(
-                    "/api/webapp/agent-groups/{}/roster",
-                    utf8_percent_encode(group_id, NON_ALPHANUMERIC)
-                )))
-                .bearer_auth(access_token),
-        )
-        .await
+        self.send_json(self.agent_group_roster_authenticated_request(access_token, group_id))
+            .await
+    }
+
+    pub fn agent_group_roster_authenticated_request(
+        &self,
+        access_token: &str,
+        group_id: &str,
+    ) -> reqwest::RequestBuilder {
+        self.http
+            .get(self.endpoint(&format!(
+                "/api/webapp/agent-groups/{}/roster",
+                utf8_percent_encode(group_id, NON_ALPHANUMERIC)
+            )))
+            .bearer_auth(access_token)
     }
 
     pub async fn end_agent_group(
@@ -1454,6 +1493,10 @@ impl AuthorizationFlow {
 }
 
 impl TokenSet {
+    pub fn expires_in(&self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+
     pub fn access_token(&self) -> &str {
         &self.access_token
     }
@@ -1644,6 +1687,9 @@ fn response_error_body(status: StatusCode, body: &str) -> Error {
         .unwrap_or_else(|| "request failed".into());
     Error::Api { status, message }
 }
+
+#[cfg(test)]
+mod oauth_tests;
 
 #[cfg(test)]
 mod tests {

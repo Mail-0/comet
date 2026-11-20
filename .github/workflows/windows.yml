@@ -1,0 +1,71 @@
+name: Windows tests
+
+# Called by ci.yml (which decides when Windows runs and holds the runners for
+# it, see scripts/ci/admit.py).
+on:
+  workflow_call:
+    inputs:
+      pass-key:
+        description: Cache key prefix under which each job records its pass (ci.yml); empty records nothing.
+        type: string
+        default: ''
+      skip:
+        description: JSON list of jobs that already passed on the same inputs (ci.yml skips them).
+        type: string
+        default: '[]'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+# Pull requests and main leave out slow and soak tests (scripts/ci/nextest.toml `ci` profile).
+env:
+  NEXTEST_PROFILE: ${{ github.event_name == 'schedule' && 'default' || 'ci' }}
+  ZERON_STRESS_ROUNDS: ${{ github.event_name == 'schedule' && '100' || '14' }}
+
+jobs:
+  # Every Windows crate suite in ONE build: separate `cargo test` invocations
+  # with different package sets each recompiled the shared dependency graph
+  # (they used to be three jobs, ~20 min each, almost all of it compiling).
+  tests:
+    if: ${{ !contains(fromJSON(inputs.skip || '[]'), 'tests') }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/windows-ci-setup
+        with:
+          save-rust-cache: 'true'
+      - name: Build tests
+        run: >-
+          cargo nextest run --config-file scripts/ci/nextest.toml --no-run --release --locked
+          -p zeron-harness -p zeron -p zeron-update -p zeron-proto -p zeron-engine -p zeron-voice-media
+          --lib --bins
+          --test background_engine --test noop_browser
+          --test worktree_on_run
+      # Same selection as the old commands:
+      #   Keiki Copilot and Mock harness suites (Unix HTTP fixtures run on Linux)
+      #   the `zeron` binary and updater, worktree paths, engine unit/catalog/login/auth
+      #   voice-media (runtime resolution; used to be its own build in voice-tests.yml)
+      - name: Harness, command line, updater and engine tests
+        env:
+          RUST_BACKTRACE: '1'
+        run: >-
+          cargo nextest run --config-file scripts/ci/nextest.toml --release --locked --no-fail-fast
+          -p zeron-harness -p zeron -p zeron-update -p zeron-proto -p zeron-engine -p zeron-voice-media
+          --lib --bins
+          --test background_engine --test noop_browser
+          --test worktree_on_run
+          -E "package(zeron-harness) | package(zeron) | package(zeron-update) | (package(zeron-voice-media) & kind(lib)) | (package(zeron-proto) & test(device_paths)) | (package(zeron-engine) & (kind(lib) | (binary_id(zeron-engine::worktree_on_run) & test(worktree_location_))))"
+      - name: Record the pass (CI skips this job while its inputs stay the same)
+        if: inputs.pass-key != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: rust-toolchain.toml
+          key: ${{ inputs.pass-key }}-tests
+
+  # Restores the cache `tests` saves: the same dependencies, built with the same profile.

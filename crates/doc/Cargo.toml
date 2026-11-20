@@ -13,8 +13,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+sha2.workspace = true
 similar.workspace = true
-rusqlite.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

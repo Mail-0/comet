@@ -235,6 +235,11 @@ fn request(prompt: &str, resume: Option<&str>) -> RunRequest {
         cwd: "/tmp".into(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
+        access: zeron_proto::AccessMode::FullAccess,
+        plan: false,
+        mcp: None,
+        extra_mcp: Vec::new(),
+        env: Default::default(),
         attachments: Vec::new(),
         worktree: None,
         resume: resume.map(str::to_owned),
@@ -273,6 +278,9 @@ fn controls_with_observer(
         }),
         steering: steer_rx,
         interrupt: CancellationToken::new(),
+        execution_lease: None,
+        realtime: None,
+        turn: Default::default(),
     }
 }
 
@@ -296,6 +304,52 @@ fn harness(fake: &FakeCopilot) -> CopilotHarness {
         base_url: fake.base.clone(),
         access_token: "test-token".into(),
     })))
+}
+
+#[tokio::test]
+async fn title_run_starts_without_the_coding_threads_history() {
+    let fake = FakeCopilot::start(None, false).await;
+    let copilot = harness(&fake);
+    let stream = copilot
+        .run_title(
+            request(zeron_harness::TITLE_INSTRUCTIONS, Some("coding-thread")),
+            controls(None),
+        )
+        .await
+        .unwrap();
+    let events = tokio::time::timeout(Duration::from_secs(5), stream.collect::<Vec<_>>())
+        .await
+        .unwrap();
+    assert!(events.iter().all(Result::is_ok));
+    assert_eq!(fake.posts().len(), 1);
+    assert_ne!(fake.posts()[0]["threadId"], "coding-thread");
+    assert!(fake.gets().iter().all(|path| !path.contains("/threads/")));
+}
+
+#[tokio::test]
+async fn missing_credentials_refuse_coding_and_title_runs() {
+    struct Empty;
+    impl CopilotCredentialSource for Empty {
+        fn snapshot(&self) -> Option<CopilotCredentials> {
+            None
+        }
+    }
+    let copilot = CopilotHarness::new(Arc::new(Empty));
+    assert!(
+        copilot
+            .run(request("code", None), controls(None))
+            .await
+            .is_err()
+    );
+    assert!(
+        copilot
+            .run_title(request("title", None), controls(None))
+            .await
+            .is_err()
+    );
+    assert!(zeron_harness::supports_titles(
+        zeron_proto::HarnessId::Copilot
+    ));
 }
 
 #[tokio::test]
@@ -430,6 +484,9 @@ async fn cancellation_uses_the_minted_request_run_id() {
             }),
             steering: steer_rx,
             interrupt: token,
+            execution_lease: None,
+            realtime: None,
+            turn: Default::default(),
         }
     };
     let stream = copilot

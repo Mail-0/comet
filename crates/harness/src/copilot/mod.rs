@@ -23,10 +23,17 @@ use zeron_proto::{
 
 use crate::{Harness, HarnessError, RunControls, SteerMessage};
 
+mod bound;
+pub use bound::{BoundConversation, BoundConversationSource, BOUND_PREFIX};
+
 /// Credential access is deliberately abstracted at the harness boundary so the
 /// engine can own the device-local holder without introducing a dependency cycle.
 pub trait CopilotCredentialSource: Send + Sync {
     fn snapshot(&self) -> Option<CopilotCredentials>;
+
+    fn bound_source(&self) -> Option<Arc<dyn BoundConversationSource>> {
+        None
+    }
 }
 
 pub struct CopilotHarness {
@@ -62,7 +69,7 @@ impl Harness for CopilotHarness {
     }
 
     fn installed(&self) -> bool {
-        self.credentials.snapshot().is_some()
+        true
     }
 
     fn deterministic_turn_end(&self) -> bool {
@@ -73,10 +80,24 @@ impl Harness for CopilotHarness {
         Ok(vec![Model {
             id: "copilot".into(),
             label: "Copilot".into(),
+            provider: None,
+            default: true,
             description: None,
             reasoning_levels: Vec::new(),
             options: Vec::new(),
         }])
+    }
+
+    async fn run_title(
+        &self,
+        mut request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        request.resume = None;
+        request.attachments.clear();
+        request.extra_mcp.clear();
+        request.mcp = None;
+        self.run(request, controls).await
     }
 
     async fn run(
@@ -84,7 +105,7 @@ impl Harness for CopilotHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        if !self.installed() {
+        if self.credentials.snapshot().is_none() {
             return Err(HarnessError::NotInstalled(
                 "Copilot credentials are unavailable".into(),
             ));
@@ -93,7 +114,11 @@ impl Harness for CopilotHarness {
         let credentials = Arc::clone(&self.credentials);
         let (event_tx, event_rx) = mpsc::channel(256);
         tokio::spawn(async move {
-            run_copilot(credentials, request, controls, event_tx).await;
+            if request.resume.as_deref().is_some_and(|id| id.starts_with(BOUND_PREFIX)) {
+                bound::run(credentials, request, controls, event_tx).await;
+            } else {
+                run_copilot(credentials, request, controls, event_tx).await;
+            }
         });
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
             rx.recv().await.map(|event| (event, rx))
@@ -188,6 +213,8 @@ async fn run_copilot(
         request_input,
         mut steering,
         interrupt,
+        execution_lease: _execution_lease,
+        ..
     } = controls;
     let request_input: Arc<
         dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>>
@@ -616,6 +643,8 @@ fn interrupt_prompt(interrupt: &Interrupt) -> InterruptPrompt {
             question,
             options: vec!["Approve".into(), "Decline".into()],
             multi_select: false,
+            prefill: None,
+            multiline: false,
             mcp_connect: None,
         },
         answer: InterruptAnswer::Approval,
@@ -669,6 +698,8 @@ fn choice_prompt(interrupt: &Interrupt, input: Option<&Value>) -> Option<Interru
                 .map(|(label, _)| label.clone())
                 .collect(),
             multi_select: false,
+            prefill: None,
+            multiline: false,
             mcp_connect: None,
         },
         answer: InterruptAnswer::Choice { ids_by_label },
@@ -707,6 +738,8 @@ fn connect_prompt(
             ),
             options: vec!["Authorize".into(), "Skip".into()],
             multi_select: false,
+            prefill: None,
+            multiline: false,
             mcp_connect: Some(McpConnectSpec {
                 agent_id: agent_id.to_owned(),
                 preset_id: preset_id.to_owned(),

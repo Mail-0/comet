@@ -1,0 +1,31 @@
+name: Release-profile tests
+
+# Pull-request and main CI test the dev profile (fast rebuilds). This runs the
+# same Linux core suite once a day against the optimized release profile that
+# ships, so optimization-only failures still surface. It does not save a Rust
+# cache, so it cannot evict the main-seeded caches pull requests depend on.
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-profile-tests
+  cancel-in-progress: false
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/linux-ci
+        with:
+          rust-cache: release-profile-core
+      - name: Harness, engine, sync, update, doc and preview tests (release)
+        run: scripts/ci/test-core.sh --release
+

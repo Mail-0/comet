@@ -1,0 +1,48 @@
+name: Linux tests
+
+# Called by ci.yml, which decides which of these run and holds the runners for
+# them (scripts/ci/plan.py, scripts/ci/admit.py).
+on:
+  workflow_call:
+    inputs:
+      pass-key:
+        description: Cache key prefix under which each job records its pass (ci.yml); empty records nothing.
+        type: string
+        default: ''
+      core:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Pull requests and main leave out the slow and soak tests (scripts/ci/nextest.toml
+# run (schedule) runs everything in full.
+env:
+  NEXTEST_PROFILE: ${{ github.event_name == 'schedule' && 'default' || 'ci' }}
+  ZERON_STRESS_ROUNDS: ${{ github.event_name == 'schedule' && '100' || '14' }}
+
+jobs:
+  # The Linux Rust tests: one build, one nextest run (see
+  # scripts/ci/test-core.sh), including the voice protocol and transport tests
+  # that need no audio stack.
+  core-tests:
+    if: inputs.core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/linux-ci
+        with:
+          rust-cache: core
+          apt-cache: core-dbus
+          apt-packages: libdbus-1-dev pkg-config
+          save-rust-cache: 'true'
+      - name: Harness, engine, sync, update, doc, preview, MCP and voice protocol tests
+        run: scripts/ci/test-core.sh
+      - name: Record the pass (CI skips this job while its inputs stay the same)
+        if: inputs.pass-key != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: rust-toolchain.toml
+          key: ${{ inputs.pass-key }}-core-tests

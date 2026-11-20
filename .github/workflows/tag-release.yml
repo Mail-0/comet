@@ -1,44 +1,34 @@
-name: tag-release
-
-# Bumping `[workspace.package] version` in Cargo.toml on main is the release.
-# When the bump lands, tag `v<version>` (if it doesn't exist yet) and kick the
-# release workflow on that tag. The dispatch is explicit because a tag pushed
-# with GITHUB_TOKEN doesn't fire `on: push: tags` by itself.
-
+name: Tag Keiki release
 on:
   push:
     branches: [main]
-    paths: ["Cargo.toml"]
-
+    paths: [Cargo.toml]
+  workflow_dispatch:
 permissions:
   contents: write
   actions: write
-
 concurrency:
   group: tag-release
   cancel-in-progress: false
-
 jobs:
   tag:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: workspace version
-        id: version
-        run: |
-          ver="$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "zeron") | .version')"
-          [ -n "$ver" ] || { echo "could not read the workspace version"; exit 1; }
-          echo "version=$ver" >>"$GITHUB_OUTPUT"
-      - name: tag and release
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Tag a new workspace version and dispatch its build
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: v${{ steps.version.outputs.version }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
-            echo "$TAG already exists — nothing to release"
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$version"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; no new release"
             exit 0
           fi
-          git tag "$TAG" "$GITHUB_SHA"
-          git push origin "$TAG"
-          gh workflow run release.yml --ref "$TAG"
+          git tag "$tag"
+          git push origin "$tag"
+          # Tags pushed by GITHUB_TOKEN do not trigger push workflows.
+          gh workflow run release.yml --ref "$tag" -f platforms='macos linux'

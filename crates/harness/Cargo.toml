@@ -6,11 +6,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-zeron-proto.workspace = true
+keiki-api.workspace = true
 zeron-copilot.workspace = true
+zeron-proto.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io-util", "codec"] }
 uuid.workspace = true
 futures.workspace = true
 async-trait.workspace = true
@@ -18,7 +19,17 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+semver = "1"
 tracing.workspace = true
+chrono.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+zeron-doc.workspace = true
 tempfile.workspace = true

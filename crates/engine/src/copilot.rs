@@ -1,10 +1,11 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use zeron_copilot::CopilotCredentials;
 
 #[derive(Clone, Default)]
 pub struct CopilotCredentialHolder {
     credentials: Arc<Mutex<Option<CopilotCredentials>>>,
+    bound_source: Arc<Mutex<Option<Weak<dyn zeron_harness::BoundConversationSource>>>>,
 }
 
 impl std::fmt::Debug for CopilotCredentialHolder {
@@ -17,6 +18,13 @@ impl std::fmt::Debug for CopilotCredentialHolder {
 }
 
 impl CopilotCredentialHolder {
+    pub(crate) fn set_bound_source(&self, source: Weak<dyn zeron_harness::BoundConversationSource>) {
+        *self.bound_source.lock().unwrap_or_else(PoisonError::into_inner) = Some(source);
+    }
+    pub(crate) fn same_holder(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.credentials, &other.credentials)
+    }
+
     pub fn set(&self, credentials: CopilotCredentials) {
         *self
             .credentials
@@ -40,6 +48,9 @@ impl CopilotCredentialHolder {
 }
 
 impl zeron_harness::CopilotCredentialSource for CopilotCredentialHolder {
+    fn bound_source(&self) -> Option<Arc<dyn zeron_harness::BoundConversationSource>> {
+        self.bound_source.lock().unwrap_or_else(PoisonError::into_inner).as_ref()?.upgrade()
+    }
     fn snapshot(&self) -> Option<CopilotCredentials> {
         self.snapshot()
     }

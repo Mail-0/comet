@@ -1,168 +1,62 @@
 name: release
 
-# Build release artifacts and attach them to a GitHub Release:
-#   - Linux tarballs, Debian packages, and AppImages (x86_64 + aarch64) via
-#     scripts/package-linux.sh
-#   - macOS dmg (Apple silicon) via scripts/package-macos.sh
-# The Release is the only distribution channel — Linux builds are available as
-# tarballs, Debian packages, and AppImages.
-#
-# Trigger: tag-release.yml tags `v<version>` when a Cargo.toml version bump
-# lands on main and dispatches this workflow on that tag. Pushing such a tag
-# by hand works too. A workflow_dispatch on a branch ref only builds and
-# uploads artifacts (no Release published).
-
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to build (publishing a tag requires macos linux).
+        type: string
+        default: macos linux
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04 # x86_64
-          - runner: ubuntu-24.04-arm # aarch64
-    runs-on: ${{ matrix.runner }}
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - name: gpui system deps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - id: version
+        name: Validate workspace version and tag
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libx11-dev libxcb1-dev libx11-xcb-dev \
-            libfontconfig1-dev libfreetype-dev libasound2-dev \
-            libvulkan-dev pkg-config cmake
-      - name: rust toolchain (rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: package
-        run: scripts/package-linux.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-${{ runner.arch }}
-          path: |
-            target/package/*.tar.gz
-            target/package/*.deb
-            target/package/*.AppImage
-          if-no-files-found: error
-
-  # Heads-up: the macOS cfg paths (Keychain in agent_accounts.rs) have never
-  # been type-checked against the Apple SDK — this job may surface errors on
-  # its first runs. continue-on-error keeps the Linux release shippable.
-  #
-  # Signing/notarization (both optional — absent secrets fall back to an
-  # ad-hoc-signed build):
-  #   MACOS_CERT_P12 / MACOS_CERT_PASSWORD — base64 "Developer ID Application"
-  #     certificate + private key (.p12) and its export password.
-  #   APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID — Apple ID, app-specific
-  #     password from account.apple.com, and 10-char team id for notarytool.
-  #     All three present → the package script notarizes and staples the app +
-  #     dmg (no Gatekeeper warning).
-  macos:
-    runs-on: macos-latest # Apple silicon
-    continue-on-error: true
-    env:
-      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
-      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: rust toolchain (rust-toolchain.toml)
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: import Developer ID certificate
-        if: env.MACOS_CERT_P12 != ''
-        run: |
-          keychain="$RUNNER_TEMP/release.keychain-db"
-          pass="$(openssl rand -hex 16)"
-          security create-keychain -p "$pass" "$keychain"
-          security set-keychain-settings -lut 3600 "$keychain"
-          security unlock-keychain -p "$pass" "$keychain"
-          # A leaf without its issuer in a searchable keychain is not a valid
-          # codesigning identity, so seed both Developer ID intermediates.
-          for ca in DeveloperIDCA DeveloperIDG2CA; do
-            curl -fsSL -o "$RUNNER_TEMP/$ca.cer" \
-              "https://www.apple.com/certificateauthority/$ca.cer"
-            security import "$RUNNER_TEMP/$ca.cer" -k "$keychain" \
-              -T /usr/bin/codesign
-          done
-          printf '%s' "$MACOS_CERT_P12" | base64 -d >"$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
-            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/cert.p12"
-          # Allow codesign to use the imported key without a UI prompt.
-          security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "$pass" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" login.keychain-db
-          identity="$(security find-identity -v -p codesigning "$keychain" \
-            | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
-          [ -n "$identity" ] || { echo "p12 contains no Developer ID Application identity"; exit 1; }
-          echo "CODESIGN_IDENTITY=$identity" >>"$GITHUB_ENV"
-      - name: notary credentials
-        if: env.APPLE_ID != ''
-        run: |
-          # Secrets keep whatever whitespace was pasted into them, and
-          # notarytool answers a trailing newline in the team id with the same
-          # opaque 403 as a genuinely wrong one.
-          apple_id="$(printf '%s' "$APPLE_ID" | tr -d '[:space:]')"
-          password="$(printf '%s' "$APPLE_APP_PASSWORD" | tr -d '[:space:]')"
-          team_id="$(printf '%s' "$APPLE_TEAM_ID" | tr -d '[:space:]')"
-          # The signing certificate's subject ends in "(<team id>)", so a
-          # mismatch is detectable here instead of as a notary rejection.
-          cert_team="$(printf '%s' "$CODESIGN_IDENTITY" \
-            | sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p')"
-          if [ -n "$cert_team" ] && [ "$cert_team" != "$team_id" ]; then
-            echo "APPLE_TEAM_ID does not match the signing certificate's team ($cert_team)"
-            exit 1
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME is not v$version" >&2; exit 1
           fi
-          {
-            echo "NOTARY_APPLE_ID=$apple_id"
-            echo "NOTARY_PASSWORD=$password"
-            echo "NOTARY_TEAM_ID=$team_id"
-          } >>"$GITHUB_ENV"
-      - name: package dmg
-        run: scripts/package-macos.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ runner.arch }}
-          path: |
-            target/package/*.dmg
-          if-no-files-found: error
-
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+  zgx:
+    needs: version
+    uses: ./.github/workflows/zgx-build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.version.outputs.version }}
+      platforms: ${{ github.event_name == 'push' && 'macos linux' || inputs.platforms }}
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, macos]
+    needs: [version, zgx]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: dist
+          pattern: keiki-*
+          path: release-assets
           merge-multiple: true
-      - name: version guard (tag == artifact version)
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          ls dist/
-          ls dist/ | grep -q "keiki-$ver-" \
-            || { echo "tag v$ver does not match built artifact versions — bump Cargo.toml [workspace.package] version"; exit 1; }
-      - uses: softprops/action-gh-release@v2
+      - name: Validate packages and generate checksums
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python3 scripts/release-manifest.py "$VERSION" release-assets
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: dist/*
+          files: release-assets/*
           generate_release_notes: true
-      - name: macOS dmg present
-        run: |
-          # The macOS job is continue-on-error, so a signing or notarization
-          # failure otherwise publishes a Linux-only Release under a green run.
-          # Release first, then fail loudly.
-          ls dist/ | grep -q '\.dmg$' \
-            || { echo "no dmg in the Release — the macOS job failed; see its log"; exit 1; }
+          make_latest: 'true'
+          overwrite_files: false

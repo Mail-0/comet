@@ -7,21 +7,19 @@ scripts/package-linux.sh            # release build (thin LTO, stripped)
 PROFILE=debug scripts/package-linux.sh   # fast smoke package
 ```
 
-Produces three Linux artifacts (narrow with `FORMATS="tarball deb appimage"`):
+Produces `target/package/zeron-<version>-linux-<arch>.tar.gz` containing:
 
-- `target/package/keiki-<version>-linux-<arch>.tar.gz`, containing:
-  - `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
-  - `zeron.desktop` — XDG desktop entry
-  - `zeron.png` — 1024×1024 app icon
-  - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
-- `target/package/keiki-<version>-linux-<debarch>.deb` — a Debian package
-  installing the binary, desktop entry, icon, and font licenses under `/usr`.
-  Its `Depends` come from `dpkg-shlibdeps` plus the two libraries gpui
-  `dlopen`s (`libvulkan1`, `libwayland-client0`), which shlibdeps cannot see.
-- `target/package/keiki-<version>-linux-<arch>.AppImage` — a self-contained
-  AppImage for systems without a package manager.
-
-The `.deb` and AppImage payloads are stripped; the tarball's is not.
+- `zeron` — the binary (headed by default; `zeron headless` runs the engine alone)
+- `zeron.desktop` — XDG desktop entry template (`Exec=zeron` for packagers;
+  the installers rewrite `Exec`, `TryExec`, and `Icon` to absolute paths under
+  `~/.zeron/app/current`, since `~/.local/bin` is often not on a desktop
+  session's `PATH`)
+- `zeron.png` — 1024×1024 Zeron app icon (`scripts/make-app-icons.py`)
+- `install.sh` — installs into `~/.zeron/app/<version>` behind a `current`
+  symlink (the curl installer's layout, which the in-app updater manages),
+  links `~/.local/bin/zeron` to it, and writes the desktop entry and icon under
+  `$XDG_DATA_HOME` (default `~/.local/share`). The curl installer does the same
+  from the extracted tarball; `scripts/test-linux-desktop-entry.sh` checks both
 
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 `strip = "symbols"` for distribution builds.
@@ -29,12 +27,13 @@ The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 ## macOS
 
 ```sh
-scripts/package-macos.sh    # → target/package/keiki-<version>-macos-<arch>.dmg
+scripts/package-macos.sh    # → target/package/zeron-<version>-macos-<arch>.dmg
 ```
 
-Builds the release binary, assembles `Keiki.app` (Info.plist + icns), ad-hoc
+Builds the release binary, assembles `Zeron.app` (Info.plist + icns), ad-hoc
 signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
- dmg. CI runs this on tags
+dmg. The auto-update tarball retains an internal `Zeron.app` path so older
+installed builds can update into Zeron. CI runs this on tags
 (`.github/workflows/release.yml`). The manual steps it automates, for reference
 (run on a macOS host — gpui needs Metal; no cross-build from Linux):
 
@@ -48,38 +47,38 @@ signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
    ```
 2. Assemble the bundle:
    ```sh
-   mkdir -p Keiki.app/Contents/{MacOS,Resources}
-   cp zeron Keiki.app/Contents/MacOS/zeron
+   mkdir -p Zeron.app/Contents/{MacOS,Resources}
+   cp zeron Zeron.app/Contents/MacOS/zeron
    sed "s/__VERSION__/$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')/" \
-     dist/macos/Info.plist > Keiki.app/Contents/Info.plist
+     dist/macos/Info.plist > Zeron.app/Contents/Info.plist
    ```
-3. Icon: generate `zeron.icns` from `dist/macos/icon-1024.png` (the macOS-shaped
-   variant of the artwork — squircle mask, margins, and shadow pre-baked, since
-   `sips` can't apply an alpha mask) and place it at
-   `Keiki.app/Contents/Resources/zeron.icns`:
-   ```sh
-   mkdir zeron.iconset && sips -z 256 256 dist/macos/icon-1024.png --out zeron.iconset/icon_256x256.png
-   iconutil -c icns zeron.iconset -o Keiki.app/Contents/Resources/zeron.icns
-   ```
+3. Icon: `scripts/macos-app-icon.sh Zeron.app/Contents/Resources` writes
+   `Assets.car` from `dist/macos/Zeron.icon` (light, dark, clear and tinted, on
+   macOS 26 and later; compiling it takes Xcode 26 or later) and `zeron.icns`
+   from `dist/macos/icon-1024.png` (earlier macOS and the dmg). All the app's
+   icons are made from the art in `dist/icon` by `scripts/make-app-icons.py`.
 4. Sign + notarize (required for distribution):
    ```sh
-   codesign --deep --force --options runtime --sign "Developer ID Application: …" Keiki.app
-   xcrun notarytool submit Keiki.zip --keychain-profile … --wait
-   xcrun stapler staple Keiki.app
+   codesign --deep --force --options runtime --sign "Developer ID Application: …" Zeron.app
+   xcrun notarytool submit Zeron.zip --keychain-profile … --wait
+   xcrun stapler staple Zeron.app
    ```
-5. Ship as a `.dmg` (`hdiutil create -volname Keiki -srcfolder Keiki.app -ov -format UDZO zeron.dmg`).
+5. Ship as a `.dmg` (`hdiutil create -volname Zeron -srcfolder Zeron.app -ov -format UDZO Zeron.dmg`).
 
-## Icon artwork
+## Windows
 
-The Keiki rocking-horse mark. `dist/zeron.png` is the 1024 full-bleed export
-(pre-masked squircle, transparent corners) and is what Linux ships.
-`dist/macos/icon-1024.png` is that same export placed on the Big Sur grid —
-scaled to an 824 body, centred on a 1024 canvas, drop shadow baked in:
-
-```sh
-convert dist/zeron.png -resize 824x824 body.png
-convert body.png \( +clone -background black -shadow 45x18+0+14 \) +swap \
-  -background none -layers merge +repage body-shadow.png
-convert -size 1024x1024 xc:none body-shadow.png -gravity center -geometry +0+6 \
-  -composite dist/macos/icon-1024.png
+```powershell
+./scripts/package-windows.ps1 -ReleasesUrl https://github.com/zeronsh/zeron/releases/latest/download
 ```
+
+Produces, under `target/package/`:
+
+- `zeron-<version>-windows-<arch>-setup.exe` — the per-user installer built
+  from `dist/windows/zeron.iss` with Inno Setup 6
+- `zeron-<version>-windows-<arch>.zip` — the portable package
+- `zeron-<version>-windows-<arch>.exe` — the bare executable the in-app
+  updater downloads
+
+The installer and the zip both carry `zeron-update.json`, the marker that lets
+the app update itself in place. CI runs `scripts/test-windows-installer.ps1`
+against the setup on every Windows build.

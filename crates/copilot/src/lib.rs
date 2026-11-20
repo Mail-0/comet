@@ -17,6 +17,15 @@ pub struct CopilotCredentials {
     pub access_token: String,
 }
 
+impl CopilotCredentials {
+    pub fn new(access_token: impl Into<String>) -> Self {
+        Self {
+            base_url: keiki_api::api_url(),
+            access_token: access_token.into(),
+        }
+    }
+}
+
 impl fmt::Debug for CopilotCredentials {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -871,6 +880,9 @@ impl TurnMapper {
                 is_error: false,
                 output: Some(content),
                 diff: None,
+                preview_paths: Vec::new(),
+                image_payloads: Vec::new(),
+                exit_code: None,
             }],
             AgUiEvent::RunFinished {
                 outcome: Some(RunOutcome::Interrupt { interrupts }),

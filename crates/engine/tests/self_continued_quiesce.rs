@@ -48,6 +48,7 @@ fn init_env() {
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        mcp: None,
         prompt: prompt.into(),
         harness: None,
         model: None,
@@ -56,9 +57,13 @@ fn run_request(prompt: &str) -> RunRequest {
         cwd: "/tmp".into(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
+        access: Default::default(),
+        plan: false,
         attachments: Vec::new(),
         worktree: None,
         resume: None,
+        env: Default::default(),
+        extra_mcp: Vec::new(),
     }
 }
 
@@ -179,7 +184,7 @@ fn assemble(main_prompt: &str) -> Rig {
         feed: Mutex::new(Some(rx)),
     }));
     let dir = tempfile::tempdir().unwrap();
-    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock)
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None)
         .expect("engine core assembles");
     Rig {
         core,
