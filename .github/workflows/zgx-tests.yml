@@ -89,7 +89,10 @@ jobs:
         working-directory: apps/zgx
         env:
           CARGO_BUILD_JOBS: 2
-        run: cargo build --locked -p zgx-ghostty-sys --features link
+        run: |
+          manifest=$(cargo metadata --locked --format-version 1 |
+            python3 -c 'import json,sys; print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"] == "zgx-ghostty-sys"))')
+          cargo build --locked --manifest-path "$manifest" -p zgx-ghostty-sys --features link
       - name: Build apps/zgx unit tests
         working-directory: apps/zgx
         env:
