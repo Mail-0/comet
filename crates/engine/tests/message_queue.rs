@@ -1242,41 +1242,53 @@ async fn queue_rpc_reorders_and_streams() {
     core.shutdown().await;
 }
 
-/// Even a malformed or version-skewed UI must not make a non-host engine take
-/// a shared queue row and start the chat on the wrong machine.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_queue_delivery_is_rejected_off_host_without_taking_the_row() {
-    let (core, harness, _prompts) = setup(SteeringMode::StepBoundary).await;
-    core.workspace
+async fn remote_queue_delivery_is_rejected_without_taking_a_local_row() {
+    let (core, harness, prompts) = setup(SteeringMode::StepBoundary).await;
+    let error = core
+        .workspace
         .set_chat_host(CHAT, "device-remote")
-        .expect("move chat host");
+        .expect_err("a local chat cannot acquire a remote host");
+    assert!(
+        error
+            .to_string()
+            .contains("Only the local device is supported")
+    );
+    core.doc_host.queue_message(CHAT, "opening", Vec::new()).unwrap();
+    wait_for(|| prompts.lock().unwrap().len() == 1, "opening turn").await;
     let id = core
         .doc_host
         .queue_message_with_behavior(CHAT, "remote-only", Vec::new(), true)
         .expect("queue held row");
 
-    let send_error = core
-        .doc_host
-        .send_queued_now(CHAT, &id)
-        .await
-        .expect_err("non-host send-now must fail");
-    assert!(send_error.to_string().contains("does not host chat"));
-    assert_eq!(queue_texts(&core), vec!["remote-only"]);
-
-    let steer_error = core
-        .doc_host
-        .steer_queued_now(CHAT, &id)
-        .await
-        .expect_err("non-host steer-now must fail");
-    assert!(steer_error.to_string().contains("does not host chat"));
-
-    let remove_error = core
-        .doc_host
-        .remove_queued_message(CHAT, &id)
-        .await
-        .expect_err("non-host removal must fail");
-    assert!(remove_error.to_string().contains("does not host chat"));
-    assert_eq!(queue_texts(&core), vec!["remote-only"]);
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    for method in [
+        zeron_rpc::methods::SEND_QUEUED_MESSAGE_NOW,
+        zeron_rpc::methods::STEER_QUEUED_MESSAGE_NOW,
+        zeron_rpc::methods::REMOVE_QUEUED_MESSAGE,
+    ] {
+        let error = client
+            .call(
+                method,
+                serde_json::json!({
+                    "targetDeviceId": "device-remote", "chatId": CHAT, "id": id,
+                }),
+            )
+            .await
+            .expect_err("remote delivery must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Only the local device is supported"),
+            "{error}"
+        );
+        assert_eq!(queue_texts(&core), vec!["remote-only"]);
+        assert_eq!(*prompts.lock().unwrap(), vec!["opening"]);
+    }
+    assert!(core.doc_host.send_queued_now(CHAT, &id).await.unwrap());
+    wait_for(|| prompts.lock().unwrap().len() == 2, "local delivery").await;
+    assert_eq!(*prompts.lock().unwrap(), vec!["opening", "remote-only"]);
+    assert!(queue_texts(&core).is_empty());
 
     let _ = harness.finish.send(());
     core.shutdown().await;

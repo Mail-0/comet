@@ -2979,38 +2979,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cloud_child_runs_on_its_own_machine_with_clouds_agents() {
-        let world = Arc::new(World::default());
-        let alpha = tools(world.clone(), origin("chat-alpha-1"));
-        let created = alpha
-            .call("create_chat", json!({"cloud": true}))
-            .await
-            .unwrap();
-        // The engine names the new machine and its checkout.
-        assert_eq!(created["deviceId"], "cloud-child");
-        assert_eq!(
-            created["harness"], "claude-code",
-            "Cloud's first agent by default"
-        );
-        let sent = world
-            .writes
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(method, w)| method == methods::MUTATE && w["op"] == "createChat")
-            .map(|(_, w)| w.clone())
-            .unwrap();
-        assert_eq!(sent["cloud"], true);
-        assert_eq!(sent["parentChatId"], "chat-alpha-1");
-        // Only Cloud's agents.
-        let refused = alpha
-            .call("create_chat", json!({"cloud": true, "harness": "cursor"}))
-            .await
-            .unwrap_err();
-        assert!(refused.contains("Codex and Claude Code"), "{refused}");
-    }
-
-    #[tokio::test]
     async fn connected_means_installed_enabled_and_not_known_signed_out() {
         let accounts = |active: bool| {
             json!({ "accounts": [{
