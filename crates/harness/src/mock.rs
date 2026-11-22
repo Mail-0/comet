@@ -5,7 +5,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
+    AccessMode, AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
     UserInputQuestion,
 };
 
@@ -13,6 +13,254 @@ use crate::{Harness, HarnessError, RunControls};
 
 pub struct MockHarness {
     pub script: Vec<AgentEvent>,
+}
+
+/// The subagent count a `/fanout [N]` prompt asks for (40 when bare).
+fn fanout_count(prompt: &str) -> Option<usize> {
+    let rest = prompt.trim().strip_prefix("/fanout")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let count = rest.trim().parse().unwrap_or(40);
+    Some(count.clamp(1, 200))
+}
+
+/// The step count a `/longthread [N]` prompt asks for (1,000 when bare).
+fn longthread_count(prompt: &str) -> Option<usize> {
+    let rest = prompt.trim().strip_prefix("/longthread")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let count = rest.trim().parse().unwrap_or(1000);
+    Some(count.clamp(1, 20_000))
+}
+
+/// The `/longthread` reply: ademark's A11 thread (bench/replay's
+/// `long-2000`), `count` steps each a short text (one in five with a code
+/// block) and a call reading one small file, the last text holding
+/// `LONGTHREAD-END`. Streamed unpaced, as the replay is.
+fn longthread_events(count: usize) -> Vec<AgentEvent> {
+    let mut events = Vec::with_capacity(count * 3 + 2);
+    for n in 1..=count {
+        let mut text = format!(
+            "Step {n} of {count}. I read src/invoices.ts and noted what step {n} needs from it."
+        );
+        if n % 5 == 0 {
+            text.push_str(concat!(
+                "\n\n```ts\n",
+                "function summarize(invoice: Invoice): InvoiceSummary {\n",
+                "  const total = invoiceTotal(invoice);\n",
+                "  return { id: invoice.id, totalCents: total };\n",
+                "}\n",
+                "```"
+            ));
+        }
+        events.push(AgentEvent::TextDelta { text });
+        let id = format!("toolu_long_{n:04}");
+        events.push(AgentEvent::ToolCall {
+            id: id.clone(),
+            call: zeron_proto::ToolCall::ReadFile {
+                path: "/private/tmp/ademark-recording/arena/src/invoices.ts".into(),
+            },
+        });
+        events.push(AgentEvent::ToolResult {
+            id,
+            is_error: false,
+            output: Some("export function invoiceTotal() {}\n".into()),
+            diff: None,
+            preview_paths: Vec::new(),
+            image_payloads: Vec::new(),
+            exit_code: None,
+        });
+    }
+    events.push(AgentEvent::TextDelta {
+        text: "All steps done. LONGTHREAD-END".into(),
+    });
+    events.push(AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: None,
+        error: None,
+        session_id: None,
+    });
+    events
+}
+
+/// The seconds a `/stream [SECONDS]` prompt asks for (180 when bare).
+fn stream_seconds(prompt: &str) -> Option<u64> {
+    let rest = prompt.trim().strip_prefix("/stream")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let seconds = rest.trim().parse().unwrap_or(180);
+    Some(seconds.clamp(1, 3600))
+}
+
+/// How often a `/stream` reply's chunks come, and how many characters each
+/// holds: ademark's A7 replay, 80 tokens a second in 50 ms chunks (four
+/// tokens of about four characters).
+const STREAM_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+const STREAM_CHARS: usize = 16;
+
+/// The `/stream` reply's text: ademark's A7 stream (bench/replay's
+/// `stream-1`), one reply of text, code blocks and a diff block, as long as
+/// `seconds` of chunks at its pace.
+fn stream_text(seconds: u64) -> String {
+    let want = seconds as usize * (1000 / STREAM_EVERY.as_millis() as usize) * STREAM_CHARS;
+    let mut text = String::with_capacity(want + 512);
+    let mut n = 0;
+    while text.len() < want {
+        n += 1;
+        text.push_str(&format!(
+            "Section {n}. The invoice totals are summed per customer before the \
+             discount applies, so `invoiceTotal` stays the one place that rounds. \
+             The reports read the same totals, which keeps the **monthly** view and \
+             the export in step.\n\n"
+        ));
+        if n % 3 == 0 {
+            text.push_str(concat!(
+                "```ts\n",
+                "export function invoiceTotal(invoice: Invoice): number {\n",
+                "  const lines = invoice.lines.map((l) => l.quantity * l.unitCents);\n",
+                "  return Math.round(lines.reduce((a, b) => a + b, 0));\n",
+                "}\n",
+                "```\n\n",
+            ));
+        }
+        if n == 7 {
+            text.push_str(concat!(
+                "```diff\n",
+                "-  return total;\n",
+                "+  return Math.round(total);\n",
+                "```\n\n",
+            ));
+        }
+    }
+    text
+}
+
+/// The `/stream` reply, paced: `STREAM_CHARS` characters every
+/// `STREAM_EVERY`, then the end of the turn.
+fn stream_events(seconds: u64) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+    let chars: Vec<char> = stream_text(seconds).chars().collect();
+    let chunks: Vec<String> = chars
+        .chunks(STREAM_CHARS)
+        .map(|c| c.iter().collect())
+        .collect();
+    futures::stream::iter(chunks)
+        .then(|text| async move {
+            tokio::time::sleep(STREAM_EVERY).await;
+            Ok(AgentEvent::TextDelta { text })
+        })
+        .chain(futures::stream::once(async {
+            Ok(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: None,
+            })
+        }))
+        .boxed()
+}
+
+/// The message a `/error <message>` prompt fails the run with.
+fn scripted_error(prompt: &str) -> Option<&str> {
+    let message = prompt.trim().strip_prefix("/error ")?.trim();
+    (!message.is_empty()).then_some(message)
+}
+
+fn fanout_id(i: usize) -> String {
+    format!("mock-fanout-{i}")
+}
+
+fn fanout_tag(i: usize, event: AgentEvent) -> AgentEvent {
+    AgentEvent::Subagent {
+        parent_tool_use_id: fanout_id(i),
+        event: Box::new(event),
+    }
+}
+
+/// The `/fanout` opening: a line of text, then `count` spawn chips in the
+/// claude driver's shape, each seeded with its task like a Task prompt.
+fn fanout_spawns(count: usize) -> Vec<AgentEvent> {
+    const VERBS: [&str; 5] = ["Audit", "Map", "Profile", "Verify", "Trace"];
+    const AREAS: [&str; 8] = [
+        "the fold path",
+        "the commit cadence",
+        "the sync client",
+        "the registry doc",
+        "the composer dock",
+        "the sidebar sort",
+        "the diff reconciler",
+        "the relay transport",
+    ];
+    let mut events = vec![AgentEvent::TextDelta {
+        text: format!("\n### Fan-out\n\nSending {count} scouts across the workspace.\n\n"),
+    }];
+    for i in 0..count {
+        let description = format!(
+            "{} {}",
+            VERBS[i % VERBS.len()],
+            AREAS[(i / VERBS.len()) % AREAS.len()]
+        );
+        let prompt = format!("{description} and report anything that breaks its invariants.");
+        events.push(AgentEvent::ToolCall {
+            id: fanout_id(i),
+            call: zeron_proto::ToolCall::Unknown {
+                name: format!("Agent: {description}"),
+                input: Some(serde_json::json!({
+                    "description": description,
+                    "prompt": prompt,
+                })),
+            },
+        });
+        events.push(fanout_tag(i, AgentEvent::UserMessage { text: prompt }));
+        events.push(fanout_tag(
+            i,
+            AgentEvent::TextDelta {
+                text: "Reading the code paths involved.\n\n".into(),
+            },
+        ));
+    }
+    events
+}
+
+/// The `i`th scout's report and settle; every seventh fails.
+fn fanout_settle(i: usize) -> Vec<AgentEvent> {
+    let failed = i % 7 == 6;
+    vec![
+        fanout_tag(
+            i,
+            AgentEvent::TextDelta {
+                text: if failed {
+                    "Could not reproduce the setup; giving up.".into()
+                } else {
+                    "Invariants hold; nothing to report.".into()
+                },
+            },
+        ),
+        AgentEvent::ToolResult {
+            id: fanout_id(i),
+            is_error: failed,
+            output: None,
+            diff: None,
+            preview_paths: Vec::new(),
+            image_payloads: Vec::new(),
+            exit_code: None,
+        },
+        fanout_tag(
+            i,
+            AgentEvent::Done {
+                status: if failed {
+                    DoneStatus::Errored
+                } else {
+                    DoneStatus::Completed
+                },
+                result: None,
+                error: None,
+                session_id: None,
+            },
+        ),
+    ]
 }
 
 /// The scripted question set for the `ZERON_MOCK_QUESTION` variant (exercises
@@ -28,6 +276,8 @@ fn question_script() -> Vec<UserInputQuestion> {
                 "Event-driven fold with coalesced commits".into(),
                 "Hybrid: event-driven with a polling fallback".into(),
             ],
+            prefill: None,
+            multiline: false,
             multi_select: false,
             mcp_connect: None,
         },
@@ -40,11 +290,19 @@ fn question_script() -> Vec<UserInputQuestion> {
                 "End-to-end (two-device)".into(),
                 "Golden screenshots".into(),
             ],
+            prefill: None,
+            multiline: false,
             multi_select: true,
             mcp_connect: None,
         },
     ]
 }
+
+const MOCK_PLAN: &str = "Here's the plan. Nothing has changed yet.\n\n\
+1. Add `AccessMode` to the run request and the chat's config.\n\
+2. Map each mode onto the agent's approval policy and sandbox.\n\
+3. Ask the person for anything the mode does not cover.\n\n\
+Turn plan mode off to start.";
 
 #[async_trait]
 impl Harness for MockHarness {
@@ -60,14 +318,35 @@ impl Harness for MockHarness {
     fn steering_mode(&self) -> SteeringMode {
         SteeringMode::StepBoundary
     }
+    /// Only the long-tool runtime (`ZERON_MOCK_LONG_TOOL`) stops a turn in
+    /// place, as Claude's and Codex's do.
+    fn stops_turn_in_place(&self) -> bool {
+        long_tool_mode()
+    }
+    /// (`ZERON_MOCK_STEER_WAITS=1`: a steer waits for the command instead,
+    /// as every steer did before, for timing one against the other.)
+    fn steer_stops_tool(&self) -> bool {
+        long_tool_mode()
+            && !std::env::var("ZERON_MOCK_STEER_WAITS")
+                .ok()
+                .is_some_and(|v| !v.is_empty() && v != "0")
+    }
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
         &[ReasoningLevel::Medium]
+    }
+    fn access_modes(&self) -> &[AccessMode] {
+        &AccessMode::ALL
+    }
+    fn supports_plan(&self) -> bool {
+        true
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![
             Model {
+                default: false,
                 id: "mock-1".into(),
                 label: "Mock 1".into(),
+                provider: None,
                 description: None,
                 reasoning_levels: vec![ReasoningLevel::Medium],
                 options: vec![],
@@ -75,8 +354,10 @@ impl Harness for MockHarness {
             // Claude-mirroring demo model: lets scripted runs carry the same
             // chip labels ("Fable 5 · High") as a real Claude session.
             Model {
+                default: false,
                 id: "mock-fable-5".into(),
                 label: "Fable 5".into(),
+                provider: None,
                 description: None,
                 reasoning_levels: vec![
                     ReasoningLevel::Low,
@@ -88,9 +369,17 @@ impl Harness for MockHarness {
             },
         ])
     }
+    async fn run_title(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.run(request, controls).await
+    }
+
     async fn run(
         &self,
-        _request: RunRequest,
+        request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         // Optional pacing knob for demos/manual testing: `ZERON_MOCK_DELAY_MS`
@@ -142,6 +431,156 @@ impl Harness for MockHarness {
                             picked.join("**, **")
                         }
                     ),
+                });
+                let _ = tx.send(AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                });
+            });
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (Ok(event), rx))
+            });
+            return Ok(stream.boxed());
+        }
+
+        // Plan mode proposes and changes nothing; a mode short of full access
+        // asks before the script's command, the way a real agent's approval
+        // reaches the person.
+        if request.plan || !request.access.is_full_access() {
+            let request_input = controls.request_input;
+            let plan = request.plan;
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+            tokio::spawn(async move {
+                let pause = delay.max(std::time::Duration::from_millis(50));
+                let send = |text: &str| {
+                    let _ = tx.send(AgentEvent::TextDelta { text: text.into() });
+                };
+                if plan {
+                    tokio::time::sleep(pause).await;
+                    send(MOCK_PLAN);
+                } else {
+                    send("I'll run the test suite first.\n\n");
+                    tokio::time::sleep(pause).await;
+                    let question = crate::approval::command("Mock", "cargo test --workspace");
+                    let answers = request_input(vec![question.clone()])
+                        .await
+                        .unwrap_or_default();
+                    if crate::approval::approved(&question, &answers) {
+                        let _ = tx.send(AgentEvent::ToolCall {
+                            id: "mock-approved-tool".into(),
+                            call: zeron_proto::ToolCall::Exec {
+                                command: "cargo test --workspace".into(),
+                            },
+                        });
+                        tokio::time::sleep(pause).await;
+                        let _ = tx.send(AgentEvent::ToolResult {
+                            id: "mock-approved-tool".into(),
+                            is_error: false,
+                            output: Some("test result: ok. 128 passed; 0 failed".into()),
+                            diff: None,
+                            preview_paths: Vec::new(),
+                            image_payloads: Vec::new(),
+                            exit_code: None,
+                        });
+                        send("All 128 tests pass.");
+                    } else {
+                        send("Understood, I won't run it.");
+                    }
+                }
+                let _ = tx.send(AgentEvent::Done {
+                    status: DoneStatus::Completed,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                });
+            });
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (Ok(event), rx))
+            });
+            return Ok(stream.boxed());
+        }
+
+        // Dev/testing knob: `ZERON_MOCK_BACKGROUND=1` starts three background
+        // processes that outlive the turn — the only data-side way to fill the
+        // background tray. The runtime parks like a real agent's: the
+        // processes print output, a host stop ends one, later messages are
+        // answered in place, and a teardown takes them all.
+        if std::env::var("ZERON_MOCK_BACKGROUND")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0")
+        {
+            return Ok(background_run(controls, delay));
+        }
+
+        // Dev/testing knob: `ZERON_MOCK_LONG_TOOL=1` is a runtime with real
+        // processes, for timing steers against a blocking command.
+        if long_tool_mode() {
+            return Ok(long_tool_run(
+                request.prompt.clone(),
+                request.attachments.clone(),
+                controls,
+            ));
+        }
+
+        // Dev/testing knob: a `/fanout N` prompt spawns N subagents at once,
+        // then settles them one by one, oldest first (every seventh fails) —
+        // the only data-side way to fill the session card's subagent lane,
+        // scroll it, and watch it drain into its finished fold. They settle
+        // `ZERON_MOCK_DELAY_MS` apart, 2.5s by default.
+        // `/error <message>`: the run fails with that message (error cards
+        // for any provider failure, without a real provider).
+        // `/longthread [N]`: ademark's A11 long thread, N steps of a text
+        // and a file read (1,000 when bare), for timing a long chat's open.
+        if let Some(count) = longthread_count(&request.prompt) {
+            let events = longthread_events(count).into_iter().map(Ok);
+            return Ok(futures::stream::iter(events).boxed());
+        }
+        // `/stream [SECONDS]`: ademark's A7 stream, one reply of text, code
+        // and a diff at 80 tokens a second in 50 ms chunks, for SECONDS (180
+        // when bare), for what a window spends while agents stream.
+        if let Some(seconds) = stream_seconds(&request.prompt) {
+            return Ok(stream_events(seconds));
+        }
+        if let Some(message) = scripted_error(&request.prompt) {
+            let events = vec![
+                Ok(AgentEvent::Error {
+                    message: message.to_string(),
+                }),
+                Ok(AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                }),
+            ];
+            return Ok(futures::stream::iter(events).boxed());
+        }
+        if let Some(count) = fanout_count(&request.prompt) {
+            let settle = if delay_ms == 0 {
+                std::time::Duration::from_millis(2500)
+            } else {
+                delay
+            };
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+            tokio::spawn(async move {
+                for event in fanout_spawns(count) {
+                    if tx.send(event).is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                }
+                for i in 0..count {
+                    tokio::time::sleep(settle).await;
+                    for event in fanout_settle(i) {
+                        if tx.send(event).is_err() {
+                            return;
+                        }
+                    }
+                }
+                let _ = tx.send(AgentEvent::TextDelta {
+                    text: format!("All {count} scouts reported back."),
                 });
                 let _ = tx.send(AgentEvent::Done {
                     status: DoneStatus::Completed,
@@ -243,7 +682,7 @@ impl Harness for MockHarness {
                 "Inline styles hold while text arrives: **bold stays bold**, ",
                 "*italic stays italic*, `code stays code`, and ~~this stays struck~~.\n\n",
                 "- **Fold** — parts diff into the [Loro doc](https://loro.dev) on a 120ms cadence\n",
-                "- **Queue** — commands remain in the local session doc until the host processes them\n",
+                "- **Relay** — commits fan out through the [session room](https://developers.cloudflare.com/durable-objects/) to every device\n",
                 "- **Paint** — the [display tree](https://github.com/pulldown-cmark/pulldown-cmark) mends hanging markers in the last block only\n\n",
                 "Links above never flash their URLs, and closing markers never reflow the paragraph.\n",
             )
@@ -287,6 +726,9 @@ impl Harness for MockHarness {
                         is_error: false,
                         output: None,
                         diff: None,
+                        preview_paths: Vec::new(),
+                        image_payloads: Vec::new(),
+                        exit_code: None,
                     },
                 ]
             })
@@ -310,7 +752,7 @@ impl Harness for MockHarness {
                 };
                 let spawn = |id: &str, description: &str, prompt: &str| AgentEvent::ToolCall {
                     id: id.into(),
-                    // The driver spawn shape: `Agent: {description}`
+                    // The claude-driver spawn shape: `Agent: {description}`
                     // with the task in the input (names the chip AND the tab).
                     call: zeron_proto::ToolCall::Unknown {
                         name: format!("Agent: {description}"),
@@ -325,6 +767,9 @@ impl Harness for MockHarness {
                     is_error: false,
                     output: None,
                     diff: None,
+                    preview_paths: Vec::new(),
+                    image_payloads: Vec::new(),
+                    exit_code: None,
                 };
                 let done = AgentEvent::Done {
                     status: DoneStatus::Completed,
@@ -347,7 +792,7 @@ impl Harness for MockHarness {
                         "Measure the 120ms coalesced commit cadence under a scripted delta burst.",
                     ),
                     // The spawn prompts seed each subagent's opening user
-                    // entry (like a driver's Task-prompt seeding).
+                    // entry (like the claude driver's Task-prompt seeding).
                     tag(
                         "mock-sub-1",
                         AgentEvent::UserMessage {
@@ -384,7 +829,7 @@ impl Harness for MockHarness {
                     ),
                     resolve("mock-sub-1"),
                     tag("mock-sub-1", done.clone()),
-                    // A steer AFTER the subagent settled (a queued
+                    // A steer AFTER the subagent settled (claude's queued
                     // SendMessage shape): resurrects the chip and reopens
                     // the frozen transcript for the resumed segment.
                     tag(
@@ -426,8 +871,8 @@ impl Harness for MockHarness {
                         },
                     ),
                     // A parent→subagent steer: splits the transcript into a
-                    // user entry + fresh assistant segment (like tagged user
-                    // text blocks).
+                    // user entry + fresh assistant segment (like the claude
+                    // driver's tagged user text blocks).
                     tag(
                         "mock-sub-2",
                         AgentEvent::UserMessage {
@@ -490,8 +935,74 @@ impl Harness for MockHarness {
                         is_error: false,
                         output: None,
                         diff: None,
+                        preview_paths: Vec::new(),
+                        image_payloads: Vec::new(),
+                        exit_code: None,
                     },
                 ]
+            })
+            .into_iter()
+            .flatten();
+        // Dev/testing knob: `ZERON_MOCK_TODO=1` appends a checklist the agent
+        // works through — one `Todo` call rewritten in place per step, the way
+        // TodoWrite does — so the todo panel's open / fold / finished states
+        // can be watched live (pace it with `ZERON_MOCK_DELAY_MS`).
+        let mock_todo = std::env::var("ZERON_MOCK_TODO")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0");
+        let todo_events = mock_todo
+            .then(|| {
+                const STEPS: [&str; 8] = [
+                    "Read the fold path in crates/doc",
+                    "Add the status field to TodoItem",
+                    "Map in-progress in every normalizer",
+                    "Write the fold-window view model",
+                    "Render the todo tray above the composer",
+                    "Persist open state per chat",
+                    "Run the unit tests",
+                    "Write the design note",
+                ];
+                let list = |active: usize| zeron_proto::ToolCall::Todo {
+                    items: STEPS
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, text)| {
+                            zeron_proto::TodoItem::new(
+                                *text,
+                                match ix.cmp(&active) {
+                                    std::cmp::Ordering::Less => zeron_proto::TodoStatus::Completed,
+                                    std::cmp::Ordering::Equal => {
+                                        zeron_proto::TodoStatus::InProgress
+                                    }
+                                    std::cmp::Ordering::Greater => zeron_proto::TodoStatus::Pending,
+                                },
+                            )
+                        })
+                        .collect(),
+                };
+                let mut events = vec![AgentEvent::TextDelta {
+                    text: "\n### Todo check\n\nWorking through the checklist.\n\n".into(),
+                }];
+                // Steps 0..=8: the last write has every item completed.
+                for active in 0..=STEPS.len() {
+                    events.push(AgentEvent::ToolCall {
+                        id: "mock-todo".into(),
+                        call: list(active),
+                    });
+                    events.push(AgentEvent::ToolResult {
+                        id: "mock-todo".into(),
+                        is_error: false,
+                        output: None,
+                        diff: None,
+                        preview_paths: Vec::new(),
+                        image_payloads: Vec::new(),
+                        exit_code: None,
+                    });
+                    events.push(AgentEvent::TextDelta {
+                        text: format!("Update {} written.\n\n", active + 1),
+                    });
+                }
+                events
             })
             .into_iter()
             .flatten();
@@ -503,6 +1014,7 @@ impl Harness for MockHarness {
             .chain(thinking_events)
             .chain(code_tool_events)
             .chain(subagent_events)
+            .chain(todo_events)
             .chain(code_event)
             .chain(table_event)
             .chain(mend_event)
@@ -577,5 +1089,487 @@ impl Harness for MockHarness {
                 event
             })
             .boxed())
+    }
+}
+
+/// The background mode's processes: id, command, description, how long ago
+/// it started, and the lines it prints in turn.
+const BACKGROUND_PROCESSES: [(&str, &str, &str, i64, &[&str]); 3] = [
+    (
+        "mock-bg-dev",
+        "pnpm --filter web dev --port 5173",
+        "Start the web dev server",
+        754,
+        &[
+            "  VITE v6.2.1  ready in 412 ms",
+            "  \u{279c}  Local:   http://localhost:5173/",
+            "  \u{279c}  Network: use --host to expose",
+            "12:41:07 [vite] hmr update /src/routes/settings.tsx",
+            "12:41:19 [vite] hmr update /src/components/Composer.tsx, /src/styles/composer.css",
+            "12:41:32 [vite] page reload src/main.tsx",
+        ],
+    ),
+    (
+        "mock-bg-watch",
+        "cargo watch -x 'test -p zeron-doc'",
+        "Re-run the doc tests on change",
+        187,
+        &[
+            "[Running 'cargo test -p zeron-doc']",
+            "   Compiling zeron-doc v0.2.129 (/work/crates/doc)",
+            "    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.81s",
+            "     Running unittests src/lib.rs (target/debug/deps/zeron_doc-3f1c)",
+            "test result: ok. 412 passed; 0 failed; 0 ignored; finished in 1.92s",
+            "[Finished running. Exit status: 0]",
+        ],
+    ),
+    (
+        "mock-bg-logs",
+        "tail -f logs/api.log | grep --line-buffered -E 'WARN|ERROR'",
+        "Watch the API log for errors",
+        41,
+        &[
+            "WARN  sync::relay  reconnecting to device room (attempt 2)",
+            "WARN  sync::relay  device room rejoined after 1.4s",
+            "ERROR api::uploads  chunk 7 of 12 timed out; retrying",
+        ],
+    ),
+];
+
+/// `ZERON_MOCK_BACKGROUND`: one turn that starts [`BACKGROUND_PROCESSES`],
+/// then a parked runtime that keeps them running (each prints its script
+/// once, a line per tick).
+fn background_run(
+    controls: RunControls,
+    delay: std::time::Duration,
+) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+    let RunControls {
+        mut steering,
+        interrupt,
+        turn,
+        ..
+    } = controls;
+    let pause = delay.max(std::time::Duration::from_millis(120));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    tokio::spawn(async move {
+        let done = || AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        };
+        let _ = tx.send(AgentEvent::TextDelta {
+            text:
+                "I'll keep the dev server, the doc tests and the API log running while we work.\n\n"
+                    .into(),
+        });
+        let now = chrono::Utc::now();
+        let mut listed = Vec::new();
+        for (id, command, description, ago, lines) in BACKGROUND_PROCESSES {
+            tokio::time::sleep(pause).await;
+            let _ = tx.send(AgentEvent::ToolCall {
+                id: format!("{id}-call"),
+                call: zeron_proto::ToolCall::Exec {
+                    command: command.into(),
+                },
+            });
+            let _ = tx.send(AgentEvent::ToolResult {
+                image_payloads: Vec::new(),
+                preview_paths: Vec::new(),
+                id: format!("{id}-call"),
+                is_error: false,
+                output: Some(format!("Command running in background with ID: {id}")),
+                diff: None,
+                exit_code: None,
+            });
+            listed.push(zeron_proto::BackgroundTask {
+                id: id.into(),
+                command: command.into(),
+                description: Some(description.into()),
+                started_at: now - chrono::Duration::seconds(ago),
+            });
+            for line in &lines[..lines.len() / 2] {
+                turn.append_background_output(id, &format!("{line}\n"));
+            }
+            turn.set_background_processes(listed.clone());
+            turn.set_background(listed.len());
+        }
+        tokio::time::sleep(pause).await;
+        let _ = tx.send(AgentEvent::TextDelta {
+            text: "All three are up. Ask me to stop any of them, or stop them from the tray."
+                .into(),
+        });
+        let _ = tx.send(done());
+
+        // Parked: the processes print, stop when asked, and the runtime
+        // answers whatever comes next.
+        let mut printed: Vec<usize> = BACKGROUND_PROCESSES
+            .iter()
+            .map(|(.., lines)| lines.len() / 2)
+            .collect();
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(1600));
+        loop {
+            tokio::select! {
+                _ = interrupt.cancelled() => break,
+                id = turn.background_stop_requested() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    listed.retain(|task| task.id != id);
+                    turn.set_background_processes(listed.clone());
+                    turn.set_background(listed.len());
+                }
+                _ = tick.tick() => {
+                    for (ix, (id, .., lines)) in BACKGROUND_PROCESSES.iter().enumerate() {
+                        if listed.iter().any(|task| task.id == *id) && printed[ix] < lines.len() {
+                            let line = lines[printed[ix]];
+                            printed[ix] += 1;
+                            turn.append_background_output(id, &format!("{line}\n"));
+                        }
+                    }
+                }
+                message = steering.recv() => {
+                    let Some(_) = message else { break };
+                    let _ = tx.send(AgentEvent::Steered {
+                        assistant_message_id: None,
+                        next_assistant_message_id: None,
+                    });
+                    tokio::time::sleep(pause).await;
+                    let running = listed.len();
+                    let _ = tx.send(AgentEvent::TextDelta {
+                        text: format!(
+                            "Noted. {running} background process{} still running.",
+                            if running == 1 { " is" } else { "es are" }
+                        ),
+                    });
+                    let _ = tx.send(done());
+                }
+            }
+        }
+        turn.set_background_processes(Vec::new());
+        turn.set_background(0);
+        if interrupt.is_cancelled() {
+            let _ = tx.send(AgentEvent::Done {
+                status: DoneStatus::Interrupted,
+                result: None,
+                error: None,
+                session_id: None,
+            });
+        }
+    });
+    futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|event| (Ok(event), rx))
+    })
+    .boxed()
+}
+
+/// What the long-tool runtime answers a prompt: its words, and the files it
+/// came with as attachments (the images among them by name), so a test can
+/// see what reached the agent as an attachment and not only as text.
+fn heard(words: &str, attached: &[String]) -> String {
+    if attached.is_empty() {
+        return format!("Heard: {words}\n\n");
+    }
+    let names: Vec<&str> = attached
+        .iter()
+        .map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p))
+        .collect();
+    let images = attached
+        .iter()
+        .filter(|p| {
+            let p = p.to_ascii_lowercase();
+            [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|e| p.ends_with(e))
+        })
+        .count();
+    format!(
+        "Heard: {words}\n\n[attachments: {} ({images} image{}): {}]\n\n",
+        attached.len(),
+        if images == 1 { "" } else { "s" },
+        names.join(", ")
+    )
+}
+
+/// `ZERON_MOCK_LONG_TOOL=1` (Unix: it runs `sleep`).
+fn long_tool_mode() -> bool {
+    cfg!(unix)
+        && std::env::var("ZERON_MOCK_LONG_TOOL")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0")
+}
+
+/// `ZERON_MOCK_LONG_TOOL`: a runtime with real processes. Its first turn
+/// starts a background `sleep 600` that outlives every turn, then runs a
+/// foreground `sleep` (`ZERON_MOCK_TOOL_SECS`, 120 by default) as a
+/// blocking command; so does any later prompt naming "long". A steer that
+/// arrives while the command runs waits for it to finish (a step-boundary
+/// agent's), then is answered `Heard: <prompt>`. A host stop
+/// ([`crate::TurnControl::stop_turn`]) kills the foreground command alone
+/// and ends the turn in place; a teardown takes everything. With
+/// `ZERON_MOCK_PID_DIR`, the processes' ids go to `<first prompt>.bg.pid`
+/// and `<first prompt>.fg.pid` there.
+fn long_tool_run(
+    first: String,
+    first_attachments: Vec<String>,
+    controls: RunControls,
+) -> BoxStream<'static, Result<AgentEvent, HarnessError>> {
+    let RunControls {
+        mut steering,
+        interrupt,
+        turn,
+        ..
+    } = controls;
+    let secs: u64 = std::env::var("ZERON_MOCK_TOOL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let pid_dir = std::env::var_os("ZERON_MOCK_PID_DIR").map(std::path::PathBuf::from);
+    // (Named for the runtime's first prompt, so runtimes don't share files.)
+    let slug: String = first
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(40)
+        .collect();
+    let note_pid = move |name: &str, pid: Option<u32>| {
+        if let (Some(dir), Some(pid)) = (&pid_dir, pid) {
+            let _ = std::fs::write(dir.join(format!("{slug}.{name}")), pid.to_string());
+        }
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    tokio::spawn(async move {
+        let done = |status: DoneStatus| AgentEvent::Done {
+            status,
+            result: None,
+            error: None,
+            session_id: None,
+        };
+        let say = |text: String| AgentEvent::TextDelta { text };
+        let mut background: Option<tokio::process::Child> = None;
+        let mut calls = 0usize;
+        let mut prompt = Some((first, first_attachments));
+        let mut first_turn = true;
+        'turns: loop {
+            // Parked between turns: the next prompt comes by the mailbox.
+            let (words, attached) = match prompt.take() {
+                Some(next) => next,
+                None => {
+                    tokio::select! {
+                        _ = interrupt.cancelled() => break 'turns,
+                        message = steering.recv() => {
+                            let Some(message) = message else { break 'turns };
+                            let _ = tx.send(AgentEvent::Steered {
+                                assistant_message_id: None,
+                                next_assistant_message_id: None,
+                            });
+                            (message.prompt, message.attachments)
+                        }
+                    }
+                }
+            };
+            let long = first_turn || words.contains("long");
+            if !first_turn {
+                let _ = tx.send(say(heard(&words, &attached)));
+            }
+            if first_turn {
+                first_turn = false;
+                calls += 1;
+                let id = format!("mock-long-bg-{calls}");
+                let _ = tx.send(AgentEvent::ToolCall {
+                    id: id.clone(),
+                    call: zeron_proto::ToolCall::Exec {
+                        command: "sleep 600 &".into(),
+                    },
+                });
+                background = tokio::process::Command::new("sleep")
+                    .arg("600")
+                    .spawn()
+                    .ok();
+                let pid = background.as_ref().and_then(|c| c.id());
+                note_pid("bg.pid", pid);
+                let _ = tx.send(AgentEvent::ToolResult {
+                    id,
+                    is_error: false,
+                    output: Some(format!(
+                        "Command running in background, pid {}",
+                        pid.unwrap_or(0)
+                    )),
+                    diff: None,
+                    preview_paths: Vec::new(),
+                    image_payloads: Vec::new(),
+                    exit_code: None,
+                });
+                turn.set_background_processes(vec![zeron_proto::BackgroundTask {
+                    id: "mock-long-bg".into(),
+                    command: "sleep 600".into(),
+                    description: Some("A background process that outlives the turn".into()),
+                    started_at: chrono::Utc::now(),
+                }]);
+                turn.set_background(1);
+            }
+            if !long {
+                let _ = tx.send(done(DoneStatus::Completed));
+                continue;
+            }
+            calls += 1;
+            let id = format!("mock-long-fg-{calls}");
+            let _ = tx.send(AgentEvent::ToolCall {
+                id: id.clone(),
+                call: zeron_proto::ToolCall::Exec {
+                    command: format!("sleep {secs}"),
+                },
+            });
+            let Ok(mut child) = tokio::process::Command::new("sleep")
+                .arg(secs.to_string())
+                .spawn()
+            else {
+                let _ = tx.send(done(DoneStatus::Errored));
+                continue;
+            };
+            note_pid("fg.pid", child.id());
+            // Steers that come while the command runs wait for it.
+            let mut held: Vec<(String, Vec<String>)> = Vec::new();
+            let stopped = loop {
+                tokio::select! {
+                    _ = interrupt.cancelled() => {
+                        let _ = child.kill().await;
+                        break 'turns;
+                    }
+                    _ = turn.stop_requested() => {
+                        let _ = child.kill().await;
+                        break true;
+                    }
+                    _ = child.wait() => break false,
+                    message = steering.recv() => match message {
+                        Some(message) => held.push((message.prompt, message.attachments)),
+                        None => {
+                            let _ = child.kill().await;
+                            break 'turns;
+                        }
+                    },
+                }
+            };
+            let _ = tx.send(AgentEvent::ToolResult {
+                id,
+                is_error: stopped,
+                output: Some(if stopped {
+                    "Interrupted".into()
+                } else {
+                    String::new()
+                }),
+                diff: None,
+                preview_paths: Vec::new(),
+                image_payloads: Vec::new(),
+                exit_code: (!stopped).then_some(0),
+            });
+            if stopped {
+                // Steers the stopped turn held are cancelled with it, as
+                // Claude's `cancel_queued` does.
+                let _ = tx.send(done(DoneStatus::Interrupted));
+                continue;
+            }
+            for (words, attached) in held {
+                let _ = tx.send(AgentEvent::Steered {
+                    assistant_message_id: None,
+                    next_assistant_message_id: None,
+                });
+                let _ = tx.send(say(heard(&words, &attached)));
+            }
+            let _ = tx.send(say("The command finished.".into()));
+            let _ = tx.send(done(DoneStatus::Completed));
+        }
+        if let Some(mut child) = background.take() {
+            let _ = child.kill().await;
+        }
+        turn.set_background_processes(Vec::new());
+        turn.set_background(0);
+        if interrupt.is_cancelled() {
+            let _ = tx.send(done(DoneStatus::Interrupted));
+        }
+    });
+    futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|event| (Ok(event), rx))
+    })
+    .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_prompt_names_the_failure() {
+        assert_eq!(
+            scripted_error("/error Not logged in"),
+            Some("Not logged in")
+        );
+        assert_eq!(scripted_error("/error  "), None);
+        assert_eq!(scripted_error("/errors"), None);
+    }
+
+    #[test]
+    fn fanout_reads_its_count_from_the_prompt() {
+        assert_eq!(fanout_count("/fanout"), Some(40));
+        assert_eq!(fanout_count("  /fanout 12 "), Some(12));
+        assert_eq!(fanout_count("/fanout 9000"), Some(200));
+        assert_eq!(fanout_count("/fanouts"), None);
+        assert_eq!(fanout_count("Walk me through the pipeline"), None);
+    }
+
+    #[test]
+    fn stream_is_a7s_reply_at_its_pace() {
+        assert_eq!(stream_seconds("/stream"), Some(180));
+        assert_eq!(stream_seconds(" /stream 30 "), Some(30));
+        assert_eq!(stream_seconds("/streams"), None);
+        let text = stream_text(10);
+        // 10 s of 16-character chunks every 50 ms, and a paragraph more.
+        assert!((3200..3800).contains(&text.len()), "{}", text.len());
+        assert!(text.contains("```ts") && text.contains("```diff"));
+    }
+
+    #[test]
+    fn longthread_is_a11s_thread() {
+        assert_eq!(longthread_count("/longthread"), Some(1000));
+        assert_eq!(longthread_count(" /longthread 20 "), Some(20));
+        assert_eq!(longthread_count("/longthreads"), None);
+        let events = longthread_events(10);
+        let texts: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TextDelta { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let reads = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentEvent::ToolCall {
+                        call: zeron_proto::ToolCall::ReadFile { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!((texts.len(), reads), (11, 10));
+        assert!(texts[4].contains("```ts"), "one text in five holds code");
+        assert!(texts[10].ends_with("LONGTHREAD-END"));
+        assert!(matches!(events.last(), Some(AgentEvent::Done { .. })));
+    }
+
+    #[test]
+    fn fanout_spawns_every_scout_and_every_seventh_fails() {
+        let spawns = fanout_spawns(40)
+            .into_iter()
+            .filter(|event| matches!(event, AgentEvent::ToolCall { .. }))
+            .count();
+        assert_eq!(spawns, 40);
+        let failed = (0..40)
+            .filter(|&i| {
+                fanout_settle(i)
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::ToolResult { is_error: true, .. }))
+            })
+            .count();
+        assert_eq!(failed, 5);
     }
 }

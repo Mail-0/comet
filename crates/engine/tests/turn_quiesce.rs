@@ -49,6 +49,7 @@ fn init_quiesce_env() {
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
+        mcp: None,
         prompt: prompt.into(),
         harness: None,
         model: None,
@@ -57,9 +58,13 @@ fn run_request(prompt: &str) -> RunRequest {
         cwd: "/tmp".into(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
+        access: Default::default(),
+        plan: false,
         attachments: Vec::new(),
         worktree: None,
         resume: None,
+        env: Default::default(),
+        extra_mcp: Vec::new(),
     }
 }
 
@@ -187,7 +192,7 @@ fn assemble(main_prompt: &str) -> Rig {
         feed: Mutex::new(Some(rx)),
     }));
     let dir = tempfile::tempdir().unwrap();
-    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock)
+    let core = EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None)
         .expect("engine core assembles");
     Rig {
         core,
@@ -250,13 +255,13 @@ where
 /// self-started turn — the watchdog must settle it back to Idle.
 #[tokio::test]
 async fn parked_self_continuation_folds_and_requiesces() {
-    let rig = assemble("pull waku and benchmark it");
+    let rig = assemble("pull the app and benchmark it");
     rig.core
         .sessions
         .dispatch(
             CHAT,
             HarnessId::Mock,
-            run_request("pull waku and benchmark it"),
+            run_request("pull the app and benchmark it"),
             None,
         )
         .await
@@ -272,12 +277,20 @@ async fn parked_self_continuation_folds_and_requiesces() {
     )
     .await;
 
+    let first_completion = rig
+        .core
+        .sessions
+        .session_status(CHAT)
+        .unwrap()
+        .last_completed_turn;
+    assert!(first_completion.is_some());
+
     // Self-continuation: streamed output with NO turn behind it, arriving
     // well past the resume gate (a real one follows a whole agent round
     // trip — the incident's came five minutes after the park).
     tokio::time::sleep(Duration::from_millis(1200)).await;
     rig.feed
-        .send(text("Build finished successfully. Launching Waku."))
+        .send(text("Build finished successfully. Launching the app."))
         .unwrap();
     wait_for(
         || status(&rig.core) == Some(SessionStatus::Working),
@@ -291,6 +304,18 @@ async fn parked_self_continuation_folds_and_requiesces() {
         "watchdog re-parks the self-continued turn",
     )
     .await;
+
+    let second_completion = rig
+        .core
+        .sessions
+        .session_status(CHAT)
+        .unwrap()
+        .last_completed_turn;
+    assert!(second_completion.is_some());
+    assert_ne!(
+        second_completion, first_completion,
+        "engine-settled responses still notify"
+    );
 
     // The self-continued output is in the doc as its own COMPLETE entry —
     // this exact text was lost in the incident.
@@ -310,13 +335,13 @@ async fn parked_self_continuation_folds_and_requiesces() {
 /// — the watchdog settles it, and the answer text survives in the doc.
 #[tokio::test]
 async fn missing_turn_end_settles_instead_of_working_forever() {
-    let rig = assemble("pull waku and benchmark it");
+    let rig = assemble("pull the app and benchmark it");
     rig.core
         .sessions
         .dispatch(
             CHAT,
             HarnessId::Mock,
-            run_request("pull waku and benchmark it"),
+            run_request("pull the app and benchmark it"),
             None,
         )
         .await
@@ -415,6 +440,9 @@ async fn open_tool_call_never_quiesces() {
             is_error: false,
             output: None,
             diff: None,
+            preview_paths: Vec::new(),
+            image_payloads: Vec::new(),
+            exit_code: None,
         })
         .unwrap();
     rig.feed.send(text("Build done.")).unwrap();
@@ -455,6 +483,9 @@ async fn stale_tool_echo_stays_parked() {
             is_error: false,
             output: None,
             diff: None,
+            preview_paths: Vec::new(),
+            image_payloads: Vec::new(),
+            exit_code: None,
         })
         .unwrap();
     rig.feed

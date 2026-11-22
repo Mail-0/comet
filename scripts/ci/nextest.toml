@@ -1,0 +1,42 @@
+# cargo-nextest settings for CI (pass with --config-file).
+#
+# A test is timing-sensitive and fails now and then when nextest runs many tests
+# at once (the old `cargo test` runs were serial per binary). nextest reports a
+# pass-on-retry as FLAKY, so it stays visible in the log. Remove an override once
+# its test is fixed.
+
+# zeron-harness `opencode::mcp_injection_tests::mcp_injection_reaches_isolated_server_processes`
+# starts `node` fixture scripts and `binary_version` gives each `--version` probe 2 s;
+# on a loaded 4-core runner the probe occasionally times out ("cannot determine
+# opencode version for MCP configuration").
+[[profile.default.overrides]]
+filter = 'package(zeron-harness) & test(mcp_injection_reaches_isolated_server_processes)'
+retries = 2
+
+# preview `discovery` tests bind the fixed port 7331 and serialize with a mutex,
+# which does nothing when every test is its own process (nextest): one at a time.
+[test-groups.preview-discovery]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary_id(zeron-preview::discovery)'
+test-group = 'preview-discovery'
+
+# `ci`: pull requests and main (NEXTEST_PROFILE=ci). Leaves out slow and soak
+# tests, which the scheduled runs (default profile) still run:
+#   engine doc_host sync at 48-chat scale and against the real 30 s quantum /
+#     10 s idle grace (the ~16 small sync_lifecycle tests cover the policy);
+#   preview `leak` (RSS growth under churn) and the two discovery tests that
+#     assert nothing happens during a 5-7 s sleep.
+[profile.ci]
+default-filter = '''
+not (
+  (package(zeron-engine) & (
+    test(=doc_host::sync_lifecycle_tests::cold_jobs_get_a_real_timed_turn_without_any_writer_ending)
+    | test(=doc_host::sync_lifecycle_tests::slow_checkpoints_survive_idle_grace_with_all_slots_occupied)
+    | test(/^doc_host::sync_lifecycle_tests::forty_eight_/)))
+  | binary_id(zeron-preview::leak)
+  | (binary_id(zeron-preview::discovery) & (test(=a_discovered_server_is_probed_once_not_every_cycle)
+      | test(=authentication_callbacks_receive_no_discovery_connections)))
+)
+'''
