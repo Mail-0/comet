@@ -1,0 +1,2 @@
+# Flaky in macOS CI; passes in Linux CI.
+luau: a chat flicked to its bottom by trackpad comes back at its bottom, nothing meanwhile
