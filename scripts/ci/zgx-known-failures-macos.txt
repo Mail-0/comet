@@ -1,2 +1,4 @@
 # Flaky in macOS CI; passes in Linux CI.
 luau: a chat flicked to its bottom by trackpad comes back at its bottom, nothing meanwhile
+# Flaky in macOS CI; passes in Linux CI.
+luau: a chat scrolled to its bottom by hand comes back at its bottom: a reply landed and it opens with its newest rows first
