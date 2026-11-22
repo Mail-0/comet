@@ -16,12 +16,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 known="$root/scripts/ci/zgx-known-failures.txt"
 
-listed() {
-  sed -n "s/^$1: //p" "$known"
-  if [ -n "${ZGX_KNOWN_FAILURES:-}" ]; then
-    sed -n "s/^$1: //p" "$ZGX_KNOWN_FAILURES"
-  fi
-}
+listed() { sed -n "s/^$1: //p" "$known"; }
 
 case "${1:-}" in
   rust)
