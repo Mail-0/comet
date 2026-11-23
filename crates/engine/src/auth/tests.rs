@@ -589,6 +589,70 @@ async fn a_restored_account_invalidates_the_pending_browser_callback() {
 }
 
 #[tokio::test]
+async fn a_retry_prevents_an_earlier_sign_in_from_saving_or_publishing() {
+    let looking_up_account = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut first_account = Reply::ok(
+            "GET",
+            "/api/webapp/auth/session",
+            account(Some("first-org"), json!([])),
+        );
+        first_account.received = Some(looking_up_account.clone());
+        first_account.release = Some(release.clone());
+        let mut replies = discovery(url);
+        replies.extend([
+            Reply::ok(
+                "POST",
+                "/oauth/token",
+                tokens("first-access", "first-refresh"),
+            ),
+            first_account,
+        ]);
+        replies.extend(discovery(url));
+        replies.extend([
+            Reply::ok(
+                "POST",
+                "/oauth/token",
+                tokens("second-access", "second-refresh"),
+            ),
+            Reply::ok(
+                "GET",
+                "/api/webapp/auth/session",
+                account(Some("second-org"), json!([])),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let (auth, store, holder) = auth(&server, false);
+    let first = sign_in_callback(&auth.start_sign_in().await.unwrap());
+    let first_completion = tokio::spawn({
+        let auth = auth.clone();
+        async move { auth.complete_sign_in(first.as_str()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), looking_up_account.notified())
+        .await
+        .unwrap();
+    let second = sign_in_callback(&auth.start_sign_in().await.unwrap());
+    release.notify_one();
+
+    assert!(first_completion.await.unwrap().is_err());
+    assert_eq!(auth.state(), AuthState::SignedOut);
+    assert!(holder.snapshot().is_none());
+    assert!(store.load().unwrap().is_none());
+
+    auth.complete_sign_in(second.as_str()).await.unwrap();
+    assert_eq!(auth.state().org_id(), Some("second-org"));
+    assert_eq!(holder.snapshot().unwrap().access_token, "second-access");
+    assert_eq!(
+        store.load().unwrap().unwrap().credentials.refresh_token,
+        "second-refresh"
+    );
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
 async fn sign_out_cancels_pending_sign_in() {
     let server = Server::start(discovery).await;
     let (auth, store, holder) = auth(&server, false);
