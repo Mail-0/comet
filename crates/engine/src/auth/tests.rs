@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
+use futures::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use zeron_rpc::{RpcReply, RpcService, methods};
 
 use super::*;
 
@@ -171,6 +173,17 @@ fn discovery(url: &str) -> Vec<Reply> {
 fn tokens(access: &str, refresh: &str) -> Value {
     json!({"access_token": access, "refresh_token": refresh, "expires_in": 3600,
         "scope": "manage offline_access", "token_type": "Bearer"})
+}
+
+fn sign_in_callback(url: &str) -> reqwest::Url {
+    let url = reqwest::Url::parse(url).unwrap();
+    let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    let mut callback = reqwest::Url::parse(&query["redirect_uri"]).unwrap();
+    callback
+        .query_pairs_mut()
+        .append_pair("state", &query["state"])
+        .append_pair("code", "signed-in-code");
+    callback
 }
 
 fn account(org: Option<&str>, orgs: Value) -> Value {
@@ -492,6 +505,190 @@ async fn a_temporary_session_failure_keeps_the_rotated_refresh_token() {
     let requests = server.done.await.unwrap();
     assert!(requests[2].1.contains("refresh-1"));
     assert_eq!(holder.snapshot().unwrap().access_token, "access-2");
+}
+
+#[tokio::test]
+async fn an_abandoned_sign_in_does_not_discard_a_refresh_already_in_flight() {
+    let refreshing = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut refresh = Reply::ok("POST", "/oauth/token", tokens("restored-access", "rotated"));
+        refresh.received = Some(refreshing.clone());
+        refresh.release = Some(release.clone());
+        let mut replies = vec![refresh];
+        replies.extend(discovery(url));
+        replies.push(Reply::ok(
+            "GET",
+            "/api/webapp/auth/session",
+            account(Some("org-1"), json!([])),
+        ));
+        replies
+    })
+    .await;
+    let (auth, store, holder) = auth(&server, true);
+    let rpc = crate::rpc::AuthRpc::new(auth);
+    let restore = tokio::spawn({
+        let rpc = rpc.clone();
+        async move { rpc.handle(methods::AUTH_STATUS, json!({})).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), refreshing.notified())
+        .await
+        .unwrap();
+    rpc.handle(methods::SIGN_IN, json!({})).await.unwrap();
+    release.notify_one();
+
+    let RpcReply::Stream(mut stream) = restore.await.unwrap().unwrap() else {
+        panic!("AuthStatus must remain a watch stream");
+    };
+    assert_eq!(stream.next().await.unwrap()["state"], "signedIn");
+    assert_eq!(
+        store.load().unwrap().unwrap().credentials.refresh_token,
+        "rotated"
+    );
+    assert_eq!(holder.snapshot().unwrap().access_token, "restored-access");
+    let requests = server.done.await.unwrap();
+    assert!(requests[0].1.contains("saved-refresh"));
+}
+
+#[tokio::test]
+async fn a_restored_account_invalidates_the_pending_browser_callback() {
+    let refreshing = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut refresh = Reply::ok("POST", "/oauth/token", tokens("restored", "rotated"));
+        refresh.received = Some(refreshing.clone());
+        refresh.release = Some(release.clone());
+        let mut replies = vec![refresh];
+        replies.extend(discovery(url));
+        replies.push(Reply::ok(
+            "GET",
+            "/api/webapp/auth/session",
+            account(Some("restored-org"), json!([])),
+        ));
+        replies
+    })
+    .await;
+    let (auth, _, holder) = auth(&server, true);
+    let restore = tokio::spawn({
+        let auth = auth.clone();
+        async move { auth.access_token().await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), refreshing.notified())
+        .await
+        .unwrap();
+    let callback = sign_in_callback(&auth.start_sign_in().await.unwrap());
+    let attempt = lock(&auth.inner.session).sign_in_attempt;
+    release.notify_one();
+    assert_eq!(restore.await.unwrap().unwrap(), "restored");
+
+    let error = auth.complete_attempt(callback.as_str(), attempt).await.unwrap_err();
+    assert!(error.to_string().contains("Keiki sign-in was cancelled"));
+    assert_eq!(auth.state().org_id(), Some("restored-org"));
+    assert_eq!(holder.snapshot().unwrap().access_token, "restored");
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_retry_prevents_an_earlier_sign_in_from_saving_or_publishing() {
+    let looking_up_account = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut first_account = Reply::ok(
+            "GET",
+            "/api/webapp/auth/session",
+            account(Some("first-org"), json!([])),
+        );
+        first_account.received = Some(looking_up_account.clone());
+        first_account.release = Some(release.clone());
+        let mut replies = discovery(url);
+        replies.extend([
+            Reply::ok(
+                "POST",
+                "/oauth/token",
+                tokens("first-access", "first-refresh"),
+            ),
+            first_account,
+        ]);
+        replies.extend(discovery(url));
+        replies.extend([
+            Reply::ok(
+                "POST",
+                "/oauth/token",
+                tokens("second-access", "second-refresh"),
+            ),
+            Reply::ok(
+                "GET",
+                "/api/webapp/auth/session",
+                account(Some("second-org"), json!([])),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let (auth, store, holder) = auth(&server, false);
+    let first = sign_in_callback(&auth.start_sign_in().await.unwrap());
+    let first_completion = tokio::spawn({
+        let auth = auth.clone();
+        async move { auth.complete_sign_in(first.as_str()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), looking_up_account.notified())
+        .await
+        .unwrap();
+    let second = sign_in_callback(&auth.start_sign_in().await.unwrap());
+    release.notify_one();
+
+    assert!(first_completion.await.unwrap().is_err());
+    assert_eq!(auth.state(), AuthState::SignedOut);
+    assert!(holder.snapshot().is_none());
+    assert!(store.load().unwrap().is_none());
+
+    auth.complete_sign_in(second.as_str()).await.unwrap();
+    assert_eq!(auth.state().org_id(), Some("second-org"));
+    assert_eq!(holder.snapshot().unwrap().access_token, "second-access");
+    assert_eq!(
+        store.load().unwrap().unwrap().credentials.refresh_token,
+        "second-refresh"
+    );
+    server.done.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_temporary_account_lookup_failure_can_recover_without_another_sign_in() {
+    let server = Server::start(|url| {
+        let mut replies = discovery(url);
+        replies.extend([
+            Reply::ok("POST", "/oauth/token", tokens("new-access", "new-refresh")),
+            Reply::error("GET", "/api/webapp/auth/session", 503),
+            Reply::ok(
+                "POST",
+                "/oauth/token",
+                tokens("recovered-access", "rotated"),
+            ),
+            Reply::ok(
+                "GET",
+                "/api/webapp/auth/session",
+                account(Some("recovered-org"), json!([])),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let (auth, store, holder) = auth(&server, false);
+    let callback = sign_in_callback(&auth.start_sign_in().await.unwrap());
+
+    assert!(auth.complete_sign_in(callback.as_str()).await.is_err());
+    assert_eq!(auth.state(), AuthState::SignedOut);
+    assert!(holder.snapshot().is_none());
+    assert_eq!(
+        store.load().unwrap().unwrap().credentials.refresh_token,
+        "new-refresh"
+    );
+
+    assert_eq!(auth.access_token().await.unwrap(), "recovered-access");
+    assert_eq!(auth.state().org_id(), Some("recovered-org"));
+    assert_eq!(holder.snapshot().unwrap().access_token, "recovered-access");
+    let requests = server.done.await.unwrap();
+    assert!(requests[5].1.contains("new-refresh"));
 }
 
 #[tokio::test]

@@ -43,8 +43,7 @@ struct Auth {
     /// A sign-in waiting on the browser.
     waiting: Cell<bool>,
     failure: Cell<Option<Outcome>>,
-    /// The launch, with no session kept, gave up waiting for the engine:
-    /// shown signed out.
+    /// The launch stopped waiting for the engine and enabled sign-in.
     gave_up: Cell<bool>,
     /// Moves on every sign-in, cancel and sign-out: what comes back for an
     /// older one changes nothing.
@@ -185,11 +184,6 @@ pub fn has_local_installation() -> bool {
     engine::data_dir().is_some_and(|dir| dir.join("profiles/local").is_dir())
 }
 
-/// Whether a launch still without the engine's answer shows signed out.
-fn gives_up_on_session(session_kept: bool) -> bool {
-    !session_kept
-}
-
 impl Auth {
     fn new() -> Self {
         Self {
@@ -285,7 +279,7 @@ impl Auth {
                 waiter.send(());
             }
         }
-        if now_signed_in {
+        if now_signed_in || self.failure.get() == Some("restore_timed_out") {
             self.failure.set(None);
         } else if was_signed_in && self.failure.get().is_none() && !self.signed_out_here.get() {
             // Signed out, not by asking here: the session was refused.
@@ -297,16 +291,18 @@ impl Auth {
         }
     }
 
-    /// The launch's wait for the engine: with no session kept (or no engine
-    /// this app could start to ask), none in time is signed out (the engine's
-    /// word shows as soon as it answers). With one kept, only the engine can
-    /// say it's gone, whatever keeps it from answering now.
     async fn restore_deadline(self: Rc<Self>) {
         zgx::timer::sleep(RESTORE_WAIT).await;
-        let kept = engine::get().can_start();
-        if *self.session.borrow() == Session::Unknown && gives_up_on_session(kept) {
-            eprintln!("zeron-zgx: account: no answer from the engine yet; shown signed out");
+        self.finish_restore_wait();
+    }
+
+    fn finish_restore_wait(&self) {
+        if *self.session.borrow() == Session::Unknown {
+            eprintln!("zeron-zgx: account: no answer from the engine yet; sign-in available");
             self.gave_up.set(true);
+            if !self.waiting.get() && self.failure.get().is_none() {
+                self.failure.set(Some("restore_timed_out"));
+            }
             self.publish();
         }
     }
@@ -574,12 +570,26 @@ mod tests {
         }
     }
 
-    /// A kept session is signed in until the engine says otherwise, however
-    /// long it takes to answer; with none kept, sign-in is shown as before.
     #[test]
-    fn a_kept_session_is_never_given_up_on() {
-        assert!(!gives_up_on_session(true));
-        assert!(gives_up_on_session(false));
+    fn restore_timeout_enables_sign_in_without_discarding_a_late_session() {
+        let auth = Auth::new();
+        let state = || text(auth.value().field("state").unwrap());
+        assert_eq!(state(), "restoring");
+
+        auth.finish_restore_wait();
+        assert_eq!(state(), "signed_out");
+        assert_eq!(auth.failure.get(), Some("restore_timed_out"));
+        assert!(matches!(&*auth.session.borrow(), Session::Unknown));
+
+        auth.heard(session_from(&json!({
+            "state": "signedIn", "orgId": "org_1", "user": { "id": "u", "email": "a@b.c" }
+        })));
+        assert_eq!(state(), "signed_in");
+        assert_eq!(auth.failure.get(), None);
+
+        auth.finish_restore_wait();
+        assert_eq!(state(), "signed_in");
+        assert_eq!(auth.failure.get(), None);
     }
 
     /// While the account's setup isn't finished the engine answers template

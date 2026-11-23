@@ -3416,6 +3416,7 @@
         "cancelled": "Sign-in was cancelled.",
         "denied": "Sign-in was turned down in the browser. Try again when you're ready.",
         "timed_out": "The browser didn't finish signing you in. Try again.",
+        "restore_timed_out": "Keiki couldn't restore your account in time. Try signing in again.",
         "offline": "Keiki can't be reached. Check your connection and try again.",
         "expired": "You were signed out. Sign in again to carry on.",
         "failed": "Sign-in didn't finish. Try again."
