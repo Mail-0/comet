@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
+use futures::StreamExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
+use zeron_rpc::{RpcReply, RpcService, methods};
 
 use super::*;
 
@@ -492,6 +494,49 @@ async fn a_temporary_session_failure_keeps_the_rotated_refresh_token() {
     let requests = server.done.await.unwrap();
     assert!(requests[2].1.contains("refresh-1"));
     assert_eq!(holder.snapshot().unwrap().access_token, "access-2");
+}
+
+#[tokio::test]
+async fn an_abandoned_sign_in_does_not_discard_a_refresh_already_in_flight() {
+    let refreshing = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut refresh = Reply::ok("POST", "/oauth/token", tokens("restored-access", "rotated"));
+        refresh.received = Some(refreshing.clone());
+        refresh.release = Some(release.clone());
+        let mut replies = vec![refresh];
+        replies.extend(discovery(url));
+        replies.push(Reply::ok(
+            "GET",
+            "/api/webapp/auth/session",
+            account(Some("org-1"), json!([])),
+        ));
+        replies
+    })
+    .await;
+    let (auth, store, holder) = auth(&server, true);
+    let rpc = crate::rpc::AuthRpc::new(auth);
+    let restore = tokio::spawn({
+        let rpc = rpc.clone();
+        async move { rpc.handle(methods::AUTH_STATUS, json!({})).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), refreshing.notified())
+        .await
+        .unwrap();
+    rpc.handle(methods::SIGN_IN, json!({})).await.unwrap();
+    release.notify_one();
+
+    let RpcReply::Stream(mut stream) = restore.await.unwrap().unwrap() else {
+        panic!("AuthStatus must remain a watch stream");
+    };
+    assert_eq!(stream.next().await.unwrap()["state"], "signedIn");
+    assert_eq!(
+        store.load().unwrap().unwrap().credentials.refresh_token,
+        "rotated"
+    );
+    assert_eq!(holder.snapshot().unwrap().access_token, "restored-access");
+    let requests = server.done.await.unwrap();
+    assert!(requests[0].1.contains("saved-refresh"));
 }
 
 #[tokio::test]
