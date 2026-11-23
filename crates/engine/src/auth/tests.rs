@@ -175,6 +175,17 @@ fn tokens(access: &str, refresh: &str) -> Value {
         "scope": "manage offline_access", "token_type": "Bearer"})
 }
 
+fn sign_in_callback(url: &str) -> reqwest::Url {
+    let url = reqwest::Url::parse(url).unwrap();
+    let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    let mut callback = reqwest::Url::parse(&query["redirect_uri"]).unwrap();
+    callback
+        .query_pairs_mut()
+        .append_pair("state", &query["state"])
+        .append_pair("code", "signed-in-code");
+    callback
+}
+
 fn account(org: Option<&str>, orgs: Value) -> Value {
     json!({"user": {"name": "Keiki User", "email": "  USER@Example.Test ",
         "orgId": org, "activeOrgId": org, "role": "member", "orgs": orgs}})
@@ -537,6 +548,44 @@ async fn an_abandoned_sign_in_does_not_discard_a_refresh_already_in_flight() {
     assert_eq!(holder.snapshot().unwrap().access_token, "restored-access");
     let requests = server.done.await.unwrap();
     assert!(requests[0].1.contains("saved-refresh"));
+}
+
+#[tokio::test]
+async fn a_restored_account_invalidates_the_pending_browser_callback() {
+    let refreshing = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Server::start(|url| {
+        let mut refresh = Reply::ok("POST", "/oauth/token", tokens("restored", "rotated"));
+        refresh.received = Some(refreshing.clone());
+        refresh.release = Some(release.clone());
+        let mut replies = vec![refresh];
+        replies.extend(discovery(url));
+        replies.push(Reply::ok(
+            "GET",
+            "/api/webapp/auth/session",
+            account(Some("restored-org"), json!([])),
+        ));
+        replies
+    })
+    .await;
+    let (auth, _, holder) = auth(&server, true);
+    let restore = tokio::spawn({
+        let auth = auth.clone();
+        async move { auth.access_token().await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), refreshing.notified())
+        .await
+        .unwrap();
+    let callback = sign_in_callback(&auth.start_sign_in().await.unwrap());
+    let attempt = lock(&auth.inner.session).sign_in_attempt;
+    release.notify_one();
+    assert_eq!(restore.await.unwrap().unwrap(), "restored");
+
+    let error = auth.complete_attempt(callback.as_str(), attempt).await.unwrap_err();
+    assert!(error.to_string().contains("Keiki sign-in was cancelled"));
+    assert_eq!(auth.state().org_id(), Some("restored-org"));
+    assert_eq!(holder.snapshot().unwrap().access_token, "restored");
+    server.done.await.unwrap();
 }
 
 #[tokio::test]

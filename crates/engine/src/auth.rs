@@ -315,6 +315,7 @@ impl Auth {
         client_id: String,
         account: SessionResponse,
         generation: u64,
+        refreshing: bool,
     ) -> Result<(), EngineError> {
         let mut session = lock(&self.inner.session);
         if session.generation != generation {
@@ -325,6 +326,10 @@ impl Auth {
             issuer: Some(self.api_url().into()),
         };
         self.inner.store.save(&saved).map_err(EngineError::Other)?;
+        if refreshing && session.access.is_none() {
+            session.sign_in_attempt = session.sign_in_attempt.wrapping_add(1);
+            session.pending = None;
+        }
         let email = account
             .user
             .email
@@ -411,7 +416,7 @@ impl Auth {
                     TokenError::TemporarilyUnavailable(error.to_string())
                 }
             })?;
-        self.publish(tokens, saved.credentials.client_id, account, generation)
+        self.publish(tokens, saved.credentials.client_id, account, generation, true)
             .map_err(|error| TokenError::TemporarilyUnavailable(error.to_string()))?;
         lock(&self.inner.session)
             .access
@@ -512,7 +517,7 @@ impl Auth {
             session.generation
         };
         let account = self.account(tokens.access_token(), generation).await?;
-        self.publish(tokens, saved.client_id, account, generation)
+        self.publish(tokens, saved.client_id, account, generation, false)
     }
 
     pub async fn complete_sign_in(&self, callback: &str) -> Result<(), EngineError> {
