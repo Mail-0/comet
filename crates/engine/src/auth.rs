@@ -269,12 +269,12 @@ impl Auth {
         self.inner.store.clear().map_err(EngineError::Other)
     }
 
-    async fn account(
+    fn checked_account(
         &self,
-        token: &str,
+        result: Result<SessionResponse, keiki_api::Error>,
         current_generation: Option<u64>,
     ) -> Result<SessionResponse, EngineError> {
-        match request(self.inner.client.session(token)).await {
+        match result {
             Ok(account)
                 if account
                     .user
@@ -301,6 +301,13 @@ impl Auth {
                 Err(EngineError::Other(error.to_string()))
             }
         }
+    }
+
+    async fn account(&self, token: &str, generation: u64) -> Result<SessionResponse, EngineError> {
+        self.checked_account(
+            request(self.inner.client.session(token)).await,
+            Some(generation),
+        )
     }
 
     fn save_refresh(
@@ -420,7 +427,7 @@ impl Auth {
                 .map_err(|error| TokenError::TemporarilyUnavailable(error.to_string()))?;
         }
         let account = self
-            .account(tokens.access_token(), Some(generation))
+            .account(tokens.access_token(), generation)
             .await
             .map_err(|error| {
                 if lock(&self.inner.session).saved.is_none() {
@@ -526,7 +533,17 @@ impl Auth {
             .await
             .map_err(|error| EngineError::Other(error.to_string()))?;
         let saved = flow.stored_credentials(&tokens);
-        let account = self.account(tokens.access_token(), None).await?;
+        let result = request(self.inner.client.session(tokens.access_token())).await;
+        if result.as_ref().is_err_and(|error| !error.is_authentication_failure()) {
+            let mut session = lock(&self.inner.session);
+            if session.generation != generation || session.sign_in_attempt != attempt {
+                return Err(EngineError::Other("Keiki sign-in was cancelled".into()));
+            }
+            self.save_refresh(&mut session, &tokens, saved.client_id.clone())?;
+            session.generation = session.generation.wrapping_add(1);
+            session.pending = None;
+        }
+        let account = self.checked_account(result, None)?;
         self.publish(tokens, saved.client_id, account, generation, Some(attempt))
     }
 
@@ -578,7 +595,7 @@ impl Auth {
             session.generation
         };
         Ok(self
-            .account(&token, Some(generation))
+            .account(&token, generation)
             .await?
             .user
             .orgs
@@ -625,7 +642,7 @@ impl Auth {
                 return Err(EngineError::Other(error.to_string()));
             }
         }
-        let account = self.account(&token, Some(generation)).await?;
+        let account = self.account(&token, generation).await?;
         let mut session = lock(&self.inner.session);
         if generation != session.generation {
             return Err(EngineError::Other("Keiki session changed".into()));

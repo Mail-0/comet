@@ -653,6 +653,45 @@ async fn a_retry_prevents_an_earlier_sign_in_from_saving_or_publishing() {
 }
 
 #[tokio::test]
+async fn a_temporary_account_lookup_failure_can_recover_without_another_sign_in() {
+    let server = Server::start(|url| {
+        let mut replies = discovery(url);
+        replies.extend([
+            Reply::ok("POST", "/oauth/token", tokens("new-access", "new-refresh")),
+            Reply::error("GET", "/api/webapp/auth/session", 503),
+            Reply::ok(
+                "POST",
+                "/oauth/token",
+                tokens("recovered-access", "rotated"),
+            ),
+            Reply::ok(
+                "GET",
+                "/api/webapp/auth/session",
+                account(Some("recovered-org"), json!([])),
+            ),
+        ]);
+        replies
+    })
+    .await;
+    let (auth, store, holder) = auth(&server, false);
+    let callback = sign_in_callback(&auth.start_sign_in().await.unwrap());
+
+    assert!(auth.complete_sign_in(callback.as_str()).await.is_err());
+    assert_eq!(auth.state(), AuthState::SignedOut);
+    assert!(holder.snapshot().is_none());
+    assert_eq!(
+        store.load().unwrap().unwrap().credentials.refresh_token,
+        "new-refresh"
+    );
+
+    assert_eq!(auth.access_token().await.unwrap(), "recovered-access");
+    assert_eq!(auth.state().org_id(), Some("recovered-org"));
+    assert_eq!(holder.snapshot().unwrap().access_token, "recovered-access");
+    let requests = server.done.await.unwrap();
+    assert!(requests[5].1.contains("new-refresh"));
+}
+
+#[tokio::test]
 async fn sign_out_cancels_pending_sign_in() {
     let server = Server::start(discovery).await;
     let (auth, store, holder) = auth(&server, false);
