@@ -6,8 +6,7 @@
 -- what needs one
 -- (account/api).
 --
---   auth.state:get()        "restoring" (a launch, until the engine answers:
---                           with a session kept, for as long as that takes),
+--   auth.state:get()        "restoring" (on launch, while waiting for the engine),
 --                           "signed_out", "waiting" (on the browser) or
 --                           "signed_in"
 --   auth.user:get()         { id, email, first_name? }, signed in
@@ -19,13 +18,14 @@
 --
 -- What a sign-in can end in besides a user: "cancelled" (asked for here),
 -- "denied" (turned down in the browser), "timed_out" (the browser never
--- came back: closed, or left), "offline", "failed"; and, signed out without
+-- came back: closed, or left), "restore_timed_out" (the engine didn't answer
+-- in time on launch), "offline", "failed"; and, signed out without
 -- asking, "expired".
 
 local M = {}
 
 export type State = "restoring" | "signed_out" | "waiting" | "signed_in"
-export type Failure = "cancelled" | "denied" | "timed_out" | "offline" | "expired" | "failed"
+export type Failure = "cancelled" | "denied" | "timed_out" | "restore_timed_out" | "offline" | "expired" | "failed"
 export type User = { id: string, email: string, first_name: string?, name: string? }
 -- `organization_id`: the organization the session works in (Settings').
 export type Account = { state: State, user: User?, failure: Failure?, env: string, organization_id: string? }
@@ -99,6 +99,7 @@ local SAYS: { [string]: string } = {
 	cancelled = "account.auth.says.cancelled",
 	denied = "account.auth.says.denied",
 	timed_out = "account.auth.says.timed_out",
+	restore_timed_out = "account.auth.says.restore_timed_out",
 	offline = "account.auth.says.offline",
 	expired = "account.auth.says.expired",
 	failed = "account.auth.says.failed",
